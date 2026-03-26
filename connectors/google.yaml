@@ -1,0 +1,37 @@
+# Google Workspace connector reference spec.
+#
+# This file documents the collections exposed by the Google Workspace
+# connector. The connector does NOT use this YAML at runtime -- it talks
+# directly to the Google APIs -- but the structure below mirrors the
+# mapping for reference and tooling compatibility.
+
+name: google
+base_url: "https://www.googleapis.com"
+auth:
+  type: bearer
+  token_env: GOOGLE_ACCESS_TOKEN
+collections:
+  - name: drive
+    list_endpoint: "/drive/v3/files?fields=files(id,name,mimeType,modifiedTime)&q='root'+in+parents"
+    get_endpoint: "/drive/v3/files/{id}?fields=*"
+    update_endpoint: "/upload/drive/v3/files/{id}?uploadType=media"
+    id_field: "id"
+    slug_field: "name"
+    title_field: "name"
+    list_root: "files"
+
+  - name: gmail
+    list_endpoint: "/gmail/v1/users/me/messages?maxResults=50&labelIds=INBOX"
+    get_endpoint: "/gmail/v1/users/me/messages/{id}?format=full"
+    id_field: "id"
+    slug_field: "id"
+    list_root: "messages"
+
+  - name: calendar
+    list_endpoint: "/calendar/v3/calendars/primary/events?singleEvents=true&orderBy=startTime"
+    get_endpoint: "/calendar/v3/calendars/primary/events/{id}"
+    update_endpoint: "/calendar/v3/calendars/primary/events/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "summary"
+    list_root: "items"

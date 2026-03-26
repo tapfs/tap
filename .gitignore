@@ -1,0 +1,5 @@
+/target
+/macos/build/
+/.pkgconfig/
+/.lib/
+libparser.rlib

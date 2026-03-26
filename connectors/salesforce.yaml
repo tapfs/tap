@@ -1,0 +1,22 @@
+name: salesforce
+base_url: "https://login.salesforce.com"
+auth:
+  type: oauth2
+  token_env: SF_CLIENT_SECRET
+collections:
+  - name: accounts
+    list_endpoint: "/services/data/v59.0/query?q=SELECT+Id,Name,Industry,Type+FROM+Account"
+    get_endpoint: "/services/data/v59.0/sobjects/Account/{id}"
+    update_endpoint: "/services/data/v59.0/sobjects/Account/{id}"
+    id_field: "Id"
+    slug_field: "Name"
+    title_field: "Name"
+    list_root: "records"
+  - name: opportunities
+    list_endpoint: "/services/data/v59.0/query?q=SELECT+Id,Name,StageName,Amount+FROM+Opportunity"
+    get_endpoint: "/services/data/v59.0/sobjects/Opportunity/{id}"
+    update_endpoint: "/services/data/v59.0/sobjects/Opportunity/{id}"
+    id_field: "Id"
+    slug_field: "Name"
+    title_field: "Name"
+    list_root: "records"

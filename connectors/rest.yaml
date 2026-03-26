@@ -1,0 +1,14 @@
+name: rest
+base_url: "http://localhost:8080"
+auth:
+  type: bearer
+  token_env: REST_API_TOKEN
+collections:
+  - name: items
+    list_endpoint: "/api/items"
+    get_endpoint: "/api/items/{id}"
+    update_endpoint: "/api/items/{id}"
+    id_field: "id"
+    slug_field: "slug"
+    title_field: "title"
+    list_root: "data"

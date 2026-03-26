@@ -1,0 +1,30 @@
+name: jsonplaceholder
+base_url: "https://jsonplaceholder.typicode.com"
+collections:
+  - name: posts
+    list_endpoint: "/posts"
+    get_endpoint: "/posts/{id}"
+    update_endpoint: "/posts/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "title"
+  - name: users
+    list_endpoint: "/users"
+    get_endpoint: "/users/{id}"
+    update_endpoint: "/users/{id}"
+    id_field: "id"
+    slug_field: "username"
+    title_field: "name"
+  - name: todos
+    list_endpoint: "/todos"
+    get_endpoint: "/todos/{id}"
+    update_endpoint: "/todos/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "title"
+  - name: comments
+    list_endpoint: "/comments"
+    get_endpoint: "/comments/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "name"

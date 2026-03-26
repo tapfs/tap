@@ -1,0 +1,36 @@
+[package]
+name = "tapfs"
+version = "0.1.0"
+edition = "2021"
+description = "FUSE filesystem that mounts enterprise REST APIs as agent-readable files"
+
+[lib]
+name = "tapfs"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[[bin]]
+name = "tap"
+path = "src/main.rs"
+
+[dependencies]
+fuser = "0.14"
+clap = { version = "=4.4.18", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+async-trait = "0.1"
+anyhow = "1"
+dashmap = "6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+oauth2 = "4"
+libc = "0.2"
+dirs = "5"
+
+[dev-dependencies]
+wiremock = "=0.6.2"
+tempfile = "3"

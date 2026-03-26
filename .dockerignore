@@ -1,0 +1,7 @@
+target/
+macos/
+.pkgconfig/
+.lib/
+.git/
+.gitignore
+*.md
