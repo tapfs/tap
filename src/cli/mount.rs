@@ -89,6 +89,17 @@ pub async fn run(config: TapConfig) -> Result<()> {
     // 8. Create cache, draft store, version store
     let cache_ttl = Duration::from_secs(config.cache_ttl_secs.unwrap_or(60));
     let cache = Arc::new(Cache::new(cache_ttl));
+
+    {
+        let cache = Arc::clone(&cache);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                cache.evict_expired();
+            }
+        });
+    }
+
     let drafts = Arc::new(DraftStore::new(config.drafts_dir()).context("creating draft store")?);
     let versions =
         Arc::new(VersionStore::new(config.versions_dir()).context("creating version store")?);

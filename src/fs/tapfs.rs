@@ -271,6 +271,50 @@ impl Filesystem for TapFs {
     }
 
     // -----------------------------------------------------------------------
+    // mkdir
+    // -----------------------------------------------------------------------
+
+    fn mkdir(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        _mode: u32,
+        _umask: u32,
+        reply: ReplyEntry,
+    ) {
+        let name_str = match name.to_str() {
+            Some(s) => s,
+            None => { reply.error(libc::EINVAL); return; }
+        };
+        match self.vfs.mkdir(parent, name_str) {
+            Ok(attr) => reply.entry(&TTL, &to_fuse_attr(&attr), 0),
+            Err(e) => reply.error(to_errno(e)),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // rmdir
+    // -----------------------------------------------------------------------
+
+    fn rmdir(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        reply: ReplyEmpty,
+    ) {
+        let name_str = match name.to_str() {
+            Some(s) => s,
+            None => { reply.error(libc::EINVAL); return; }
+        };
+        match self.vfs.rmdir(&self.rt, parent, name_str) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(to_errno(e)),
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // statfs
     // -----------------------------------------------------------------------
 
@@ -354,18 +398,21 @@ impl Filesystem for TapFs {
     }
 
     // -----------------------------------------------------------------------
-    // flush -- no-op (required to suppress "Not Implemented" warnings)
+    // flush -- auto-promote live files with pending writes
     // -----------------------------------------------------------------------
 
     fn flush(
         &mut self,
         _req: &Request<'_>,
-        _ino: u64,
+        ino: u64,
         _fh: u64,
         _lock_owner: u64,
         reply: ReplyEmpty,
     ) {
-        reply.ok();
+        match self.vfs.flush(&self.rt, ino) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(to_errno(e)),
+        }
     }
 
     // -----------------------------------------------------------------------

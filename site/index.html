@@ -1,0 +1,753 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>tapfs — Mount enterprise APIs as files</title>
+  <meta name="description" content="An open-source filesystem that mounts enterprise REST APIs as agent-readable files. No SDKs. No wrappers. Just ls, cat, and grep.">
+  <meta property="og:title" content="tapfs — Mount enterprise APIs as files">
+  <meta property="og:description" content="FUSE filesystem that turns enterprise APIs into files. Your agent already knows how.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://tapfs.dev">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0a0a0b;
+      --bg-secondary: #111113;
+      --bg-card: #16161a;
+      --bg-code: #1a1a2e;
+      --text: #e4e4e7;
+      --text-muted: #8b8b94;
+      --text-dim: #52525b;
+      --accent: #06b6d4;
+      --accent-hover: #22d3ee;
+      --accent-dim: rgba(6, 182, 212, 0.12);
+      --green: #22c55e;
+      --yellow: #eab308;
+      --red: #ef4444;
+      --purple: #a78bfa;
+      --border: #27272a;
+      --radius: 12px;
+      --max-width: 1100px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    code, .mono { font-family: 'JetBrains Mono', monospace; }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { color: var(--accent-hover); }
+
+    /* ─── Nav ───────────────────────────────────────────── */
+    nav {
+      position: fixed;
+      top: 0;
+      width: 100%;
+      z-index: 100;
+      backdrop-filter: blur(16px);
+      background: rgba(10, 10, 11, 0.8);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-inner {
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 0 24px;
+      height: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .nav-logo {
+      font-weight: 800;
+      font-size: 20px;
+      letter-spacing: -0.5px;
+      color: var(--text);
+    }
+    .nav-logo span { color: var(--accent); }
+    .nav-links { display: flex; gap: 28px; align-items: center; }
+    .nav-links a {
+      color: var(--text-muted);
+      font-size: 14px;
+      font-weight: 500;
+      transition: color 0.2s;
+    }
+    .nav-links a:hover { color: var(--text); }
+    .nav-gh {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 13px;
+      transition: border-color 0.2s;
+    }
+    .nav-gh:hover { border-color: var(--text-muted); }
+
+    /* ─── Hero ──────────────────────────────────────────── */
+    .hero {
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 140px 24px 60px;
+      text-align: center;
+    }
+    .hero-badge {
+      display: inline-block;
+      padding: 4px 14px;
+      border: 1px solid var(--border);
+      border-radius: 100px;
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 28px;
+      background: var(--bg-secondary);
+    }
+    .hero-badge span { color: var(--accent); }
+    .hero h1 {
+      font-size: clamp(36px, 6vw, 64px);
+      font-weight: 800;
+      letter-spacing: -1.5px;
+      line-height: 1.1;
+      margin-bottom: 20px;
+      background: linear-gradient(135deg, var(--text) 0%, var(--text-muted) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .hero p {
+      font-size: clamp(16px, 2vw, 20px);
+      color: var(--text-muted);
+      max-width: 640px;
+      margin: 0 auto 36px;
+      line-height: 1.7;
+    }
+    .hero-ctas {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 24px;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      transition: all 0.2s;
+      cursor: pointer;
+      border: none;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: #000;
+    }
+    .btn-primary:hover {
+      background: var(--accent-hover);
+      color: #000;
+      transform: translateY(-1px);
+    }
+    .btn-secondary {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover {
+      border-color: var(--text-muted);
+      transform: translateY(-1px);
+    }
+
+    /* ─── Terminal Demo ─────────────────────────────────── */
+    .terminal-section {
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 20px 24px 80px;
+    }
+    .terminal {
+      background: var(--bg-code);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5);
+    }
+    .terminal-bar {
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(255,255,255,0.02);
+    }
+    .terminal-dot {
+      width: 12px; height: 12px;
+      border-radius: 50%;
+    }
+    .terminal-dot.red { background: var(--red); }
+    .terminal-dot.yellow { background: var(--yellow); }
+    .terminal-dot.green { background: var(--green); }
+    .terminal-title {
+      flex: 1;
+      text-align: center;
+      font-size: 13px;
+      color: var(--text-dim);
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .terminal-body {
+      padding: 20px 24px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13.5px;
+      line-height: 1.8;
+      overflow-x: auto;
+    }
+    .terminal-body .prompt { color: var(--accent); }
+    .terminal-body .cmd { color: var(--text); }
+    .terminal-body .output { color: var(--text-muted); }
+    .terminal-body .comment { color: var(--text-dim); font-style: italic; }
+    .terminal-body .file { color: var(--green); }
+    .terminal-body .dir { color: #60a5fa; font-weight: 500; }
+    .terminal-body .highlight { color: var(--yellow); }
+    .terminal-body .line { display: block; min-height: 1.8em; }
+
+    /* ─── Sections ──────────────────────────────────────── */
+    section {
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 80px 24px;
+    }
+    .section-label {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: var(--accent);
+      margin-bottom: 12px;
+    }
+    .section-title {
+      font-size: clamp(28px, 4vw, 40px);
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      margin-bottom: 16px;
+    }
+    .section-desc {
+      font-size: 17px;
+      color: var(--text-muted);
+      max-width: 600px;
+      line-height: 1.7;
+      margin-bottom: 48px;
+    }
+
+    /* ─── Feature Cards ─────────────────────────────────── */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+    }
+    .feature-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+      transition: border-color 0.2s;
+    }
+    .feature-card:hover { border-color: var(--text-dim); }
+    .feature-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      background: var(--accent-dim);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 16px;
+      font-size: 18px;
+    }
+    .feature-card h3 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .feature-card p {
+      font-size: 14px;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+    .feature-card code {
+      font-size: 12.5px;
+      background: var(--bg-code);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: var(--accent);
+    }
+
+    /* ─── File Tree ─────────────────────────────────────── */
+    .tree-section {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 48px;
+      align-items: center;
+    }
+    .tree-text h2 {
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      margin-bottom: 16px;
+    }
+    .tree-text p {
+      color: var(--text-muted);
+      line-height: 1.7;
+      margin-bottom: 24px;
+    }
+    .file-tree {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px 28px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13.5px;
+      line-height: 2;
+    }
+    .file-tree .dir { color: #60a5fa; }
+    .file-tree .file { color: var(--green); }
+    .file-tree .draft { color: var(--yellow); }
+    .file-tree .lock { color: var(--red); }
+    .file-tree .version { color: var(--purple); }
+    .file-tree .annotation {
+      color: var(--text-dim);
+      font-size: 12px;
+    }
+
+    /* ─── Comparison Table ──────────────────────────────── */
+    .comparison-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    .comparison-table th {
+      text-align: left;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      font-weight: 600;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+    .comparison-table th:first-child { color: var(--text); }
+    .comparison-table th.highlight-col {
+      color: var(--accent);
+      background: var(--accent-dim);
+      border-radius: 8px 8px 0 0;
+    }
+    .comparison-table td {
+      padding: 12px 16px;
+      border-bottom: 1px solid rgba(39, 39, 42, 0.5);
+      color: var(--text-muted);
+    }
+    .comparison-table td:first-child {
+      color: var(--text);
+      font-weight: 500;
+    }
+    .comparison-table td.highlight-col {
+      color: var(--text);
+      background: var(--accent-dim);
+    }
+    .comparison-table tr:last-child td { border-bottom: none; }
+    .comparison-table tr:last-child td.highlight-col {
+      border-radius: 0 0 8px 8px;
+    }
+    .check { color: var(--green); }
+    .cross { color: var(--text-dim); }
+
+    /* ─── Install ───────────────────────────────────────── */
+    .install-tabs {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 0;
+    }
+    .install-tab {
+      padding: 10px 20px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s;
+      background: none;
+      border-top: none;
+      border-left: none;
+      border-right: none;
+      font-family: inherit;
+    }
+    .install-tab:hover { color: var(--text); }
+    .install-tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+    .install-panel {
+      display: none;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-top: none;
+      border-radius: 0 0 var(--radius) var(--radius);
+      padding: 20px 24px;
+    }
+    .install-panel.active { display: block; }
+    .install-panel code {
+      font-size: 14px;
+      color: var(--accent);
+    }
+    .install-panel .note {
+      margin-top: 8px;
+      font-size: 13px;
+      color: var(--text-dim);
+    }
+
+    /* ─── Architecture ──────────────────────────────────── */
+    .arch-diagram {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 32px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--text-muted);
+      overflow-x: auto;
+      white-space: pre;
+    }
+    .arch-diagram .layer { color: var(--accent); font-weight: 500; }
+    .arch-diagram .component { color: var(--text); }
+
+    /* ─── Footer ────────────────────────────────────────── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 40px 24px;
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 14px;
+    }
+    footer a { color: var(--text-muted); }
+
+    /* ─── Responsive ────────────────────────────────────── */
+    @media (max-width: 768px) {
+      .tree-section { grid-template-columns: 1fr; }
+      .nav-links a:not(.nav-gh) { display: none; }
+      .comparison-table { font-size: 12px; }
+      .comparison-table th, .comparison-table td { padding: 8px 10px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ─── Nav ──────────────────────────────────────────── -->
+<nav>
+  <div class="nav-inner">
+    <div class="nav-logo">tap<span>fs</span></div>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#how-it-works">How It Works</a>
+      <a href="#comparison">Compare</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/tapfs/tap" class="nav-gh">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<!-- ─── Hero ─────────────────────────────────────────── -->
+<div class="hero">
+  <div class="hero-badge"><span>v0.1</span> &mdash; Now with Google Workspace connector</div>
+  <h1>Tap into enterprise APIs.<br>Your agent already knows how.</h1>
+  <p>An open-source filesystem that mounts enterprise REST APIs as files. No SDKs, no new abstractions. Agents use <code>ls</code>, <code>cat</code>, <code>grep</code>, and <code>diff</code> &mdash; the tools they were trained on.</p>
+  <div class="hero-ctas">
+    <a href="#install" class="btn btn-primary">Get Started</a>
+    <a href="https://github.com/tapfs/tap" class="btn btn-secondary">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      View on GitHub
+    </a>
+  </div>
+</div>
+
+<!-- ─── Terminal Demo ────────────────────────────────── -->
+<div class="terminal-section">
+  <div class="terminal">
+    <div class="terminal-bar">
+      <div class="terminal-dot red"></div>
+      <div class="terminal-dot yellow"></div>
+      <div class="terminal-dot green"></div>
+      <div class="terminal-title">tap &mdash; /mnt/tap</div>
+    </div>
+    <div class="terminal-body">
+      <span class="line"><span class="prompt">$</span> <span class="cmd">ls /mnt/tap/google/</span></span>
+      <span class="line"><span class="dir">drive/</span>    <span class="dir">gmail/</span>    <span class="dir">calendar/</span>    <span class="file">agent.md</span></span>
+      <span class="line"></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">ls /mnt/tap/google/drive/</span></span>
+      <span class="line"><span class="file">Q3 Strategy.md</span>    <span class="file">Design Spec.md</span>    <span class="file">Budget.md</span>    <span class="file">agent.md</span></span>
+      <span class="line"></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">cat "/mnt/tap/google/drive/Q3 Strategy.md"</span></span>
+      <span class="line"><span class="output">---</span></span>
+      <span class="line"><span class="output">id: "1kUm7HSO..."</span></span>
+      <span class="line"><span class="output">name: "Q3 Strategy"</span></span>
+      <span class="line"><span class="output">mimeType: "application/vnd.google-apps.document"</span></span>
+      <span class="line"><span class="output">operations: [read, write, draft, lock]</span></span>
+      <span class="line"><span class="output">---</span></span>
+      <span class="line"><span class="output">Our Q3 priorities focus on three areas...</span></span>
+      <span class="line"></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">echo "Updated revenue target: $52M" >> "/mnt/tap/google/drive/Q3 Strategy.md"</span></span>
+      <span class="line"><span class="comment"># auto-promoted to Google Drive API on close</span></span>
+      <span class="line"></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">cat "/mnt/tap/google/drive/Q3 Strategy@v1.md"</span></span>
+      <span class="line"><span class="comment"># read the previous version (auto-snapshot)</span></span>
+      <span class="line"></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">tap log</span></span>
+      <span class="line"><span class="output">2026-03-26 08:02:34 [<span class="highlight">success</span>] google drive/Q3 Strategy <span class="highlight">auto-promote</span> 847 bytes</span></span>
+      <span class="line"><span class="output">2026-03-26 08:02:29 [<span class="highlight">success</span>] google drive/Q3 Strategy write 42 bytes</span></span>
+      <span class="line"><span class="output">2026-03-26 08:02:24 [<span class="highlight">success</span>] google drive/- list 154 resources</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- ─── Features ─────────────────────────────────────── -->
+<section id="features">
+  <div class="section-label">Why tapfs</div>
+  <div class="section-title">The filesystem is the universal agent protocol</div>
+  <div class="section-desc">If Finder can see it, every application can. If every application can, every agent can. Deepest OS integration means widest tool compatibility.</div>
+
+  <div class="features-grid">
+    <div class="feature-card">
+      <div class="feature-icon">$_</div>
+      <h3>POSIX is the API</h3>
+      <p>No SDKs. No new abstractions. Every LLM was trained on Unix. <code>ls</code>, <code>cat</code>, <code>grep</code>, <code>diff</code> work out of the box.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">&darr;</div>
+      <h3>Sparse hydration</h3>
+      <p>The entire enterprise is mounted. <code>ls</code> returns instantly from cached metadata. Bytes only move on <code>cat</code> &mdash; pay-per-access.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">&olarr;</div>
+      <h3>Transactional by default</h3>
+      <p>Drafts, locks, versions via path conventions. <code>.draft.md</code> for isolation. <code>@v3.md</code> for snapshots. <code>.lock</code> for concurrency.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">&check;</div>
+      <h3>Governance is structural</h3>
+      <p>Every operation is audit-logged. Versions auto-snapshot. Rollback with <code>tap rollback file@v3.md</code>. Compliance is built in, not bolted on.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">&oplus;</div>
+      <h3>Connector ecosystem</h3>
+      <p>Google Workspace ships built-in. Install more from GitHub: <code>tap install tapfs/jira</code>. Or build your own with a YAML spec.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">&equiv;</div>
+      <h3>Multi-platform</h3>
+      <p>FUSE on Linux/Docker. File Provider Extension on macOS (Finder integration). Works in E2B sandboxes, Cloudflare Workers, anywhere.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ─── How It Works ─────────────────────────────────── -->
+<section id="how-it-works">
+  <div class="tree-section">
+    <div class="tree-text">
+      <div class="section-label">How it works</div>
+      <h2>Enterprise APIs become a filesystem</h2>
+      <p>Point tapfs at a backend and it appears as files. Agents explore with <code>ls</code>. Every directory has an <code>agent.md</code> that teaches the agent what's available. Resources render as Markdown with YAML frontmatter.</p>
+      <p>Writes are safe by default. Direct writes auto-promote on close. Or use the explicit draft workflow for staged changes. Every write is versioned and reversible.</p>
+    </div>
+    <div class="file-tree">
+<span class="dir">/mnt/tap/</span>
+  <span class="file">agent.md</span>                <span class="annotation">&larr; how to use tapfs</span>
+  <span class="dir">google/</span>
+    <span class="file">agent.md</span>              <span class="annotation">&larr; Google Workspace guide</span>
+    <span class="dir">drive/</span>
+      <span class="file">agent.md</span>            <span class="annotation">&larr; collection overview</span>
+      <span class="file">Q3 Strategy.md</span>      <span class="annotation">&larr; live (GET on read)</span>
+      <span class="draft">Q3 Strategy.draft.md</span> <span class="annotation">&larr; sandboxed edits</span>
+      <span class="version">Q3 Strategy@v3.md</span>    <span class="annotation">&larr; immutable snapshot</span>
+      <span class="lock">Q3 Strategy.lock</span>     <span class="annotation">&larr; concurrency lock</span>
+    <span class="dir">gmail/</span>
+      <span class="file">re-deployment-plan.md</span>
+    <span class="dir">calendar/</span>
+      <span class="file">standup-10am.md</span>
+    </div>
+  </div>
+</section>
+
+<!-- ─── Architecture ─────────────────────────────────── -->
+<section>
+  <div class="section-label">Architecture</div>
+  <div class="section-title">Transport-agnostic core</div>
+  <div class="section-desc">The filesystem logic is platform-agnostic. Each OS gets its deepest native integration. The connector layer is pluggable.</div>
+  <div class="arch-diagram"><span class="layer">              Agent / Application</span>
+         (ls, cat, cp, mv, Finder, any app)
+
+    <span class="component">FUSE</span>              <span class="component">File Provider</span>        <span class="component">CLI / API</span>
+    <span class="component">(Linux/Docker)</span>     <span class="component">(macOS Finder)</span>      <span class="component">(Workers/WASM)</span>
+         &darr;                   &darr;                   &darr;
+    &#9484;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9488;
+    &#9474;             <span class="layer">VirtualFs Core</span>               &#9474;
+    &#9474;    path parser &middot; cache &middot; drafts &middot; audit   &#9474;
+    &#9500;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9508;
+    &#9474;          <span class="layer">Connector Layer</span>              &#9474;
+    &#9474;   <span class="component">Google</span>   <span class="component">REST</span>   <span class="component">Jira</span>  <span class="component">Salesforce</span>  ... &#9474;
+    &#9492;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9496;
+                         &darr;
+              <span class="layer">Enterprise APIs</span>
+           REST / GraphQL / gRPC</div>
+</section>
+
+<!-- ─── Comparison ───────────────────────────────────── -->
+<section id="comparison">
+  <div class="section-label">Positioning</div>
+  <div class="section-title">Where tapfs fits</div>
+  <div class="section-desc">tapfs doesn't compete with MCP or orchestrators. It sits below them &mdash; at the OS layer.</div>
+
+  <table class="comparison-table">
+    <thead>
+      <tr>
+        <th></th>
+        <th class="highlight-col">tapfs</th>
+        <th>MCP</th>
+        <th>API Gateways</th>
+        <th>LangChain Tools</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Abstraction level</td>
+        <td class="highlight-col">OS (filesystem)</td>
+        <td>Protocol</td>
+        <td>Network</td>
+        <td>Application</td>
+      </tr>
+      <tr>
+        <td>Agent integration</td>
+        <td class="highlight-col"><span class="check">Zero</span> (POSIX)</td>
+        <td>SDK required</td>
+        <td>SDK required</td>
+        <td>Framework-locked</td>
+      </tr>
+      <tr>
+        <td>Transactional</td>
+        <td class="highlight-col"><span class="check">Built-in</span></td>
+        <td><span class="cross">No</span></td>
+        <td><span class="cross">No</span></td>
+        <td><span class="cross">No</span></td>
+      </tr>
+      <tr>
+        <td>Governance</td>
+        <td class="highlight-col"><span class="check">Structural</span></td>
+        <td>Bolt-on</td>
+        <td>Partial</td>
+        <td><span class="cross">None</span></td>
+      </tr>
+      <tr>
+        <td>Discovery</td>
+        <td class="highlight-col"><code>ls</code></td>
+        <td>Tool listing</td>
+        <td>API catalog</td>
+        <td>Code</td>
+      </tr>
+      <tr>
+        <td>Offline capable</td>
+        <td class="highlight-col"><span class="check">Yes</span></td>
+        <td><span class="cross">No</span></td>
+        <td><span class="cross">No</span></td>
+        <td><span class="cross">No</span></td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ─── Install ──────────────────────────────────────── -->
+<section id="install">
+  <div class="section-label">Get started</div>
+  <div class="section-title">Up and running in 60 seconds</div>
+  <div class="section-desc"></div>
+
+  <div>
+    <div class="install-tabs">
+      <button class="install-tab active" onclick="showTab('docker')">Docker</button>
+      <button class="install-tab" onclick="showTab('cargo')">Cargo</button>
+      <button class="install-tab" onclick="showTab('source')">From Source</button>
+    </div>
+    <div id="tab-docker" class="install-panel active">
+      <code>docker run --rm -it \<br>
+&nbsp;&nbsp;--device /dev/fuse --cap-add SYS_ADMIN \<br>
+&nbsp;&nbsp;-e GOOGLE_ACCESS_TOKEN="ya29...." \<br>
+&nbsp;&nbsp;tapfs:latest shell</code>
+      <div class="note">Then inside: <code>tap mount google --mount-point /mnt/tap --data-dir /var/lib/tapfs &</code></div>
+    </div>
+    <div id="tab-cargo" class="install-panel">
+      <code>cargo install tapfs<br>tap mount google --mount-point /mnt/tap</code>
+      <div class="note">Requires FUSE: <code>apt install libfuse-dev</code> (Linux) or macFUSE/FUSE-T (macOS)</div>
+    </div>
+    <div id="tab-source" class="install-panel">
+      <code>git clone https://github.com/tapfs/tap.git<br>cd tap<br>cargo build --release<br>./target/release/tap mount google --mount-point /mnt/tap</code>
+      <div class="note">Build from source for development or to customize connectors.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── CLI ───────────────────────────────────────────── -->
+<section>
+  <div class="section-label">CLI</div>
+  <div class="section-title">Everything from the terminal</div>
+  <div class="section-desc"></div>
+
+  <div class="terminal">
+    <div class="terminal-bar">
+      <div class="terminal-dot red"></div>
+      <div class="terminal-dot yellow"></div>
+      <div class="terminal-dot green"></div>
+      <div class="terminal-title">tap CLI</div>
+    </div>
+    <div class="terminal-body">
+      <span class="line"><span class="prompt">$</span> <span class="cmd">tap mount google</span>           <span class="comment"># mount Google Workspace</span></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">tap status</span>                  <span class="comment"># connection health</span></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">tap log</span>                     <span class="comment"># audit trail</span></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">tap versions /mnt/tap/g/drive/file.md</span>   <span class="comment"># version history</span></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">tap rollback /mnt/tap/g/drive/file@v3.md</span> <span class="comment"># restore version</span></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">tap install tapfs/jira</span>      <span class="comment"># install connector from GitHub</span></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">tap connectors</span>              <span class="comment"># list installed</span></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">tap unmount google</span>          <span class="comment"># clean unmount</span></span>
+    </div>
+  </div>
+</section>
+
+<!-- ─── Footer ───────────────────────────────────────── -->
+<footer>
+  <p>
+    <strong>tapfs</strong> is open source under Apache 2.0 &mdash;
+    <a href="https://github.com/tapfs/tap">GitHub</a> &middot;
+    <a href="https://github.com/tapfs/tap/issues">Issues</a> &middot;
+    <a href="https://github.com/tapfs/tap/blob/main/spec.md">Spec</a>
+  </p>
+  <p style="margin-top: 8px; color: var(--text-dim);">tapfs doesn't teach agents new tricks. It reveals enterprise reality in the language they already speak.</p>
+</footer>
+
+<script>
+function showTab(id) {
+  document.querySelectorAll('.install-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.install-panel').forEach(p => p.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('tab-' + id).classList.add('active');
+}
+</script>
+
+</body>
+</html>

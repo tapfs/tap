@@ -30,10 +30,6 @@ enum Commands {
         #[arg(short, long)]
         base_url: Option<String>,
 
-        /// Environment variable name for auth token
-        #[arg(long)]
-        auth_token_env: Option<String>,
-
         /// Cache TTL in seconds
         #[arg(long, default_value = "60")]
         cache_ttl: u64,
@@ -75,6 +71,80 @@ enum Commands {
         #[arg(long)]
         data_dir: Option<PathBuf>,
     },
+
+    /// List versions of a resource
+    Versions {
+        /// Path to resource (e.g., /mnt/tap/google/drive/test.md)
+        path: PathBuf,
+
+        /// Data directory
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
+
+    /// Rollback a resource to a previous version
+    Rollback {
+        /// Path with version (e.g., /mnt/tap/google/drive/test@v3.md)
+        path: PathBuf,
+
+        /// Data directory
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
+
+    /// List pending changes awaiting approval
+    Pending {
+        /// Data directory
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
+
+    /// Approve a pending change
+    Approve {
+        /// Path to resource (e.g., /mnt/tap/google/drive/test.md)
+        path: PathBuf,
+
+        /// Data directory
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
+
+    /// Install a connector from Git/GitHub
+    Install {
+        /// Source: GitHub shorthand (org/repo), Git URL, or local path
+        source: String,
+
+        /// Data directory
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
+
+    /// List installed connectors
+    Connectors {
+        /// Data directory
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
+
+    /// Remove an installed connector
+    Remove {
+        /// Connector name
+        name: String,
+
+        /// Data directory
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
+
+    /// Update an installed connector
+    Update {
+        /// Connector name
+        name: String,
+
+        /// Data directory
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
 }
 
 /// Return the default data directory.
@@ -98,7 +168,6 @@ async fn main() -> anyhow::Result<()> {
             mount_point,
             spec,
             base_url,
-            auth_token_env,
             cache_ttl,
             data_dir,
             debug,
@@ -108,7 +177,6 @@ async fn main() -> anyhow::Result<()> {
                 connector_name: connector,
                 connector_spec: spec,
                 base_url,
-                auth_token_env,
                 cache_ttl_secs: Some(cache_ttl),
                 data_dir,
                 debug,
@@ -127,6 +195,30 @@ async fn main() -> anyhow::Result<()> {
         ),
         Commands::Status { data_dir } => {
             cli::status::run(data_dir.unwrap_or_else(default_data_dir))
+        }
+        Commands::Versions { path, data_dir } => {
+            cli::versions::run_versions(&path, &data_dir.unwrap_or_else(default_data_dir))
+        }
+        Commands::Rollback { path, data_dir } => {
+            cli::versions::run_rollback(&path, &data_dir.unwrap_or_else(default_data_dir))
+        }
+        Commands::Pending { data_dir } => {
+            cli::approve::run_pending(&data_dir.unwrap_or_else(default_data_dir))
+        }
+        Commands::Approve { path, data_dir } => {
+            cli::approve::run_approve(&path, &data_dir.unwrap_or_else(default_data_dir))
+        }
+        Commands::Install { source, data_dir } => {
+            cli::registry::run_install(&source, &data_dir.unwrap_or_else(default_data_dir))
+        }
+        Commands::Connectors { data_dir } => {
+            cli::registry::run_list_connectors(&data_dir.unwrap_or_else(default_data_dir))
+        }
+        Commands::Remove { name, data_dir } => {
+            cli::registry::run_remove(&name, &data_dir.unwrap_or_else(default_data_dir))
+        }
+        Commands::Update { name, data_dir } => {
+            cli::registry::run_update(&name, &data_dir.unwrap_or_else(default_data_dir))
         }
     }
 }

@@ -186,6 +186,29 @@ impl VirtualFs {
                 connector,
                 collection,
             } => self.resolve_collection_child(rt, connector, collection, name)?,
+            NodeKind::TxDir { connector, collection } => {
+                // Looking up a named transaction
+                NodeKind::Transaction {
+                    connector: connector.clone(),
+                    collection: collection.clone(),
+                    tx_name: name.to_string(),
+                }
+            }
+            NodeKind::Transaction { connector, collection, tx_name } => {
+                // Looking up a file inside a transaction
+                let resource = name.strip_suffix(".md").unwrap_or(name);
+                let tx_slug = format!("__tx_{}_{}", tx_name, resource);
+                if self.drafts.has_draft(connector, collection, &tx_slug) {
+                    NodeKind::TxResource {
+                        connector: connector.clone(),
+                        collection: collection.clone(),
+                        tx_name: tx_name.clone(),
+                        resource: resource.to_string(),
+                    }
+                } else {
+                    return Err(VfsError::NotFound);
+                }
+            }
             _ => return Err(VfsError::NotDirectory),
         };
 
@@ -222,6 +245,12 @@ impl VirtualFs {
                 connector,
                 collection,
             } => self.readdir_collection(rt, id, connector, collection),
+            NodeKind::TxDir { connector, collection } => {
+                self.readdir_tx_dir(id, connector, collection)
+            }
+            NodeKind::Transaction { connector, collection, tx_name } => {
+                self.readdir_transaction(id, connector, collection, tx_name)
+            }
             _ => Err(VfsError::NotDirectory),
         }
     }
@@ -241,12 +270,35 @@ impl VirtualFs {
         let kind = self.nodes.get(id).ok_or(VfsError::NotFound)?;
         let data = match &kind {
             NodeKind::AgentMd => AGENT_MD_CONTENT.as_bytes().to_vec(),
+            NodeKind::ConnectorAgentMd { connector } => {
+                self.generate_connector_agent_md(rt, connector).into_bytes()
+            }
+            NodeKind::CollectionAgentMd { connector, collection } => {
+                self.generate_collection_agent_md(rt, connector, collection).into_bytes()
+            }
             NodeKind::Resource {
                 connector,
                 collection,
                 resource,
                 variant,
             } => self.read_resource_data(rt, connector, collection, resource, variant)?,
+            NodeKind::Version { connector, collection, resource, version_id } => {
+                if let Some(v) = version_id {
+                    self.versions
+                        .read_version(connector, collection, resource, *v as u32)
+                        .map_err(|e| VfsError::IoError(e.to_string()))?
+                        .ok_or(VfsError::NotFound)?
+                } else {
+                    return Err(VfsError::NotFound);
+                }
+            }
+            NodeKind::TxResource { connector, collection, tx_name, resource } => {
+                let tx_slug = format!("__tx_{}_{}", tx_name, resource);
+                self.drafts
+                    .read_draft(connector, collection, &tx_slug)
+                    .map_err(|e| VfsError::IoError(e.to_string()))?
+                    .ok_or(VfsError::NotFound)?
+            }
             _ => return Err(VfsError::IsDirectory),
         };
 
@@ -279,40 +331,15 @@ impl VirtualFs {
             } => {
                 match variant {
                     ResourceVariant::Draft => {
-                        let mut buf = self
-                            .drafts
-                            .read_draft(connector, collection, resource)
-                            .map_err(|e| VfsError::IoError(e.to_string()))?
-                            .unwrap_or_default();
-                        let off = offset as usize;
-                        let needed = off + data.len();
-                        if buf.len() < needed {
-                            buf.resize(needed, 0);
-                        }
-                        buf[off..off + data.len()].copy_from_slice(data);
-                        self.drafts
-                            .write_draft(connector, collection, resource, &buf)
-                            .map_err(|e| VfsError::IoError(e.to_string()))?;
+                        self.write_to_draft_store(connector, collection, resource, offset, data)?;
                     }
                     ResourceVariant::Lock => {
                         let lslug = lock_slug(resource);
-                        let mut buf = self
-                            .drafts
-                            .read_draft(connector, collection, &lslug)
-                            .map_err(|e| VfsError::IoError(e.to_string()))?
-                            .unwrap_or_default();
-                        let off = offset as usize;
-                        let needed = off + data.len();
-                        if buf.len() < needed {
-                            buf.resize(needed, 0);
-                        }
-                        buf[off..off + data.len()].copy_from_slice(data);
-                        self.drafts
-                            .write_draft(connector, collection, &lslug, &buf)
-                            .map_err(|e| VfsError::IoError(e.to_string()))?;
+                        self.write_to_draft_store(connector, collection, &lslug, offset, data)?;
                     }
                     ResourceVariant::Live => {
-                        return Err(VfsError::PermissionDenied);
+                        // Write to live files by buffering to draft.
+                        self.write_to_draft_store(connector, collection, resource, offset, data)?;
                     }
                 }
 
@@ -327,6 +354,26 @@ impl VirtualFs {
                         data.len(),
                         offset,
                         variant
+                    )),
+                );
+
+                Ok(data.len() as u32)
+            }
+            NodeKind::TxResource { connector, collection, tx_name, resource } => {
+                let tx_slug = format!("__tx_{}_{}", tx_name, resource);
+                self.write_to_draft_store(connector, collection, &tx_slug, offset, data)?;
+
+                let _ = self.audit.record(
+                    "write_tx",
+                    connector,
+                    Some(collection),
+                    Some(resource),
+                    "success",
+                    Some(format!(
+                        "{} bytes at offset {} in tx={}",
+                        data.len(),
+                        offset,
+                        tx_name
                     )),
                 );
 
@@ -348,6 +395,45 @@ impl VirtualFs {
     ) -> Result<VfsAttr, VfsError> {
         let parent_kind = self.nodes.get(parent_id).ok_or(VfsError::NotFound)?;
 
+        // Handle creating files inside a transaction
+        if let NodeKind::Transaction { connector, collection, tx_name } = &parent_kind {
+            let resource = name.strip_suffix(".md").unwrap_or(name);
+            let tx_slug = format!("__tx_{}_{}", tx_name, resource);
+            if !self.drafts.has_draft(&connector, &collection, &tx_slug) {
+                // Try to pre-populate from live content (copy-on-write)
+                let cache_key = format!("{}/{}/{}", connector, collection, resource);
+                let initial_content = if let Some(cached) = self.cache.get_resource(&cache_key) {
+                    cached.data
+                } else {
+                    vec![]
+                };
+                self.drafts
+                    .create_draft(&connector, &collection, &tx_slug, &initial_content)
+                    .map_err(|e| VfsError::IoError(e.to_string()))?;
+            }
+            let _ = self.audit.record(
+                "create_tx_resource",
+                &connector,
+                Some(&collection),
+                Some(resource),
+                "success",
+                Some(format!("tx={}", tx_name)),
+            );
+            let kind = NodeKind::TxResource {
+                connector: connector.clone(),
+                collection: collection.clone(),
+                tx_name: tx_name.clone(),
+                resource: resource.to_string(),
+            };
+            let id = self.nodes.allocate(kind);
+            return Ok(VfsAttr {
+                id,
+                size: 0,
+                file_type: VfsFileType::RegularFile,
+                perm: 0o644,
+            });
+        }
+
         let (connector, collection) = match &parent_kind {
             NodeKind::Collection {
                 connector,
@@ -361,8 +447,15 @@ impl VirtualFs {
         match variant {
             ResourceVariant::Draft => {
                 if !self.drafts.has_draft(&connector, &collection, &slug) {
+                    // Try to pre-populate from live content (copy-on-write)
+                    let cache_key = format!("{}/{}/{}", connector, collection, slug);
+                    let initial_content = if let Some(cached) = self.cache.get_resource(&cache_key) {
+                        cached.data
+                    } else {
+                        vec![]
+                    };
                     self.drafts
-                        .create_draft(&connector, &collection, &slug, &[])
+                        .create_draft(&connector, &collection, &slug, &initial_content)
                         .map_err(|e| VfsError::IoError(e.to_string()))?;
                 }
                 let _ = self.audit.record(
@@ -393,15 +486,36 @@ impl VirtualFs {
                 );
             }
             ResourceVariant::Live => {
-                return Err(VfsError::PermissionDenied);
+                // Allow creating .md files directly — buffer as a draft.
+                // Auto-promote happens on flush/release.
+                if !self.drafts.has_draft(&connector, &collection, &slug) {
+                    self.drafts
+                        .create_draft(&connector, &collection, &slug, &[])
+                        .map_err(|e| VfsError::IoError(e.to_string()))?;
+                }
+                let _ = self.audit.record(
+                    "create_live",
+                    &connector,
+                    Some(&collection),
+                    Some(&slug),
+                    "success",
+                    Some("buffered as draft, will promote on close".to_string()),
+                );
             }
         }
+
+        // For live files, we store as draft but present as live to the caller.
+        let actual_variant = if variant == ResourceVariant::Live && self.drafts.has_draft(&connector, &collection, &slug) {
+            ResourceVariant::Live // keep it as Live in the inode table
+        } else {
+            variant
+        };
 
         let kind = NodeKind::Resource {
             connector,
             collection,
             resource: slug,
-            variant,
+            variant: actual_variant,
         };
         let id = self.nodes.allocate(kind);
         Ok(VfsAttr {
@@ -518,6 +632,14 @@ impl VirtualFs {
     ) -> Result<(), VfsError> {
         let parent_kind = self.nodes.get(parent_id).ok_or(VfsError::NotFound)?;
 
+        // Delegate to unlink_tx for transaction-related parents
+        match &parent_kind {
+            NodeKind::Transaction { .. } | NodeKind::TxDir { .. } => {
+                return self.unlink_tx(parent_id, name);
+            }
+            _ => {}
+        }
+
         let (connector, collection) = match &parent_kind {
             NodeKind::Collection {
                 connector,
@@ -584,52 +706,104 @@ impl VirtualFs {
     }
 
     // -----------------------------------------------------------------------
-    // Sync connector access helpers
+    // flush (auto-promote live files with pending writes)
     // -----------------------------------------------------------------------
 
-    /// Read content for a node that needs async connector access.
-    /// This is the synchronous version - caller must ensure we're on a runtime.
-    pub fn read_resource_sync(
+    /// Flush a file. For live files with pending draft content, auto-promote
+    /// (push to API and clean up the draft).
+    pub fn flush(
         &self,
         rt: &tokio::runtime::Handle,
-        connector: &str,
-        collection: &str,
-        resource: &str,
-        variant: &ResourceVariant,
-    ) -> Result<Vec<u8>, VfsError> {
-        self.read_resource_data(rt, connector, collection, resource, variant)
-    }
+        id: u64,
+    ) -> Result<(), VfsError> {
+        let kind = self.nodes.get(id).ok_or(VfsError::NotFound)?;
+        if let NodeKind::Resource {
+            connector,
+            collection,
+            resource,
+            variant: ResourceVariant::Live,
+        } = &kind
+        {
+            // Check if there's a pending draft for this live file
+            if self.drafts.has_draft(connector, collection, resource) {
+                let data = self
+                    .drafts
+                    .read_draft(connector, collection, resource)
+                    .map_err(|e| VfsError::IoError(e.to_string()))?
+                    .ok_or(VfsError::NotFound)?;
 
-    /// List resources synchronously via connector.
-    pub fn list_resources_sync(
-        &self,
-        rt: &tokio::runtime::Handle,
-        connector: &str,
-        collection: &str,
-    ) -> Result<Vec<ResourceMeta>, VfsError> {
-        let conn = self.registry.get(connector).ok_or(VfsError::NotFound)?;
-        rt.block_on(conn.list_resources(collection))
-            .map_err(|e| VfsError::IoError(e.to_string()))
-    }
+                // Push to API
+                let conn = self.registry.get(connector).ok_or(VfsError::NotFound)?;
+                rt.block_on(conn.write_resource(collection, resource, &data))
+                    .map_err(|e| {
+                        tracing::error!("auto-promote error: {}", e);
+                        VfsError::IoError(e.to_string())
+                    })?;
 
-    /// List collections synchronously via connector.
-    pub fn list_collections_sync(
-        &self,
-        rt: &tokio::runtime::Handle,
-        connector: &str,
-    ) -> Result<Vec<CollectionInfo>, VfsError> {
-        let conn = self.registry.get(connector).ok_or(VfsError::NotFound)?;
-        rt.block_on(conn.list_collections())
-            .map_err(|e| VfsError::IoError(e.to_string()))
+                // Snapshot + cleanup
+                let _ = self.versions.save_snapshot(connector, collection, resource, &data);
+                let _ = self.drafts.delete_draft(connector, collection, resource);
+                let cache_key = format!("{}/{}/{}", connector, collection, resource);
+                self.cache.invalidate(&cache_key);
+
+                let _ = self.audit.record(
+                    "auto-promote",
+                    connector,
+                    Some(collection),
+                    Some(resource),
+                    "success",
+                    Some(format!("{} bytes pushed to API on close", data.len())),
+                );
+
+                tracing::info!(
+                    connector = %connector,
+                    resource = %resource,
+                    "auto-promoted live file on close"
+                );
+            }
+        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
 
+    fn write_to_draft_store(
+        &self,
+        connector: &str,
+        collection: &str,
+        slug: &str,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<(), VfsError> {
+        let mut buf = self
+            .drafts
+            .read_draft(connector, collection, slug)
+            .map_err(|e| VfsError::IoError(e.to_string()))?
+            .unwrap_or_default();
+        let off = offset as usize;
+        let needed = off + data.len();
+        if buf.len() < needed {
+            buf.resize(needed, 0);
+        }
+        buf[off..off + data.len()].copy_from_slice(data);
+        self.drafts
+            .write_draft(connector, collection, slug, &buf)
+            .map_err(|e| VfsError::IoError(e.to_string()))
+    }
+
     fn kind_to_attr(&self, id: u64, kind: &NodeKind) -> VfsAttr {
         match kind {
-            NodeKind::Root | NodeKind::Connector { .. } | NodeKind::Collection { .. } | NodeKind::Version { .. } => {
+            NodeKind::Root | NodeKind::Connector { .. } | NodeKind::Collection { .. } => {
+                VfsAttr {
+                    id,
+                    size: 0,
+                    file_type: VfsFileType::Directory,
+                    perm: 0o755,
+                }
+            }
+            NodeKind::TxDir { .. } | NodeKind::Transaction { .. } => {
                 VfsAttr {
                     id,
                     size: 0,
@@ -643,6 +817,18 @@ impl VirtualFs {
                 file_type: VfsFileType::RegularFile,
                 perm: 0o644,
             },
+            NodeKind::ConnectorAgentMd { .. } => VfsAttr {
+                id,
+                size: 4096,
+                file_type: VfsFileType::RegularFile,
+                perm: 0o644,
+            },
+            NodeKind::CollectionAgentMd { .. } => VfsAttr {
+                id,
+                size: 4096,
+                file_type: VfsFileType::RegularFile,
+                perm: 0o644,
+            },
             NodeKind::Resource {
                 connector,
                 collection,
@@ -650,6 +836,39 @@ impl VirtualFs {
                 variant,
             } => {
                 let size = self.resource_size(connector, collection, resource, variant);
+                let perm = match variant {
+                    ResourceVariant::Lock => 0o444,
+                    _ => 0o644,
+                };
+                VfsAttr {
+                    id,
+                    size,
+                    file_type: VfsFileType::RegularFile,
+                    perm,
+                }
+            }
+            NodeKind::Version { connector, collection, resource, version_id } => {
+                let size = if let Some(v) = version_id {
+                    self.versions.read_version(connector, collection, resource, *v as u32)
+                        .ok()
+                        .flatten()
+                        .map(|d| d.len() as u64)
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                VfsAttr {
+                    id,
+                    size,
+                    file_type: VfsFileType::RegularFile,
+                    perm: 0o444, // read-only, immutable
+                }
+            }
+            NodeKind::TxResource { connector, collection, tx_name, resource } => {
+                let tx_slug = format!("__tx_{}_{}", tx_name, resource);
+                let size = self.drafts
+                    .draft_size(connector, collection, &tx_slug)
+                    .unwrap_or(0);
                 VfsAttr {
                     id,
                     size,
@@ -680,37 +899,9 @@ impl VirtualFs {
         name: &str,
     ) -> Result<NodeKind, VfsError> {
         if name == "agent.md" {
-            return Ok(NodeKind::AgentMd);
+            return Ok(NodeKind::ConnectorAgentMd { connector: connector.to_string() });
         }
-        // Use cached metadata if available, otherwise fetch.
-        let cache_key = format!("{}/__collections__", connector);
-        let collections = if let Some(cached) = self.cache.get_metadata(&cache_key) {
-            cached
-                .iter()
-                .map(|r| CollectionInfo {
-                    name: r.slug.clone(),
-                    description: r.title.clone(),
-                })
-                .collect::<Vec<_>>()
-        } else {
-            let conn = self.registry.get(connector).ok_or(VfsError::NotFound)?;
-            let cols = rt
-                .block_on(conn.list_collections())
-                .map_err(|e| VfsError::IoError(e.to_string()))?;
-            // Cache as ResourceMeta for reuse
-            let meta: Vec<ResourceMeta> = cols
-                .iter()
-                .map(|c| ResourceMeta {
-                    id: c.name.clone(),
-                    slug: c.name.clone(),
-                    title: c.description.clone(),
-                    updated_at: None,
-                    content_type: None,
-                })
-                .collect();
-            self.cache.put_metadata(&cache_key, meta);
-            cols
-        };
+        let collections = self.get_collections_cached(rt, connector)?;
         if collections.iter().any(|c| c.name == name) {
             return Ok(NodeKind::Collection {
                 connector: connector.to_string(),
@@ -739,6 +930,39 @@ impl VirtualFs {
         Ok(resources)
     }
 
+    fn get_collections_cached(
+        &self,
+        rt: &tokio::runtime::Handle,
+        connector: &str,
+    ) -> Result<Vec<CollectionInfo>, VfsError> {
+        let cache_key = format!("{}/__collections__", connector);
+        if let Some(cached) = self.cache.get_metadata(&cache_key) {
+            return Ok(cached
+                .iter()
+                .map(|r| CollectionInfo {
+                    name: r.slug.clone(),
+                    description: r.title.clone(),
+                })
+                .collect());
+        }
+        let conn = self.registry.get(connector).ok_or(VfsError::NotFound)?;
+        let cols = rt
+            .block_on(conn.list_collections())
+            .map_err(|e| VfsError::IoError(e.to_string()))?;
+        let meta: Vec<crate::connector::traits::ResourceMeta> = cols
+            .iter()
+            .map(|c| crate::connector::traits::ResourceMeta {
+                id: c.name.clone(),
+                slug: c.name.clone(),
+                title: c.description.clone(),
+                updated_at: None,
+                content_type: None,
+            })
+            .collect();
+        self.cache.put_metadata(&cache_key, meta);
+        Ok(cols)
+    }
+
     fn resolve_collection_child(
         &self,
         rt: &tokio::runtime::Handle,
@@ -746,6 +970,39 @@ impl VirtualFs {
         collection: &str,
         name: &str,
     ) -> Result<NodeKind, VfsError> {
+        if name == "agent.md" {
+            return Ok(NodeKind::CollectionAgentMd {
+                connector: connector.to_string(),
+                collection: collection.to_string(),
+            });
+        }
+
+        // Handle .tx directory
+        if name == ".tx" {
+            return Ok(NodeKind::TxDir {
+                connector: connector.to_string(),
+                collection: collection.to_string(),
+            });
+        }
+
+        // Check for version access: resource@vN.md
+        if let Some(without_md) = name.strip_suffix(".md") {
+            if let Some(at_pos) = without_md.rfind("@v") {
+                let base = &without_md[..at_pos];
+                let ver_str = &without_md[at_pos + 2..];
+                if !base.is_empty() {
+                    if let Ok(v) = ver_str.parse::<u32>() {
+                        return Ok(NodeKind::Version {
+                            connector: connector.to_string(),
+                            collection: collection.to_string(),
+                            resource: base.to_string(),
+                            version_id: Some(v as u64),
+                        });
+                    }
+                }
+            }
+        }
+
         let (slug, variant) = parse_resource_filename(name)?;
 
         // For drafts, check the draft store.
@@ -800,18 +1057,12 @@ impl VirtualFs {
         match variant {
             ResourceVariant::Draft => self
                 .drafts
-                .read_draft(connector, collection, resource)
-                .ok()
-                .flatten()
-                .map(|d| d.len() as u64)
+                .draft_size(connector, collection, resource)
                 .unwrap_or(0),
             ResourceVariant::Lock => {
                 let lslug = lock_slug(resource);
                 self.drafts
-                    .read_draft(connector, collection, &lslug)
-                    .ok()
-                    .flatten()
-                    .map(|d| d.len() as u64)
+                    .draft_size(connector, collection, &lslug)
                     .unwrap_or(0)
             }
             ResourceVariant::Live => {
@@ -879,34 +1130,16 @@ impl VirtualFs {
             },
         ];
 
-        // Use cached collections
-        let cache_key = format!("{}/__collections__", connector);
-        let collections = if let Some(cached) = self.cache.get_metadata(&cache_key) {
-            cached
-                .iter()
-                .map(|r| CollectionInfo {
-                    name: r.slug.clone(),
-                    description: r.title.clone(),
-                })
-                .collect::<Vec<_>>()
-        } else {
-            let conn = self.registry.get(connector).ok_or(VfsError::NotFound)?;
-            let cols = rt
-                .block_on(conn.list_collections())
-                .map_err(|e| VfsError::IoError(e.to_string()))?;
-            let meta: Vec<ResourceMeta> = cols
-                .iter()
-                .map(|c| ResourceMeta {
-                    id: c.name.clone(),
-                    slug: c.name.clone(),
-                    title: c.description.clone(),
-                    updated_at: None,
-                    content_type: None,
-                })
-                .collect();
-            self.cache.put_metadata(&cache_key, meta);
-            cols
-        };
+        // agent.md for this connector
+        let agent_kind = NodeKind::ConnectorAgentMd { connector: connector.to_string() };
+        let agent_id = self.nodes.allocate(agent_kind);
+        entries.push(VfsDirEntry {
+            name: "agent.md".to_string(),
+            id: agent_id,
+            file_type: VfsFileType::RegularFile,
+        });
+
+        let collections = self.get_collections_cached(rt, connector)?;
 
         for col in collections {
             let kind = NodeKind::Collection {
@@ -950,6 +1183,18 @@ impl VirtualFs {
                 file_type: VfsFileType::Directory,
             },
         ];
+
+        // agent.md for this collection
+        let agent_kind = NodeKind::CollectionAgentMd {
+            connector: connector.to_string(),
+            collection: collection.to_string(),
+        };
+        let agent_id = self.nodes.allocate(agent_kind);
+        entries.push(VfsDirEntry {
+            name: "agent.md".to_string(),
+            id: agent_id,
+            file_type: VfsFileType::RegularFile,
+        });
 
         // Fetch live resources (cached).
         let resources = self.get_resources_cached(rt, connector, collection)?;
@@ -1004,6 +1249,25 @@ impl VirtualFs {
                     file_type: VfsFileType::RegularFile,
                 });
             }
+
+            // List version files for this resource
+            let versions = self.versions.list_versions(connector, collection, &res.slug)
+                .unwrap_or_default();
+            for v in versions {
+                let ver_filename = format!("{}@v{}.md", res.slug, v);
+                let ver_kind = NodeKind::Version {
+                    connector: connector.to_string(),
+                    collection: collection.to_string(),
+                    resource: res.slug.clone(),
+                    version_id: Some(v as u64),
+                };
+                let ver_id = self.nodes.allocate(ver_kind);
+                entries.push(VfsDirEntry {
+                    name: ver_filename,
+                    id: ver_id,
+                    file_type: VfsFileType::RegularFile,
+                });
+            }
         }
 
         // Also list draft-only resources.
@@ -1011,7 +1275,7 @@ impl VirtualFs {
             let live_slugs: std::collections::HashSet<&str> =
                 resources.iter().map(|r| r.slug.as_str()).collect();
             for slug in draft_slugs {
-                if slug.ends_with(".lock") || live_slugs.contains(slug.as_str()) {
+                if slug.ends_with(".lock") || slug.starts_with("__tx_") || live_slugs.contains(slug.as_str()) {
                     continue;
                 }
                 let draft_filename = format!("{}.draft.md", slug);
@@ -1030,7 +1294,83 @@ impl VirtualFs {
             }
         }
 
+        // Add .tx directory entry
+        let tx_kind = NodeKind::TxDir {
+            connector: connector.to_string(),
+            collection: collection.to_string(),
+        };
+        let tx_id = self.nodes.allocate(tx_kind);
+        entries.push(VfsDirEntry {
+            name: ".tx".to_string(),
+            id: tx_id,
+            file_type: VfsFileType::Directory,
+        });
+
         Ok(entries)
+    }
+
+    fn generate_connector_agent_md(&self, rt: &tokio::runtime::Handle, connector: &str) -> String {
+        let mut out = String::new();
+        out.push_str("---\n");
+        out.push_str(&format!("connector: {}\n", connector));
+        out.push_str("---\n\n");
+        out.push_str(&format!("# {}\n\n", connector));
+
+        // List collections
+        if let Ok(collections) = self.get_collections_cached(rt, connector) {
+            out.push_str("## Collections\n\n");
+            for col in &collections {
+                out.push_str(&format!("- **{}/**", col.name));
+                if let Some(ref desc) = col.description {
+                    out.push_str(&format!(" — {}", desc));
+                }
+                out.push('\n');
+            }
+        }
+
+        out.push_str("\n## Workflow\n\n");
+        out.push_str("```bash\n");
+        out.push_str(&format!("ls /mnt/tap/{}/           # list collections\n", connector));
+        out.push_str(&format!("ls /mnt/tap/{}/drive/     # list resources\n", connector));
+        out.push_str(&format!("cat /mnt/tap/{}/drive/file.md  # read a resource\n", connector));
+        out.push_str("```\n");
+
+        out
+    }
+
+    fn generate_collection_agent_md(&self, rt: &tokio::runtime::Handle, connector: &str, collection: &str) -> String {
+        let mut out = String::new();
+        out.push_str("---\n");
+        out.push_str(&format!("connector: {}\n", connector));
+        out.push_str(&format!("collection: {}\n", collection));
+        out.push_str("---\n\n");
+        out.push_str(&format!("# {}/{}\n\n", connector, collection));
+
+        // List some resources
+        if let Ok(resources) = self.get_resources_cached(rt, connector, collection) {
+            out.push_str(&format!("**{} resources available.**\n\n", resources.len()));
+            out.push_str("## Sample resources\n\n");
+            for res in resources.iter().take(10) {
+                out.push_str(&format!("- `{}.md`", res.slug));
+                if let Some(ref title) = res.title {
+                    out.push_str(&format!(" — {}", title));
+                }
+                out.push('\n');
+            }
+            if resources.len() > 10 {
+                out.push_str(&format!("\n... and {} more. Use `ls` to see all.\n", resources.len() - 10));
+            }
+        }
+
+        out.push_str("\n## Operations\n\n");
+        out.push_str("```bash\n");
+        out.push_str(&format!("cat {}.md         # read resource\n", "resource"));
+        out.push_str(&format!("echo 'x' > {}.md  # write (auto-promotes)\n", "resource"));
+        out.push_str(&format!("touch {}.draft.md  # create draft\n", "resource"));
+        out.push_str(&format!("touch {}.lock      # lock resource\n", "resource"));
+        out.push_str("```\n");
+
+        out
     }
 
     fn read_resource_data(
@@ -1058,14 +1398,6 @@ impl VirtualFs {
                 // Check cache first.
                 let cache_key = format!("{}/{}/{}", connector, collection, resource);
                 if let Some(cached) = self.cache.get_resource(&cache_key) {
-                    let _ = self.audit.record(
-                        "read",
-                        connector,
-                        Some(collection),
-                        Some(resource),
-                        "success",
-                        Some("from cache".to_string()),
-                    );
                     return Ok(cached.data);
                 }
 
@@ -1075,14 +1407,6 @@ impl VirtualFs {
                     .block_on(conn.read_resource(collection, resource))
                     .map_err(|e| {
                         tracing::error!("read_resource error: {}", e);
-                        let _ = self.audit.record(
-                            "read",
-                            connector,
-                            Some(collection),
-                            Some(resource),
-                            "error",
-                            Some(e.to_string()),
-                        );
                         VfsError::IoError(e.to_string())
                     })?;
 
@@ -1096,18 +1420,340 @@ impl VirtualFs {
                     },
                 );
 
+                Ok(data)
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // mkdir (for transactions)
+    // -----------------------------------------------------------------------
+
+    /// Create a directory. Only supported inside `.tx/` (creating named transactions).
+    pub fn mkdir(&self, parent_id: u64, name: &str) -> Result<VfsAttr, VfsError> {
+        let parent_kind = self.nodes.get(parent_id).ok_or(VfsError::NotFound)?;
+        match &parent_kind {
+            NodeKind::TxDir { connector, collection } => {
+                // Creating a named transaction
+                let kind = NodeKind::Transaction {
+                    connector: connector.clone(),
+                    collection: collection.clone(),
+                    tx_name: name.to_string(),
+                };
+                let id = self.nodes.allocate(kind);
                 let _ = self.audit.record(
-                    "read",
+                    "create_tx",
+                    connector,
+                    Some(collection),
+                    Some(name),
+                    "success",
+                    None,
+                );
+                Ok(VfsAttr {
+                    id,
+                    size: 0,
+                    file_type: VfsFileType::Directory,
+                    perm: 0o755,
+                })
+            }
+            _ => Err(VfsError::PermissionDenied),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // rmdir (commit transaction)
+    // -----------------------------------------------------------------------
+
+    /// Remove a directory. For transactions, this commits (promotes all files).
+    pub fn rmdir(
+        &self,
+        rt: &tokio::runtime::Handle,
+        parent_id: u64,
+        name: &str,
+    ) -> Result<(), VfsError> {
+        let parent_kind = self.nodes.get(parent_id).ok_or(VfsError::NotFound)?;
+        match &parent_kind {
+            NodeKind::TxDir { connector, collection } => {
+                // Committing a transaction: promote all files
+                let tx_prefix = format!("__tx_{}_", name);
+                let tx_drafts = self
+                    .drafts
+                    .list_drafts(connector, collection)
+                    .map_err(|e| VfsError::IoError(e.to_string()))?;
+
+                let conn = self.registry.get(connector).ok_or(VfsError::NotFound)?;
+
+                for slug in &tx_drafts {
+                    if let Some(resource) = slug.strip_prefix(&tx_prefix) {
+                        let data = self
+                            .drafts
+                            .read_draft(connector, collection, slug)
+                            .map_err(|e| VfsError::IoError(e.to_string()))?
+                            .ok_or(VfsError::NotFound)?;
+
+                        // Push to API
+                        rt.block_on(conn.write_resource(collection, resource, &data))
+                            .map_err(|e| VfsError::IoError(e.to_string()))?;
+
+                        // Snapshot + cleanup
+                        let _ = self
+                            .versions
+                            .save_snapshot(connector, collection, resource, &data);
+                        let _ = self.drafts.delete_draft(connector, collection, slug);
+                        let cache_key =
+                            format!("{}/{}/{}", connector, collection, resource);
+                        self.cache.invalidate(&cache_key);
+
+                        // Remove the tx resource node
+                        let tx_res_kind = NodeKind::TxResource {
+                            connector: connector.to_string(),
+                            collection: collection.to_string(),
+                            tx_name: name.to_string(),
+                            resource: resource.to_string(),
+                        };
+                        if let Some(res_id) = self.nodes.lookup(&tx_res_kind) {
+                            self.nodes.remove(res_id);
+                        }
+                    }
+                }
+
+                // Remove transaction node
+                let kind = NodeKind::Transaction {
+                    connector: connector.to_string(),
+                    collection: collection.to_string(),
+                    tx_name: name.to_string(),
+                };
+                if let Some(tx_id) = self.nodes.lookup(&kind) {
+                    self.nodes.remove(tx_id);
+                }
+
+                let _ = self.audit.record(
+                    "commit_tx",
+                    connector,
+                    Some(collection),
+                    Some(name),
+                    "success",
+                    None,
+                );
+                Ok(())
+            }
+            _ => Err(VfsError::PermissionDenied),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // unlink_tx (abort/delete transaction files)
+    // -----------------------------------------------------------------------
+
+    /// Delete a file inside a transaction, or abort an entire transaction.
+    pub fn unlink_tx(
+        &self,
+        parent_id: u64,
+        name: &str,
+    ) -> Result<(), VfsError> {
+        let parent_kind = self.nodes.get(parent_id).ok_or(VfsError::NotFound)?;
+        match &parent_kind {
+            NodeKind::Transaction { connector, collection, tx_name } => {
+                // Deleting a single file inside a transaction
+                let resource = name.strip_suffix(".md").unwrap_or(name);
+                let tx_slug = format!("__tx_{}_{}", tx_name, resource);
+                let deleted = self
+                    .drafts
+                    .delete_draft(connector, collection, &tx_slug)
+                    .map_err(|e| VfsError::IoError(e.to_string()))?;
+                if !deleted {
+                    return Err(VfsError::NotFound);
+                }
+                // Remove the node
+                let kind = NodeKind::TxResource {
+                    connector: connector.clone(),
+                    collection: collection.clone(),
+                    tx_name: tx_name.clone(),
+                    resource: resource.to_string(),
+                };
+                if let Some(id) = self.nodes.lookup(&kind) {
+                    self.nodes.remove(id);
+                }
+                let _ = self.audit.record(
+                    "delete_tx_resource",
                     connector,
                     Some(collection),
                     Some(resource),
                     "success",
-                    Some(format!("{} bytes from API", data.len())),
+                    Some(format!("tx={}", tx_name)),
                 );
+                Ok(())
+            }
+            NodeKind::TxDir { connector, collection } => {
+                // Aborting (deleting) an entire transaction
+                let tx_prefix = format!("__tx_{}_", name);
+                let tx_drafts = self
+                    .drafts
+                    .list_drafts(connector, collection)
+                    .map_err(|e| VfsError::IoError(e.to_string()))?;
 
-                Ok(data)
+                for slug in &tx_drafts {
+                    if slug.starts_with(&tx_prefix) {
+                        let _ = self.drafts.delete_draft(connector, collection, slug);
+                        // Remove the tx resource node
+                        if let Some(resource) = slug.strip_prefix(&tx_prefix) {
+                            let tx_res_kind = NodeKind::TxResource {
+                                connector: connector.to_string(),
+                                collection: collection.to_string(),
+                                tx_name: name.to_string(),
+                                resource: resource.to_string(),
+                            };
+                            if let Some(res_id) = self.nodes.lookup(&tx_res_kind) {
+                                self.nodes.remove(res_id);
+                            }
+                        }
+                    }
+                }
+
+                // Remove transaction node
+                let kind = NodeKind::Transaction {
+                    connector: connector.to_string(),
+                    collection: collection.to_string(),
+                    tx_name: name.to_string(),
+                };
+                if let Some(tx_id) = self.nodes.lookup(&kind) {
+                    self.nodes.remove(tx_id);
+                }
+
+                let _ = self.audit.record(
+                    "abort_tx",
+                    connector,
+                    Some(collection),
+                    Some(name),
+                    "success",
+                    None,
+                );
+                Ok(())
+            }
+            _ => Err(VfsError::PermissionDenied),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // readdir helpers for transactions
+    // -----------------------------------------------------------------------
+
+    fn readdir_tx_dir(
+        &self,
+        self_id: u64,
+        connector: &str,
+        collection: &str,
+    ) -> Result<Vec<VfsDirEntry>, VfsError> {
+        let parent_id = self
+            .nodes
+            .lookup(&NodeKind::Collection {
+                connector: connector.to_string(),
+                collection: collection.to_string(),
+            })
+            .unwrap_or(1);
+
+        let mut entries = vec![
+            VfsDirEntry {
+                name: ".".to_string(),
+                id: self_id,
+                file_type: VfsFileType::Directory,
+            },
+            VfsDirEntry {
+                name: "..".to_string(),
+                id: parent_id,
+                file_type: VfsFileType::Directory,
+            },
+        ];
+
+        // Find all transaction names by scanning drafts with __tx_ prefix
+        let draft_slugs = self
+            .drafts
+            .list_drafts(connector, collection)
+            .unwrap_or_default();
+        let mut tx_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for slug in &draft_slugs {
+            if let Some(rest) = slug.strip_prefix("__tx_") {
+                if let Some(underscore_pos) = rest.find('_') {
+                    let tx_name = &rest[..underscore_pos];
+                    tx_names.insert(tx_name.to_string());
+                }
             }
         }
+
+        let mut sorted_names: Vec<String> = tx_names.into_iter().collect();
+        sorted_names.sort();
+
+        for tx_name in sorted_names {
+            let kind = NodeKind::Transaction {
+                connector: connector.to_string(),
+                collection: collection.to_string(),
+                tx_name: tx_name.clone(),
+            };
+            let id = self.nodes.allocate(kind);
+            entries.push(VfsDirEntry {
+                name: tx_name,
+                id,
+                file_type: VfsFileType::Directory,
+            });
+        }
+
+        Ok(entries)
+    }
+
+    fn readdir_transaction(
+        &self,
+        self_id: u64,
+        connector: &str,
+        collection: &str,
+        tx_name: &str,
+    ) -> Result<Vec<VfsDirEntry>, VfsError> {
+        let parent_id = self
+            .nodes
+            .lookup(&NodeKind::TxDir {
+                connector: connector.to_string(),
+                collection: collection.to_string(),
+            })
+            .unwrap_or(1);
+
+        let mut entries = vec![
+            VfsDirEntry {
+                name: ".".to_string(),
+                id: self_id,
+                file_type: VfsFileType::Directory,
+            },
+            VfsDirEntry {
+                name: "..".to_string(),
+                id: parent_id,
+                file_type: VfsFileType::Directory,
+            },
+        ];
+
+        let tx_prefix = format!("__tx_{}_", tx_name);
+        let draft_slugs = self
+            .drafts
+            .list_drafts(connector, collection)
+            .unwrap_or_default();
+
+        for slug in &draft_slugs {
+            if let Some(resource) = slug.strip_prefix(&tx_prefix) {
+                let filename = format!("{}.md", resource);
+                let kind = NodeKind::TxResource {
+                    connector: connector.to_string(),
+                    collection: collection.to_string(),
+                    tx_name: tx_name.to_string(),
+                    resource: resource.to_string(),
+                };
+                let id = self.nodes.allocate(kind);
+                entries.push(VfsDirEntry {
+                    name: filename,
+                    id,
+                    file_type: VfsFileType::RegularFile,
+                });
+            }
+        }
+
+        Ok(entries)
     }
 }
 

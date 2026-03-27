@@ -92,6 +92,12 @@ impl DraftStore {
         Ok(true)
     }
 
+    /// Return the size of a draft file without reading its contents.
+    pub fn draft_size(&self, connector: &str, collection: &str, slug: &str) -> Option<u64> {
+        let path = self.draft_path(connector, collection, slug);
+        std::fs::metadata(path).ok().map(|m| m.len())
+    }
+
     /// Check whether a draft exists on disk.
     pub fn has_draft(&self, connector: &str, collection: &str, slug: &str) -> bool {
         self.draft_path(connector, collection, slug).exists()

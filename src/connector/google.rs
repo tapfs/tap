@@ -205,6 +205,9 @@ pub struct GoogleWorkspaceConnector {
     /// Maps "collection/slug" → API resource ID (e.g., Google Drive file ID).
     /// Populated during list_resources(), used by read/write/delete.
     slug_to_id: dashmap::DashMap<String, String>,
+    /// Reverse map: API resource ID → "collection/slug".
+    /// Used for O(1) existence checks instead of linear scans.
+    id_to_slug: dashmap::DashMap<String, String>,
 }
 
 impl GoogleWorkspaceConnector {
@@ -218,6 +221,7 @@ impl GoogleWorkspaceConnector {
             client,
             token_provider,
             slug_to_id: dashmap::DashMap::new(),
+            id_to_slug: dashmap::DashMap::new(),
         })
     }
 
@@ -294,6 +298,7 @@ impl GoogleWorkspaceConnector {
     fn cache_slug(&self, collection: &str, slug: &str, id: &str) {
         let key = format!("{}/{}", collection, slug);
         self.slug_to_id.insert(key, id.to_string());
+        self.id_to_slug.insert(id.to_string(), format!("{}/{}", collection, slug));
     }
 
     /// Resolve a slug to its API ID. Falls back to using the slug as-is
@@ -469,6 +474,7 @@ impl GoogleWorkspaceConnector {
         out.push_str(&format!("name: \"{}\"\n", escape_yaml(name)));
         out.push_str(&format!("mimeType: \"{}\"\n", mime));
         out.push_str(&format!("modifiedTime: \"{}\"\n", modified));
+        out.push_str("operations: [read, write, draft, lock]\n");
         out.push_str("---\n\n");
         out.push_str(&body_content);
         out.push('\n');
@@ -486,7 +492,7 @@ impl GoogleWorkspaceConnector {
         let body = strip_frontmatter(content);
 
         // Check if this is a known file ID (exists in slug cache) or a new file
-        let is_existing = self.slug_to_id.iter().any(|entry| entry.value() == id);
+        let is_existing = self.id_to_slug.contains_key(id);
 
         if is_existing {
             // Update existing file via PATCH
@@ -681,6 +687,7 @@ impl GoogleWorkspaceConnector {
         out.push_str(&format!("subject: \"{}\"\n", escape_yaml(&subject)));
         out.push_str(&format!("date: \"{}\"\n", escape_yaml(&date)));
         out.push_str(&format!("labels: [{}]\n", labels_str));
+        out.push_str("operations: [read, draft]\n");
         out.push_str("---\n\n");
         out.push_str(&body);
         out.push('\n');
@@ -828,6 +835,7 @@ impl GoogleWorkspaceConnector {
         if !location.is_empty() {
             out.push_str(&format!("location: \"{}\"\n", escape_yaml(location)));
         }
+        out.push_str("operations: [read, write]\n");
         out.push_str("---\n\n");
 
         if !attendees.is_empty() {
@@ -1397,25 +1405,9 @@ fn base64_url_encode(input: &[u8]) -> String {
 }
 
 /// Strip YAML frontmatter from content bytes, returning the body.
-fn strip_frontmatter(content: &[u8]) -> &[u8] {
-    let text = match std::str::from_utf8(content) {
-        Ok(s) => s,
-        Err(_) => return content,
-    };
-
-    if !text.starts_with("---") {
-        return content;
-    }
-
-    // Find the closing ---
-    if let Some(end) = text[3..].find("\n---") {
-        let body_start = end + 3 + 4; // skip past "\n---"
-        let remaining = &text[body_start..];
-        let trimmed = remaining.trim_start_matches('\n');
-        return trimmed.as_bytes();
-    }
-
-    content
+fn strip_frontmatter(content: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(content);
+    strip_frontmatter_str(&text).as_bytes().to_vec()
 }
 
 /// Strip YAML frontmatter from a string, returning the body text.

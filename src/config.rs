@@ -11,8 +11,6 @@ pub struct TapConfig {
     pub connector_spec: Option<PathBuf>,
     /// Override the base URL defined in the spec.
     pub base_url: Option<String>,
-    /// Name of the environment variable that holds the auth token.
-    pub auth_token_env: Option<String>,
     /// Cache time-to-live in seconds.
     pub cache_ttl_secs: Option<u64>,
     /// Override the default data directory (~/.tapfs).

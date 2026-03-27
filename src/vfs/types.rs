@@ -31,6 +31,16 @@ pub enum NodeKind {
     Collection { connector: String, collection: String },
     Resource { connector: String, collection: String, resource: String, variant: ResourceVariant },
     Version { connector: String, collection: String, resource: String, version_id: Option<u64> },
+    /// Connector-level agent.md: /<connector>/agent.md
+    ConnectorAgentMd { connector: String },
+    /// Collection-level agent.md: /<connector>/<collection>/agent.md
+    CollectionAgentMd { connector: String, collection: String },
+    /// Transaction directory: /<connector>/<collection>/.tx/
+    TxDir { connector: String, collection: String },
+    /// Named transaction: /<connector>/<collection>/.tx/<name>/
+    Transaction { connector: String, collection: String, tx_name: String },
+    /// File inside a transaction
+    TxResource { connector: String, collection: String, tx_name: String, resource: String },
 }
 
 /// Resource variant.
