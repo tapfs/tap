@@ -20,6 +20,7 @@ pub struct VfsAttr {
     pub size: u64,
     pub file_type: VfsFileType,
     pub perm: u16,
+    pub mtime: Option<String>,  // RFC3339 timestamp
 }
 
 /// What a node in the filesystem represents.

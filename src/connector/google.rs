@@ -9,6 +9,8 @@
 //!
 //! Refresh tokens are exchanged via raw HTTP POST to Google's token endpoint.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
@@ -38,12 +40,21 @@ struct CredentialsFile {
     token_uri: Option<String>,
 }
 
-/// Manages access tokens with automatic refresh.
+/// Parsed credentials ready for token refresh (parsed once at init).
+struct ParsedCredentials {
+    client_id: String,
+    client_secret: String,
+    refresh_token: String,
+}
+
+/// Manages access tokens with automatic refresh and proactive expiry tracking.
 struct TokenProvider {
     /// Cached access token (may be stale).
     access_token: RwLock<Option<String>>,
-    /// Path to the credentials JSON file, if one was found.
-    credentials_path: Option<String>,
+    /// When the cached token expires (not set for env-var tokens).
+    token_expiry: RwLock<Option<std::time::Instant>>,
+    /// Pre-parsed credentials from the JSON file, if one was found.
+    credentials: Option<ParsedCredentials>,
     /// HTTP client for token refresh requests.
     client: Client,
 }
@@ -51,26 +62,29 @@ struct TokenProvider {
 #[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
-    #[allow(dead_code)]
     expires_in: Option<u64>,
 }
 
 impl TokenProvider {
     /// Create a new TokenProvider using the credential chain.
+    ///
+    /// Credentials are parsed eagerly so that refresh calls don't need to
+    /// re-read and re-parse the JSON file each time.
     fn new(client: Client) -> Self {
         // 1. Check GOOGLE_ACCESS_TOKEN env var
         let env_token = std::env::var("GOOGLE_ACCESS_TOKEN").ok();
 
-        // 2. Find credentials file
-        let cred_path = Self::find_credentials_path();
+        // 2. Find and parse credentials file
+        let credentials = Self::find_and_parse_credentials();
 
-        if let Some(ref path) = cred_path {
-            tracing::debug!(path = %path, "found Google credentials file");
+        if credentials.is_some() {
+            tracing::debug!("parsed Google credentials for token refresh");
         }
 
         Self {
             access_token: RwLock::new(env_token),
-            credentials_path: cred_path,
+            token_expiry: RwLock::new(None),
+            credentials,
             client,
         }
     }
@@ -101,59 +115,51 @@ impl TokenProvider {
         None
     }
 
-    /// Get a valid access token, refreshing if necessary.
+    /// Find and parse the credentials file once at init.
+    fn find_and_parse_credentials() -> Option<ParsedCredentials> {
+        let path = Self::find_credentials_path()?;
+        let data = std::fs::read_to_string(&path).ok()?;
+        let creds: CredentialsFile = serde_json::from_str(&data).ok()?;
+        Some(ParsedCredentials {
+            client_id: creds.client_id?,
+            client_secret: creds.client_secret?,
+            refresh_token: creds.refresh_token?,
+        })
+    }
+
+    /// Get a valid access token, refreshing proactively if close to expiry.
     async fn get_token(&self) -> Result<String> {
-        // Fast path: we already have a token cached
+        // Fast path: check if we have a non-expired token cached
         {
             let guard = self.access_token.read().await;
             if let Some(ref token) = *guard {
-                return Ok(token.clone());
+                let expiry_guard = self.token_expiry.read().await;
+                if let Some(expiry) = *expiry_guard {
+                    if std::time::Instant::now() < expiry {
+                        return Ok(token.clone());
+                    }
+                    // Token expired, fall through to refresh
+                } else {
+                    // No expiry tracked (env var token), return as-is
+                    return Ok(token.clone());
+                }
             }
         }
 
-        // Slow path: need to obtain a token from credentials file
-        let path = self
-            .credentials_path
-            .as_deref()
-            .ok_or_else(|| {
-                anyhow!(
-                    "no Google credentials found. Set GOOGLE_ACCESS_TOKEN or \
-                     provide a credentials file via GOOGLE_CREDENTIALS_FILE, \
-                     ~/.config/gws/credentials.json, or \
-                     ~/.config/gcloud/application_default_credentials.json"
-                )
-            })?;
-
-        let token = self.refresh_from_file(path).await?;
-
-        // Cache the token
-        {
-            let mut guard = self.access_token.write().await;
-            *guard = Some(token.clone());
-        }
-
-        Ok(token)
+        // Slow path: refresh the token
+        self.refresh().await
     }
 
     /// Exchange a refresh token for a new access token using Google's token endpoint.
-    async fn refresh_from_file(&self, path: &str) -> Result<String> {
-        let data = std::fs::read_to_string(path)
-            .with_context(|| format!("reading credentials file: {}", path))?;
-        let creds: CredentialsFile = serde_json::from_str(&data)
-            .with_context(|| format!("parsing credentials file: {}", path))?;
-
-        let refresh_token = creds
-            .refresh_token
-            .as_deref()
-            .ok_or_else(|| anyhow!("credentials file has no refresh_token"))?;
-        let client_id = creds
-            .client_id
-            .as_deref()
-            .ok_or_else(|| anyhow!("credentials file has no client_id"))?;
-        let client_secret = creds
-            .client_secret
-            .as_deref()
-            .ok_or_else(|| anyhow!("credentials file has no client_secret"))?;
+    async fn refresh(&self) -> Result<String> {
+        let creds = self.credentials.as_ref().ok_or_else(|| {
+            anyhow!(
+                "no Google credentials found. Set GOOGLE_ACCESS_TOKEN or \
+                 provide a credentials file via GOOGLE_CREDENTIALS_FILE, \
+                 ~/.config/gws/credentials.json, or \
+                 ~/.config/gcloud/application_default_credentials.json"
+            )
+        })?;
 
         tracing::debug!("refreshing Google access token");
 
@@ -162,9 +168,9 @@ impl TokenProvider {
             .post("https://oauth2.googleapis.com/token")
             .form(&[
                 ("grant_type", "refresh_token"),
-                ("refresh_token", refresh_token),
-                ("client_id", client_id),
-                ("client_secret", client_secret),
+                ("refresh_token", creds.refresh_token.as_str()),
+                ("client_id", creds.client_id.as_str()),
+                ("client_secret", creds.client_secret.as_str()),
             ])
             .send()
             .await
@@ -185,6 +191,18 @@ impl TokenProvider {
             .await
             .context("failed to parse token response")?;
 
+        // Cache the token
+        {
+            let mut guard = self.access_token.write().await;
+            *guard = Some(token_resp.access_token.clone());
+        }
+
+        // Store expiry at 80% of TTL for proactive refresh
+        if let Some(expires_in) = token_resp.expires_in {
+            let expiry = std::time::Instant::now() + Duration::from_secs(expires_in * 80 / 100);
+            *self.token_expiry.write().await = Some(expiry);
+        }
+
         Ok(token_resp.access_token)
     }
 
@@ -192,6 +210,7 @@ impl TokenProvider {
     async fn invalidate(&self) {
         let mut guard = self.access_token.write().await;
         *guard = None;
+        *self.token_expiry.write().await = None;
     }
 }
 
@@ -214,6 +233,10 @@ impl GoogleWorkspaceConnector {
     /// Create a new Google Workspace connector.
     pub fn new() -> Result<Self> {
         let client = Client::builder()
+            .pool_max_idle_per_host(10)
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(30))
+            .tcp_keepalive(Duration::from_secs(60))
             .build()
             .context("building HTTP client")?;
         let token_provider = TokenProvider::new(client.clone());
@@ -237,56 +260,62 @@ impl GoogleWorkspaceConnector {
         Ok(self.client.patch(url).bearer_auth(token))
     }
 
-    /// Send a GET request with auto-retry on 401 (re-fetches token once).
-    async fn get_json(&self, url: &str) -> Result<Value> {
-        let request = self.auth_get(url).await?;
-        let resp = request.send().await.with_context(|| format!("GET {}", url))?;
+    /// Send a GET request with retries on 401 (token refresh), 429 (rate
+    /// limit), and 503 (service unavailable).  Uses exponential backoff.
+    async fn send_with_retry(&self, url: &str) -> Result<reqwest::Response> {
+        let max_retries = 3u32;
+        let mut last_err = None;
 
-        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-            // Try refreshing the token once
-            self.token_provider.invalidate().await;
-            let request = self.auth_get(url).await?;
-            let resp = request.send().await.with_context(|| format!("GET {} (retry)", url))?;
-            let status = resp.status();
-            if !status.is_success() {
-                let body = resp.text().await.unwrap_or_default();
-                return Err(anyhow!("GET {} failed: HTTP {} - {}", url, status, body));
+        for attempt in 0..=max_retries {
+            if attempt > 0 {
+                let delay = Duration::from_millis(500 * 2u64.pow(attempt - 1));
+                tokio::time::sleep(delay).await;
             }
-            return resp.json().await.context("parsing JSON response");
+
+            let request = self.auth_get(url).await?;
+            let resp = request.send().await
+                .with_context(|| format!("GET {}", url))?;
+
+            match resp.status() {
+                s if s == reqwest::StatusCode::UNAUTHORIZED => {
+                    self.token_provider.invalidate().await;
+                    last_err = Some(anyhow!("GET {} unauthorized (401)", url));
+                    continue;
+                }
+                s if s == reqwest::StatusCode::TOO_MANY_REQUESTS => {
+                    // Respect Retry-After header when present.
+                    if let Some(retry_after) = resp.headers().get("retry-after") {
+                        if let Ok(secs) = retry_after.to_str().unwrap_or("5").parse::<u64>() {
+                            tokio::time::sleep(Duration::from_secs(secs)).await;
+                        }
+                    }
+                    last_err = Some(anyhow!("GET {} rate limited (429)", url));
+                    continue;
+                }
+                s if s == reqwest::StatusCode::SERVICE_UNAVAILABLE => {
+                    last_err = Some(anyhow!("GET {} service unavailable (503)", url));
+                    continue;
+                }
+                s if s.is_success() => return Ok(resp),
+                s => {
+                    let body = resp.text().await.unwrap_or_default();
+                    return Err(anyhow!("GET {} failed: HTTP {} - {}", url, s, body));
+                }
+            }
         }
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("GET {} failed: HTTP {} - {}", url, status, body));
-        }
+        Err(last_err.unwrap_or_else(|| anyhow!("GET {} failed after {} retries", url, max_retries)))
+    }
 
+    /// Send a GET request and parse the response as JSON.
+    async fn get_json(&self, url: &str) -> Result<Value> {
+        let resp = self.send_with_retry(url).await?;
         resp.json().await.context("parsing JSON response")
     }
 
     /// Send a GET request and return raw bytes (for file downloads).
     async fn get_bytes(&self, url: &str) -> Result<Vec<u8>> {
-        let request = self.auth_get(url).await?;
-        let resp = request.send().await.with_context(|| format!("GET {}", url))?;
-
-        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-            self.token_provider.invalidate().await;
-            let request = self.auth_get(url).await?;
-            let resp = request.send().await.with_context(|| format!("GET {} (retry)", url))?;
-            let status = resp.status();
-            if !status.is_success() {
-                let body = resp.text().await.unwrap_or_default();
-                return Err(anyhow!("GET {} failed: HTTP {} - {}", url, status, body));
-            }
-            return resp.bytes().await.map(|b| b.to_vec()).context("reading response bytes");
-        }
-
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("GET {} failed: HTTP {} - {}", url, status, body));
-        }
-
+        let resp = self.send_with_retry(url).await?;
         resp.bytes().await.map(|b| b.to_vec()).context("reading response bytes")
     }
 

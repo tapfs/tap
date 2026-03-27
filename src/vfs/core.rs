@@ -144,6 +144,11 @@ pub struct VirtualFs {
     pub drafts: Arc<DraftStore>,
     pub versions: Arc<VersionStore>,
     pub audit: Arc<AuditLogger>,
+    /// In-memory write buffers, keyed by inode ID. Flushed to draft store on
+    /// flush/release so that small, repeated FUSE `write()` calls (e.g. 4 KB
+    /// chunks) accumulate in RAM instead of doing O(n^2) read-modify-write
+    /// cycles on disk.
+    write_buffers: DashMap<u64, Vec<u8>>,
 }
 
 impl VirtualFs {
@@ -161,6 +166,7 @@ impl VirtualFs {
             drafts,
             versions,
             audit,
+            write_buffers: DashMap::new(),
         }
     }
 
@@ -267,6 +273,19 @@ impl VirtualFs {
         offset: u64,
         size: u32,
     ) -> Result<Vec<u8>, VfsError> {
+        // If there is a pending write buffer for this inode, serve reads from
+        // it so that a write-then-read sequence within the same open/close
+        // cycle sees the buffered data without a round-trip to disk.
+        if let Some(buf) = self.write_buffers.get(&id) {
+            let data = buf.value();
+            let off = offset as usize;
+            if off >= data.len() {
+                return Ok(Vec::new());
+            }
+            let end = std::cmp::min(off + size as usize, data.len());
+            return Ok(data[off..end].to_vec());
+        }
+
         let kind = self.nodes.get(id).ok_or(VfsError::NotFound)?;
         let data = match &kind {
             NodeKind::AgentMd => AGENT_MD_CONTENT.as_bytes().to_vec(),
@@ -315,6 +334,12 @@ impl VirtualFs {
     // -----------------------------------------------------------------------
 
     /// Write data to a file at offset. Returns bytes written.
+    ///
+    /// Data is buffered in memory (keyed by inode ID) rather than flushed to
+    /// the draft store on every call.  The buffer is written to disk when
+    /// [`flush()`] is called (typically on file close).  This turns the
+    /// previous O(n^2) read-modify-write pattern into O(n) for sequential
+    /// writes.
     pub fn write(
         &self,
         id: u64,
@@ -329,19 +354,12 @@ impl VirtualFs {
                 resource,
                 variant,
             } => {
-                match variant {
-                    ResourceVariant::Draft => {
-                        self.write_to_draft_store(connector, collection, resource, offset, data)?;
-                    }
-                    ResourceVariant::Lock => {
-                        let lslug = lock_slug(resource);
-                        self.write_to_draft_store(connector, collection, &lslug, offset, data)?;
-                    }
-                    ResourceVariant::Live => {
-                        // Write to live files by buffering to draft.
-                        self.write_to_draft_store(connector, collection, resource, offset, data)?;
-                    }
-                }
+                let slug = match variant {
+                    ResourceVariant::Lock => lock_slug(resource),
+                    _ => resource.clone(),
+                };
+
+                self.buffer_write(id, connector, collection, &slug, offset, data)?;
 
                 let _ = self.audit.record(
                     "write",
@@ -361,7 +379,7 @@ impl VirtualFs {
             }
             NodeKind::TxResource { connector, collection, tx_name, resource } => {
                 let tx_slug = format!("__tx_{}_{}", tx_name, resource);
-                self.write_to_draft_store(connector, collection, &tx_slug, offset, data)?;
+                self.buffer_write(id, connector, collection, &tx_slug, offset, data)?;
 
                 let _ = self.audit.record(
                     "write_tx",
@@ -403,7 +421,7 @@ impl VirtualFs {
                 // Try to pre-populate from live content (copy-on-write)
                 let cache_key = format!("{}/{}/{}", connector, collection, resource);
                 let initial_content = if let Some(cached) = self.cache.get_resource(&cache_key) {
-                    cached.data
+                    cached.data.to_vec()
                 } else {
                     vec![]
                 };
@@ -431,6 +449,7 @@ impl VirtualFs {
                 size: 0,
                 file_type: VfsFileType::RegularFile,
                 perm: 0o644,
+                mtime: None,
             });
         }
 
@@ -450,7 +469,7 @@ impl VirtualFs {
                     // Try to pre-populate from live content (copy-on-write)
                     let cache_key = format!("{}/{}/{}", connector, collection, slug);
                     let initial_content = if let Some(cached) = self.cache.get_resource(&cache_key) {
-                        cached.data
+                        cached.data.to_vec()
                     } else {
                         vec![]
                     };
@@ -523,6 +542,7 @@ impl VirtualFs {
             size: 0,
             file_type: VfsFileType::RegularFile,
             perm: 0o644,
+            mtime: None,
         })
     }
 
@@ -709,14 +729,38 @@ impl VirtualFs {
     // flush (auto-promote live files with pending writes)
     // -----------------------------------------------------------------------
 
-    /// Flush a file. For live files with pending draft content, auto-promote
-    /// (push to API and clean up the draft).
+    /// Flush a file.
+    ///
+    /// 1. If there is an in-memory write buffer for this inode, persist it to
+    ///    the draft store (single write, not read-modify-write).
+    /// 2. For live files with pending draft content, auto-promote (push to API
+    ///    and clean up the draft).
     pub fn flush(
         &self,
         rt: &tokio::runtime::Handle,
         id: u64,
     ) -> Result<(), VfsError> {
         let kind = self.nodes.get(id).ok_or(VfsError::NotFound)?;
+
+        // Step 1: flush the in-memory write buffer to the draft store.
+        if let Some((_, buf)) = self.write_buffers.remove(&id) {
+            if let NodeKind::Resource { connector, collection, resource, variant } = &kind {
+                let slug = match variant {
+                    ResourceVariant::Lock => lock_slug(resource),
+                    _ => resource.clone(),
+                };
+                self.drafts
+                    .write_draft(connector, collection, &slug, &buf)
+                    .map_err(|e| VfsError::IoError(e.to_string()))?;
+            } else if let NodeKind::TxResource { connector, collection, tx_name, resource } = &kind {
+                let tx_slug = format!("__tx_{}_{}", tx_name, resource);
+                self.drafts
+                    .write_draft(connector, collection, &tx_slug, &buf)
+                    .map_err(|e| VfsError::IoError(e.to_string()))?;
+            }
+        }
+
+        // Step 2: auto-promote live files that have a draft on disk.
         if let NodeKind::Resource {
             connector,
             collection,
@@ -724,7 +768,6 @@ impl VirtualFs {
             variant: ResourceVariant::Live,
         } = &kind
         {
-            // Check if there's a pending draft for this live file
             if self.drafts.has_draft(connector, collection, resource) {
                 let data = self
                     .drafts
@@ -766,31 +809,88 @@ impl VirtualFs {
     }
 
     // -----------------------------------------------------------------------
+    // truncate
+    // -----------------------------------------------------------------------
+
+    /// Truncate (or extend) a file to `new_size` bytes.
+    ///
+    /// Operates on the in-memory write buffer when one exists, otherwise falls
+    /// through to the draft store on disk.
+    pub fn truncate(&self, id: u64, new_size: u64) -> Result<(), VfsError> {
+        let kind = self.nodes.get(id).ok_or(VfsError::NotFound)?;
+        let new_len = new_size as usize;
+
+        // If there is a write buffer, truncate/extend it in place.
+        if let Some(mut buf) = self.write_buffers.get_mut(&id) {
+            buf.value_mut().resize(new_len, 0);
+            return Ok(());
+        }
+
+        // No write buffer -- apply to the draft store directly.
+        match &kind {
+            NodeKind::Resource { connector, collection, resource, variant } => {
+                let slug = match variant {
+                    ResourceVariant::Lock => lock_slug(resource),
+                    _ => resource.clone(),
+                };
+                let mut data = self.drafts
+                    .read_draft(connector, collection, &slug)
+                    .map_err(|e| VfsError::IoError(e.to_string()))?
+                    .unwrap_or_default();
+                data.resize(new_len, 0);
+                self.drafts
+                    .write_draft(connector, collection, &slug, &data)
+                    .map_err(|e| VfsError::IoError(e.to_string()))?;
+            }
+            NodeKind::TxResource { connector, collection, tx_name, resource } => {
+                let tx_slug = format!("__tx_{}_{}", tx_name, resource);
+                let mut data = self.drafts
+                    .read_draft(connector, collection, &tx_slug)
+                    .map_err(|e| VfsError::IoError(e.to_string()))?
+                    .unwrap_or_default();
+                data.resize(new_len, 0);
+                self.drafts
+                    .write_draft(connector, collection, &tx_slug, &data)
+                    .map_err(|e| VfsError::IoError(e.to_string()))?;
+            }
+            _ => {} // ignore truncation on non-file nodes
+        }
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
 
-    fn write_to_draft_store(
+    /// Buffer a write in memory.  On the first write to an inode the buffer is
+    /// seeded from the existing draft on disk (if any) so that partial
+    /// overwrites preserve the untouched prefix/suffix.
+    fn buffer_write(
         &self,
+        id: u64,
         connector: &str,
         collection: &str,
         slug: &str,
         offset: u64,
         data: &[u8],
     ) -> Result<(), VfsError> {
-        let mut buf = self
-            .drafts
-            .read_draft(connector, collection, slug)
-            .map_err(|e| VfsError::IoError(e.to_string()))?
-            .unwrap_or_default();
+        let mut entry = self.write_buffers.entry(id).or_insert_with(|| {
+            // Seed from existing draft content (if any) so that a partial
+            // overwrite doesn't lose bytes outside the written range.
+            self.drafts
+                .read_draft(connector, collection, slug)
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+        });
+        let buf = entry.value_mut();
         let off = offset as usize;
         let needed = off + data.len();
         if buf.len() < needed {
             buf.resize(needed, 0);
         }
         buf[off..off + data.len()].copy_from_slice(data);
-        self.drafts
-            .write_draft(connector, collection, slug, &buf)
-            .map_err(|e| VfsError::IoError(e.to_string()))
+        Ok(())
     }
 
     fn kind_to_attr(&self, id: u64, kind: &NodeKind) -> VfsAttr {
@@ -801,6 +901,7 @@ impl VirtualFs {
                     size: 0,
                     file_type: VfsFileType::Directory,
                     perm: 0o755,
+                    mtime: None,
                 }
             }
             NodeKind::TxDir { .. } | NodeKind::Transaction { .. } => {
@@ -809,6 +910,7 @@ impl VirtualFs {
                     size: 0,
                     file_type: VfsFileType::Directory,
                     perm: 0o755,
+                    mtime: None,
                 }
             }
             NodeKind::AgentMd => VfsAttr {
@@ -816,18 +918,21 @@ impl VirtualFs {
                 size: AGENT_MD_CONTENT.len() as u64,
                 file_type: VfsFileType::RegularFile,
                 perm: 0o644,
+                mtime: None,
             },
             NodeKind::ConnectorAgentMd { .. } => VfsAttr {
                 id,
                 size: 4096,
                 file_type: VfsFileType::RegularFile,
                 perm: 0o644,
+                mtime: None,
             },
             NodeKind::CollectionAgentMd { .. } => VfsAttr {
                 id,
                 size: 4096,
                 file_type: VfsFileType::RegularFile,
                 perm: 0o644,
+                mtime: None,
             },
             NodeKind::Resource {
                 connector,
@@ -835,7 +940,12 @@ impl VirtualFs {
                 resource,
                 variant,
             } => {
-                let size = self.resource_size(connector, collection, resource, variant);
+                // Check write buffer first for accurate size during writes.
+                let size = if let Some(buf) = self.write_buffers.get(&id) {
+                    buf.value().len() as u64
+                } else {
+                    self.resource_size(connector, collection, resource, variant)
+                };
                 let perm = match variant {
                     ResourceVariant::Lock => 0o444,
                     _ => 0o644,
@@ -845,6 +955,7 @@ impl VirtualFs {
                     size,
                     file_type: VfsFileType::RegularFile,
                     perm,
+                    mtime: None,
                 }
             }
             NodeKind::Version { connector, collection, resource, version_id } => {
@@ -862,18 +973,25 @@ impl VirtualFs {
                     size,
                     file_type: VfsFileType::RegularFile,
                     perm: 0o444, // read-only, immutable
+                    mtime: None,
                 }
             }
             NodeKind::TxResource { connector, collection, tx_name, resource } => {
-                let tx_slug = format!("__tx_{}_{}", tx_name, resource);
-                let size = self.drafts
-                    .draft_size(connector, collection, &tx_slug)
-                    .unwrap_or(0);
+                // Check write buffer first for accurate size during writes.
+                let size = if let Some(buf) = self.write_buffers.get(&id) {
+                    buf.value().len() as u64
+                } else {
+                    let tx_slug = format!("__tx_{}_{}", tx_name, resource);
+                    self.drafts
+                        .draft_size(connector, collection, &tx_slug)
+                        .unwrap_or(0)
+                };
                 VfsAttr {
                     id,
                     size,
                     file_type: VfsFileType::RegularFile,
                     perm: 0o644,
+                    mtime: None,
                 }
             }
         }
@@ -1395,10 +1513,11 @@ impl VirtualFs {
                     .ok_or(VfsError::NotFound)
             }
             ResourceVariant::Live => {
-                // Check cache first.
+                // Check cache first.  Bytes::clone() is O(1) (refcount bump),
+                // so pulling from cache no longer deep-copies the whole buffer.
                 let cache_key = format!("{}/{}/{}", connector, collection, resource);
                 if let Some(cached) = self.cache.get_resource(&cache_key) {
-                    return Ok(cached.data);
+                    return Ok(cached.data.to_vec());
                 }
 
                 // Fetch from connector.
@@ -1412,11 +1531,11 @@ impl VirtualFs {
 
                 let data = result.content;
 
-                // Cache the result.
+                // Cache the result, converting Vec<u8> -> Bytes for O(1) clones.
                 self.cache.put_resource(
                     &cache_key,
                     crate::cache::store::Resource {
-                        data: data.clone(),
+                        data: bytes::Bytes::from(data.clone()),
                     },
                 );
 
@@ -1454,6 +1573,7 @@ impl VirtualFs {
                     size: 0,
                     file_type: VfsFileType::Directory,
                     perm: 0o755,
+                    mtime: None,
                 })
             }
             _ => Err(VfsError::PermissionDenied),

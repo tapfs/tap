@@ -73,7 +73,12 @@ pub async fn run(config: TapConfig) -> Result<()> {
         tracing::info!(name = %spec.name, base_url = %spec.base_url, "loaded connector spec");
 
         // Create reqwest client
-        let client = reqwest::Client::builder().build()?;
+        let client = reqwest::Client::builder()
+            .pool_max_idle_per_host(10)
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(30))
+            .tcp_keepalive(Duration::from_secs(60))
+            .build()?;
 
         // Create REST connector from spec
         let rest = RestConnector::new(spec, client);
@@ -176,7 +181,11 @@ pub async fn run(config: TapConfig) -> Result<()> {
     let mounts_path = config.mounts_path();
 
     tokio::task::spawn_blocking(move || {
-        let fs = TapFs { vfs, rt };
+        let fs = TapFs {
+            vfs,
+            rt,
+            uid: unsafe { libc::getuid() },
+        };
         if let Err(e) = fuser::mount2(fs, &mount_point_clone, &options) {
             tracing::error!("FUSE mount error: {}", e);
         }

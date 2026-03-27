@@ -25,6 +25,7 @@ const TTL: Duration = Duration::from_secs(1);
 pub struct TapFs {
     pub vfs: Arc<VirtualFs>,
     pub rt: tokio::runtime::Handle,
+    pub uid: u32, // UID of the user who mounted the filesystem
 }
 
 // ---------------------------------------------------------------------------
@@ -33,7 +34,11 @@ pub struct TapFs {
 
 /// Convert a [`VfsAttr`] to a [`fuser::FileAttr`].
 fn to_fuse_attr(attr: &VfsAttr) -> fuser::FileAttr {
-    let now = SystemTime::now();
+    let ts = attr.mtime
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| std::time::UNIX_EPOCH + std::time::Duration::from_secs(dt.timestamp() as u64))
+        .unwrap_or_else(SystemTime::now);
     let kind = match attr.file_type {
         VfsFileType::Directory => FileType::Directory,
         VfsFileType::RegularFile => FileType::RegularFile,
@@ -46,10 +51,10 @@ fn to_fuse_attr(attr: &VfsAttr) -> fuser::FileAttr {
         ino: attr.id,
         size: attr.size,
         blocks: (attr.size + 511) / 512,
-        atime: now,
-        mtime: now,
-        ctime: now,
-        crtime: now,
+        atime: ts,
+        mtime: ts,
+        ctime: ts,
+        crtime: ts,
         kind,
         perm: attr.perm,
         nlink,
@@ -370,31 +375,39 @@ impl Filesystem for TapFs {
     }
 
     // -----------------------------------------------------------------------
-    // open -- allow any open, no file handle tracking
+    // open -- allow only the mounting user and root
     // -----------------------------------------------------------------------
 
     fn open(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         _ino: u64,
         _flags: i32,
         reply: fuser::ReplyOpen,
     ) {
-        reply.opened(0, 0);
+        if req.uid() == self.uid || req.uid() == 0 {
+            reply.opened(0, 0);
+        } else {
+            reply.error(libc::EACCES);
+        }
     }
 
     // -----------------------------------------------------------------------
-    // opendir -- allow any directory open
+    // opendir -- allow only the mounting user and root
     // -----------------------------------------------------------------------
 
     fn opendir(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         _ino: u64,
         _flags: i32,
         reply: fuser::ReplyOpen,
     ) {
-        reply.opened(0, 0);
+        if req.uid() == self.uid || req.uid() == 0 {
+            reply.opened(0, 0);
+        } else {
+            reply.error(libc::EACCES);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -422,13 +435,16 @@ impl Filesystem for TapFs {
     fn release(
         &mut self,
         _req: &Request<'_>,
-        _ino: u64,
+        ino: u64,
         _fh: u64,
         _flags: i32,
         _lock_owner: Option<u64>,
         _flush: bool,
         reply: ReplyEmpty,
     ) {
+        // Flush any remaining in-memory write buffer to the draft store so
+        // data is not lost if the kernel skipped an explicit flush.
+        let _ = self.vfs.flush(&self.rt, ino);
         reply.ok();
     }
 
@@ -454,7 +470,7 @@ impl Filesystem for TapFs {
         _mode: Option<u32>,
         _uid: Option<u32>,
         _gid: Option<u32>,
-        _size: Option<u64>,
+        size: Option<u64>,
         _atime: Option<fuser::TimeOrNow>,
         _mtime: Option<fuser::TimeOrNow>,
         _ctime: Option<std::time::SystemTime>,
@@ -465,7 +481,14 @@ impl Filesystem for TapFs {
         _flags: Option<u32>,
         reply: ReplyAttr,
     ) {
-        // Return current attrs unchanged — we accept but ignore attribute changes.
+        // Handle truncation when size is set
+        if let Some(new_size) = size {
+            if let Err(e) = self.vfs.truncate(ino, new_size) {
+                reply.error(to_errno(e));
+                return;
+            }
+        }
+        // Return current attrs
         match self.vfs.getattr(ino) {
             Ok(attr) => reply.attr(&TTL, &to_fuse_attr(&attr)),
             Err(e) => reply.error(to_errno(e)),
@@ -473,16 +496,20 @@ impl Filesystem for TapFs {
     }
 
     // -----------------------------------------------------------------------
-    // access -- allow everything
+    // access -- only allow the mounting user and root
     // -----------------------------------------------------------------------
 
     fn access(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         _ino: u64,
         _mask: i32,
         reply: ReplyEmpty,
     ) {
-        reply.ok();
+        if req.uid() == self.uid || req.uid() == 0 {
+            reply.ok();
+        } else {
+            reply.error(libc::EACCES);
+        }
     }
 }

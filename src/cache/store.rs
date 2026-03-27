@@ -4,9 +4,12 @@ use std::time::{Duration, Instant};
 use crate::connector::traits::ResourceMeta;
 
 /// The full content of a fetched resource.
+///
+/// Uses `bytes::Bytes` so that cloning is O(1) (refcount bump) instead
+/// of deep-copying the entire buffer on every cache hit.
 #[derive(Debug, Clone)]
 pub struct Resource {
-    pub data: Vec<u8>,
+    pub data: bytes::Bytes,
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -133,15 +136,15 @@ mod tests {
     #[test]
     fn put_and_get_resource() {
         let cache = Cache::new(Duration::from_secs(60));
-        cache.put_resource("k", Resource { data: vec![1, 2, 3] });
+        cache.put_resource("k", Resource { data: vec![1u8, 2, 3].into() });
         let r = cache.get_resource("k").unwrap();
-        assert_eq!(r.data, vec![1, 2, 3]);
+        assert_eq!(&r.data[..], &[1, 2, 3]);
     }
 
     #[test]
     fn expired_resource_returns_none() {
         let cache = Cache::new(Duration::from_millis(10));
-        cache.put_resource("k", Resource { data: vec![1] });
+        cache.put_resource("k", Resource { data: vec![1u8].into() });
         thread::sleep(Duration::from_millis(30));
         assert!(cache.get_resource("k").is_none());
     }
@@ -182,7 +185,7 @@ mod tests {
     #[test]
     fn invalidate_removes_both() {
         let cache = Cache::new(Duration::from_secs(60));
-        cache.put_resource("k", Resource { data: vec![1] });
+        cache.put_resource("k", Resource { data: vec![1u8].into() });
         cache.put_metadata("k", vec![]);
         cache.invalidate("k");
         assert!(cache.get_resource("k").is_none());
@@ -192,11 +195,11 @@ mod tests {
     #[test]
     fn evict_expired_cleans_up() {
         let cache = Cache::new(Duration::from_millis(10));
-        cache.put_resource("a", Resource { data: vec![1] });
+        cache.put_resource("a", Resource { data: vec![1u8].into() });
         cache.put_metadata("b", vec![]);
         thread::sleep(Duration::from_millis(30));
         // Add a fresh entry that should survive eviction.
-        cache.put_resource("c", Resource { data: vec![2] });
+        cache.put_resource("c", Resource { data: vec![2u8].into() });
 
         cache.evict_expired();
 
