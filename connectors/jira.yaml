@@ -1,0 +1,27 @@
+name: jira
+base_url: "https://your-domain.atlassian.net"
+auth:
+  type: basic
+  token_env: JIRA_API_TOKEN
+collections:
+  - name: issues
+    list_endpoint: "/rest/api/3/search?jql=assignee=currentUser()+ORDER+BY+updated+DESC&maxResults=50"
+    get_endpoint: "/rest/api/3/issue/{id}"
+    update_endpoint: "/rest/api/3/issue/{id}"
+    id_field: "key"
+    slug_field: "key"
+    title_field: "fields.summary"
+    list_root: "issues"
+  - name: projects
+    list_endpoint: "/rest/api/3/project"
+    get_endpoint: "/rest/api/3/project/{id}"
+    id_field: "key"
+    slug_field: "key"
+    title_field: "name"
+  - name: boards
+    list_endpoint: "/rest/agile/1.0/board?maxResults=50"
+    get_endpoint: "/rest/agile/1.0/board/{id}"
+    id_field: "id"
+    slug_field: "name"
+    title_field: "name"
+    list_root: "values"

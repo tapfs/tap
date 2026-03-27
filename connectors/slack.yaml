@@ -1,0 +1,27 @@
+name: slack
+base_url: "https://slack.com/api"
+auth:
+  type: bearer
+  token_env: SLACK_BOT_TOKEN
+collections:
+  - name: channels
+    list_endpoint: "/conversations.list?types=public_channel,private_channel&limit=200"
+    get_endpoint: "/conversations.info?channel={id}"
+    id_field: "id"
+    slug_field: "name"
+    title_field: "name"
+    list_root: "channels"
+  - name: messages
+    list_endpoint: "/conversations.history?channel=general&limit=50"
+    get_endpoint: "/conversations.history?channel={id}&limit=1"
+    id_field: "ts"
+    slug_field: "ts"
+    title_field: "text"
+    list_root: "messages"
+  - name: users
+    list_endpoint: "/users.list?limit=200"
+    get_endpoint: "/users.info?user={id}"
+    id_field: "id"
+    slug_field: "name"
+    title_field: "real_name"
+    list_root: "members"

@@ -1,0 +1,30 @@
+name: github
+base_url: "https://api.github.com"
+auth:
+  type: bearer
+  token_env: GITHUB_TOKEN
+collections:
+  - name: repos
+    list_endpoint: "/user/repos?sort=updated&per_page=100"
+    get_endpoint: "/repos/{id}"
+    id_field: "full_name"
+    slug_field: "name"
+    title_field: "full_name"
+  - name: issues
+    list_endpoint: "/issues?filter=assigned&state=open&per_page=100"
+    get_endpoint: "/repos/{id}"
+    id_field: "number"
+    slug_field: "number"
+    title_field: "title"
+  - name: notifications
+    list_endpoint: "/notifications?per_page=50"
+    get_endpoint: "/notifications/threads/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "subject.title"
+  - name: gists
+    list_endpoint: "/gists?per_page=50"
+    get_endpoint: "/gists/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "description"

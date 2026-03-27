@@ -1,0 +1,28 @@
+name: pagerduty
+base_url: "https://api.pagerduty.com"
+auth:
+  type: bearer
+  token_env: PAGERDUTY_API_TOKEN
+collections:
+  - name: incidents
+    list_endpoint: "/incidents?sort_by=created_at:desc&limit=100"
+    get_endpoint: "/incidents/{id}"
+    update_endpoint: "/incidents/{id}"
+    id_field: "id"
+    slug_field: "incident_number"
+    title_field: "title"
+    list_root: "incidents"
+  - name: services
+    list_endpoint: "/services?limit=100"
+    get_endpoint: "/services/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "name"
+    list_root: "services"
+  - name: oncalls
+    list_endpoint: "/oncalls?limit=100"
+    get_endpoint: "/oncalls?schedule_ids[]={id}"
+    id_field: "schedule.id"
+    slug_field: "schedule.id"
+    title_field: "user.summary"
+    list_root: "oncalls"

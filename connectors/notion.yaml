@@ -1,0 +1,21 @@
+name: notion
+base_url: "https://api.notion.com"
+auth:
+  type: bearer
+  token_env: NOTION_API_TOKEN
+collections:
+  - name: pages
+    list_endpoint: "/v1/search"
+    get_endpoint: "/v1/pages/{id}"
+    update_endpoint: "/v1/pages/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "properties.title.title.0.plain_text"
+    list_root: "results"
+  - name: databases
+    list_endpoint: "/v1/search"
+    get_endpoint: "/v1/databases/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "title.0.plain_text"
+    list_root: "results"

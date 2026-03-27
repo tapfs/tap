@@ -16,6 +16,8 @@ pub struct RestConnector {
     spec: ConnectorSpec,
     client: Client,
     token: Option<String>,
+    /// Maps "collection/slug" → API resource ID for endpoint substitution.
+    slug_to_id: dashmap::DashMap<String, String>,
 }
 
 impl RestConnector {
@@ -34,6 +36,7 @@ impl RestConnector {
             spec,
             client,
             token,
+            slug_to_id: dashmap::DashMap::new(),
         }
     }
 
@@ -62,8 +65,11 @@ impl RestConnector {
             .ok_or_else(|| anyhow!("collection '{}' not found in spec '{}'", name, self.spec.name))
     }
 
-    /// Add authentication headers to a request builder.
+    /// Add authentication and standard headers to a request builder.
     fn authenticate(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let builder = builder
+            .header("User-Agent", "tapfs/0.1")
+            .header("Accept", "application/json");
         match (&self.spec.auth, &self.token) {
             (Some(auth), Some(token)) => match auth.auth_type.as_str() {
                 "bearer" => builder.bearer_auth(token),
@@ -106,17 +112,15 @@ impl RestConnector {
         let slug_field = coll.slug_field.as_deref().unwrap_or(id_field);
         let title_field = coll.title_field.as_deref();
 
-        let id = item
-            .get(id_field)
+        let id = get_nested(item, id_field)
             .map(|v| json_value_to_string(v))
             .unwrap_or_default();
 
-        let slug = item
-            .get(slug_field)
-            .map(|v| json_value_to_string(v))
-            .unwrap_or_else(|| id.clone());
+        let slug = get_nested(item, slug_field)
+            .map(|v| sanitize_slug(&json_value_to_string(v)))
+            .unwrap_or_else(|| sanitize_slug(&id));
 
-        let title = title_field.and_then(|f| item.get(f).map(|v| json_value_to_string(v)));
+        let title = title_field.and_then(|f| get_nested(item, f).map(|v| json_value_to_string(v)));
 
         let updated_at = item
             .get("updated_at")
@@ -205,6 +209,24 @@ impl RestConnector {
     }
 }
 
+/// Sanitize a string for use as a filesystem slug.
+fn sanitize_slug(s: &str) -> String {
+    s.replace('/', "-")
+        .replace('\\', "-")
+        .replace('\0', "")
+        .trim()
+        .to_string()
+}
+
+/// Navigate a dotted path like "properties.name" into a JSON value.
+fn get_nested<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
+    let mut current = value;
+    for segment in path.split('.') {
+        current = current.get(segment)?;
+    }
+    Some(current)
+}
+
 /// Convert a serde_json Value to a display string (without quotes for strings).
 fn json_value_to_string(v: &Value) -> String {
     match v {
@@ -261,17 +283,29 @@ impl Connector for RestConnector {
 
         let items = Self::extract_list(&json, coll.list_root.as_deref())?;
 
-        let metas = items
+        let metas: Vec<ResourceMeta> = items
             .iter()
             .map(|item| Self::extract_meta(item, coll))
             .collect();
+
+        // Cache slug → ID mappings for read/write resolution
+        for m in &metas {
+            if m.slug != m.id {
+                let key = format!("{}/{}", collection, m.slug);
+                self.slug_to_id.insert(key, m.id.clone());
+            }
+        }
 
         Ok(metas)
     }
 
     async fn read_resource(&self, collection: &str, id: &str) -> Result<Resource> {
         let coll = self.find_collection(collection)?;
-        let path = Self::substitute_id(&coll.get_endpoint, id);
+        let resolved_id = self.slug_to_id
+            .get(&format!("{}/{}", collection, id))
+            .map(|v| v.clone())
+            .unwrap_or_else(|| id.to_string());
+        let path = Self::substitute_id(&coll.get_endpoint, &resolved_id);
         let url = self.url(&path);
 
         let request = self.client.get(&url);
@@ -305,11 +339,15 @@ impl Connector for RestConnector {
 
     async fn write_resource(&self, collection: &str, id: &str, content: &[u8]) -> Result<()> {
         let coll = self.find_collection(collection)?;
+        let resolved_id = self.slug_to_id
+            .get(&format!("{}/{}", collection, id))
+            .map(|v| v.clone())
+            .unwrap_or_else(|| id.to_string());
         let endpoint = coll
             .update_endpoint
             .as_deref()
             .unwrap_or(&coll.get_endpoint);
-        let path = Self::substitute_id(endpoint, id);
+        let path = Self::substitute_id(endpoint, &resolved_id);
         let url = self.url(&path);
 
         // Parse the incoming content as JSON.  If the content looks like

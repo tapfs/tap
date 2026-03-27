@@ -1,0 +1,28 @@
+name: linear
+base_url: "https://api.linear.app"
+auth:
+  type: bearer
+  token_env: LINEAR_API_TOKEN
+collections:
+  - name: issues
+    list_endpoint: "/rest/v2/issues?limit=50&sort=updatedAt"
+    get_endpoint: "/rest/v2/issues/{id}"
+    update_endpoint: "/rest/v2/issues/{id}"
+    id_field: "id"
+    slug_field: "identifier"
+    title_field: "title"
+    list_root: "data"
+  - name: projects
+    list_endpoint: "/rest/v2/projects?limit=50"
+    get_endpoint: "/rest/v2/projects/{id}"
+    id_field: "id"
+    slug_field: "slugId"
+    title_field: "name"
+    list_root: "data"
+  - name: teams
+    list_endpoint: "/rest/v2/teams?limit=50"
+    get_endpoint: "/rest/v2/teams/{id}"
+    id_field: "id"
+    slug_field: "key"
+    title_field: "name"
+    list_root: "data"

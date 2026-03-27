@@ -1,0 +1,29 @@
+name: servicenow
+base_url: "https://your-instance.service-now.com"
+auth:
+  type: basic
+  token_env: SERVICENOW_API_TOKEN
+collections:
+  - name: incidents
+    list_endpoint: "/api/now/table/incident?sysparm_limit=100&sysparm_display_value=true&sysparm_order_by=sys_updated_on"
+    get_endpoint: "/api/now/table/incident/{id}"
+    update_endpoint: "/api/now/table/incident/{id}"
+    id_field: "sys_id"
+    slug_field: "number"
+    title_field: "short_description"
+    list_root: "result"
+  - name: changes
+    list_endpoint: "/api/now/table/change_request?sysparm_limit=100&sysparm_display_value=true"
+    get_endpoint: "/api/now/table/change_request/{id}"
+    update_endpoint: "/api/now/table/change_request/{id}"
+    id_field: "sys_id"
+    slug_field: "number"
+    title_field: "short_description"
+    list_root: "result"
+  - name: users
+    list_endpoint: "/api/now/table/sys_user?sysparm_limit=100"
+    get_endpoint: "/api/now/table/sys_user/{id}"
+    id_field: "sys_id"
+    slug_field: "user_name"
+    title_field: "name"
+    list_root: "result"

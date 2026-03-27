@@ -1,0 +1,36 @@
+name: stripe
+base_url: "https://api.stripe.com"
+auth:
+  type: bearer
+  token_env: STRIPE_API_KEY
+collections:
+  - name: customers
+    list_endpoint: "/v1/customers?limit=100"
+    get_endpoint: "/v1/customers/{id}"
+    update_endpoint: "/v1/customers/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "email"
+    list_root: "data"
+  - name: charges
+    list_endpoint: "/v1/charges?limit=100"
+    get_endpoint: "/v1/charges/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "description"
+    list_root: "data"
+  - name: subscriptions
+    list_endpoint: "/v1/subscriptions?limit=100"
+    get_endpoint: "/v1/subscriptions/{id}"
+    update_endpoint: "/v1/subscriptions/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "id"
+    list_root: "data"
+  - name: invoices
+    list_endpoint: "/v1/invoices?limit=100"
+    get_endpoint: "/v1/invoices/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "number"
+    list_root: "data"

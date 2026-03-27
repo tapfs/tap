@@ -1,0 +1,28 @@
+name: zendesk
+base_url: "https://your-subdomain.zendesk.com"
+auth:
+  type: bearer
+  token_env: ZENDESK_API_TOKEN
+collections:
+  - name: tickets
+    list_endpoint: "/api/v2/tickets?sort_by=updated_at&sort_order=desc&per_page=100"
+    get_endpoint: "/api/v2/tickets/{id}.json"
+    update_endpoint: "/api/v2/tickets/{id}.json"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "subject"
+    list_root: "tickets"
+  - name: users
+    list_endpoint: "/api/v2/users?per_page=100"
+    get_endpoint: "/api/v2/users/{id}.json"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "name"
+    list_root: "users"
+  - name: organizations
+    list_endpoint: "/api/v2/organizations?per_page=100"
+    get_endpoint: "/api/v2/organizations/{id}.json"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "name"
+    list_root: "organizations"

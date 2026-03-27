@@ -1,0 +1,37 @@
+name: hubspot
+base_url: "https://api.hubapi.com"
+auth:
+  type: bearer
+  token_env: HUBSPOT_API_TOKEN
+collections:
+  - name: contacts
+    list_endpoint: "/crm/v3/objects/contacts?limit=100&properties=firstname,lastname,email,company,phone"
+    get_endpoint: "/crm/v3/objects/contacts/{id}?properties=firstname,lastname,email,company,phone,lifecyclestage"
+    update_endpoint: "/crm/v3/objects/contacts/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "properties.email"
+    list_root: "results"
+  - name: companies
+    list_endpoint: "/crm/v3/objects/companies?limit=100&properties=name,domain,industry,annualrevenue"
+    get_endpoint: "/crm/v3/objects/companies/{id}?properties=name,domain,industry,annualrevenue,numberofemployees"
+    update_endpoint: "/crm/v3/objects/companies/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "properties.name"
+    list_root: "results"
+  - name: deals
+    list_endpoint: "/crm/v3/objects/deals?limit=100&properties=dealname,amount,dealstage,closedate"
+    get_endpoint: "/crm/v3/objects/deals/{id}?properties=dealname,amount,dealstage,closedate,pipeline"
+    update_endpoint: "/crm/v3/objects/deals/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "properties.dealname"
+    list_root: "results"
+  - name: tickets
+    list_endpoint: "/crm/v3/objects/tickets?limit=100&properties=subject,content,hs_pipeline_stage"
+    get_endpoint: "/crm/v3/objects/tickets/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "properties.subject"
+    list_root: "results"
