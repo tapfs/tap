@@ -6,7 +6,9 @@ use tracing_subscriber::EnvFilter;
 
 use crate::cache::store::Cache;
 use crate::config::TapConfig;
+use crate::connector::confluence::ConfluenceConnector;
 use crate::connector::google::GoogleWorkspaceConnector;
+use crate::connector::jira::JiraConnector;
 use crate::connector::registry::ConnectorRegistry;
 use crate::connector::rest::RestConnector;
 use crate::connector::spec::ConnectorSpec;
@@ -40,11 +42,19 @@ pub async fn run(config: TapConfig) -> Result<()> {
     );
 
     let audited: Arc<dyn crate::connector::traits::Connector> = if config.connector_name == "google" {
-        // Google Workspace connector — no spec file needed
         tracing::info!("initializing Google Workspace connector");
-        let google = GoogleWorkspaceConnector::new()
-            .context("creating Google Workspace connector")?;
-        let inner: Arc<dyn crate::connector::traits::Connector> = Arc::new(google);
+        let inner: Arc<dyn crate::connector::traits::Connector> =
+            Arc::new(GoogleWorkspaceConnector::new().context("creating Google connector")?);
+        Arc::new(AuditedConnector::new(inner, audit.clone()))
+    } else if config.connector_name == "jira" {
+        tracing::info!("initializing Jira connector");
+        let inner: Arc<dyn crate::connector::traits::Connector> =
+            Arc::new(JiraConnector::new().context("creating Jira connector")?);
+        Arc::new(AuditedConnector::new(inner, audit.clone()))
+    } else if config.connector_name == "confluence" {
+        tracing::info!("initializing Confluence connector");
+        let inner: Arc<dyn crate::connector::traits::Connector> =
+            Arc::new(ConfluenceConnector::new().context("creating Confluence connector")?);
         Arc::new(AuditedConnector::new(inner, audit.clone()))
     } else {
         // Generic REST connector from YAML spec
