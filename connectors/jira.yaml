@@ -5,7 +5,7 @@ auth:
   token_env: JIRA_API_TOKEN
 collections:
   - name: issues
-    list_endpoint: "/rest/api/3/search?jql=assignee=currentUser()+ORDER+BY+updated+DESC&maxResults=50"
+    list_endpoint: "/rest/api/3/search/jql?jql=assignee=currentUser()+ORDER+BY+updated+DESC&maxResults=50"
     get_endpoint: "/rest/api/3/issue/{id}"
     update_endpoint: "/rest/api/3/issue/{id}"
     id_field: "key"

@@ -57,7 +57,7 @@ impl JiraConnector {
 
     async fn list_my_issues(&self) -> Result<Vec<ResourceMeta>> {
         let url = format!(
-            "{}/rest/api/3/search?jql=assignee=currentUser()+ORDER+BY+updated+DESC\
+            "{}/rest/api/3/search/jql?jql=assignee=currentUser()+ORDER+BY+updated+DESC\
              &maxResults=100\
              &fields=key,summary,status,assignee,priority,updated",
             self.auth.base_url
@@ -455,7 +455,7 @@ impl JiraConnector {
 
         // Fetch recent issues for this project
         let issues_url = format!(
-            "{}/rest/api/3/search?jql=project={}+ORDER+BY+updated+DESC\
+            "{}/rest/api/3/search/jql?jql=project={}+ORDER+BY+updated+DESC\
              &maxResults=20&fields=key,summary,status,updated",
             self.auth.base_url, project_key
         );
