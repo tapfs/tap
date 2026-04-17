@@ -48,12 +48,12 @@ ARCH="$(uname -m)"  # arm64 or x86_64
 # ---------------------------------------------------------------------------
 echo "==> Building Rust cdylib ($CARGO_PROFILE) ..."
 
-CARGO_FLAGS=()
+CARGO_FLAGS=(--no-default-features)
 if [[ "$CARGO_PROFILE" == "release" ]]; then
     CARGO_FLAGS+=(--release)
 fi
 
-(cd "$PROJECT_ROOT" && cargo build "${CARGO_FLAGS[@]}")
+(cd "$PROJECT_ROOT" && cargo build --lib "${CARGO_FLAGS[@]}")
 
 if [[ ! -f "$RUST_LIB_DIR/$DYLIB_NAME" ]]; then
     echo "ERROR: $RUST_LIB_DIR/$DYLIB_NAME not found after cargo build" >&2
@@ -75,6 +75,9 @@ SWIFT_FILES=(
 
 EXT_BINARY="$BUILD_DIR/TapFSProvider"
 
+# File Provider extensions are loaded by the system -- the entry point is
+# NSExtensionPrincipalClass from Info.plist, not main(). We link as an
+# executable with _NSExtensionMain as the entry point.
 swiftc \
     -target "${ARCH}-apple-macosx13.0" \
     $SWIFT_OPT \
@@ -86,7 +89,8 @@ swiftc \
     -ltapfs \
     -framework FileProvider \
     -framework Foundation \
-    -Xlinker -bundle \
+    -framework ExtensionFoundation \
+    -Xlinker -e -Xlinker _NSExtensionMain \
     "${SWIFT_FILES[@]}" \
     -o "$EXT_BINARY"
 

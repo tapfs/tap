@@ -1,0 +1,100 @@
+name: TapFS
+options:
+  bundleIdPrefix: com.tapfs
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+
+settings:
+  base:
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  TapFS:
+    type: application
+    platform: macOS
+    sources:
+      - path: TapFS/HostApp
+        type: group
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tapfs.app
+        INFOPLIST_FILE: TapFS/Info.plist
+        CODE_SIGN_ENTITLEMENTS: TapFS/TapFS.entitlements
+        PRODUCT_NAME: TapFS
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: false
+        COMBINE_HIDPI_IMAGES: true
+    dependencies:
+      - target: TapFSProvider
+    postCompileScripts:
+      - script: |
+          # Copy libtapfs.dylib into Frameworks so the extension can find it at runtime
+          FRAMEWORKS_DIR="${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}"
+          mkdir -p "${FRAMEWORKS_DIR}"
+          DYLIB_SRC="${SRCROOT}/../target/release/libtapfs.dylib"
+          if [ -f "${DYLIB_SRC}" ]; then
+            cp -f "${DYLIB_SRC}" "${FRAMEWORKS_DIR}/libtapfs.dylib"
+            install_name_tool -id "@rpath/libtapfs.dylib" "${FRAMEWORKS_DIR}/libtapfs.dylib" 2>/dev/null || true
+          fi
+        name: "Copy libtapfs.dylib"
+        outputFiles:
+          - $(BUILT_PRODUCTS_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libtapfs.dylib
+
+  TapFSProvider:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: TapFS/TapFSProvider
+        excludes:
+          - "TapFSBridge.h"
+          - "*.entitlements"
+        type: group
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tapfs.app.provider
+        INFOPLIST_FILE: TapFS/TapFSProvider/Info.plist
+        CODE_SIGN_ENTITLEMENTS: TapFS/TapFSProvider/TapFSProvider.entitlements
+        PRODUCT_NAME: TapFSProvider
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: false
+        SWIFT_OBJC_BRIDGING_HEADER: TapFS/TapFSProvider/TapFSBridge.h
+        OTHER_LDFLAGS:
+          - "-L$(SRCROOT)/../target/release"
+          - "-ltapfs"
+        LIBRARY_SEARCH_PATHS:
+          - "$(SRCROOT)/../target/release"
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@executable_path/../../../../Frameworks"
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: ""
+        APPLICATION_EXTENSION_API_ONLY: true
+    preBuildScripts:
+      - script: |
+          # Fix the install name of libtapfs.dylib so the linker records @rpath
+          DYLIB="${SRCROOT}/../target/release/libtapfs.dylib"
+          if [ -f "${DYLIB}" ]; then
+            install_name_tool -id "@rpath/libtapfs.dylib" "${DYLIB}" 2>/dev/null || true
+          fi
+          # Also fix the copy in deps/ if it exists
+          for f in "${SRCROOT}"/../target/release/deps/libtapfs*.dylib; do
+            if [ -f "$f" ]; then
+              install_name_tool -id "@rpath/libtapfs.dylib" "$f" 2>/dev/null || true
+            fi
+          done
+        name: "Fix libtapfs install name"
+        basedOnDependencyAnalysis: false
+    postCompileScripts:
+      - script: |
+          # Fix any remaining absolute references to libtapfs in the extension binary
+          BINARY="${BUILT_PRODUCTS_DIR}/${EXECUTABLE_PATH}"
+          if [ -f "${BINARY}" ]; then
+            for ref in $(otool -L "${BINARY}" 2>/dev/null | grep tapfs | awk '{print $1}'); do
+              if [[ "$ref" != @* ]]; then
+                install_name_tool -change "$ref" "@rpath/libtapfs.dylib" "${BINARY}" 2>/dev/null || true
+              fi
+            done
+          fi
+        name: "Fix libtapfs rpath reference"
+        basedOnDependencyAnalysis: false

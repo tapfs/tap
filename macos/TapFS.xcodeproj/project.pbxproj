@@ -1,0 +1,512 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		17A8D15D04266E694001294F /* FileProviderEnumerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7BFCD0F0E8D3BB6DC702B2C /* FileProviderEnumerator.swift */; };
+		20631A09215AF009A8218D73 /* FileProviderItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FC5F6D889CF74B5D65389C0 /* FileProviderItem.swift */; };
+		485AC112A391FF5B1BE37003 /* TapFSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87BA52D0623D0F62A097A1CE /* TapFSApp.swift */; };
+		D5D16EADA3F3BDB4290075D1 /* TapFSProvider.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 2EB5671E8FB92168D4EBDD8C /* TapFSProvider.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		DDBC1DBBE87F675807A76B4C /* FileProviderExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F85718FDCAB7FC8884CAF5B /* FileProviderExtension.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		EC6E4003B153D7C98E3D6289 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E76986C4BE9AC207AAE0C82F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9F02F2DABDC2FB4C9CAAD2EE;
+			remoteInfo = TapFSProvider;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		7027B9DBFF4117F5B3010F45 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				D5D16EADA3F3BDB4290075D1 /* TapFSProvider.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		0FC5F6D889CF74B5D65389C0 /* FileProviderItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderItem.swift; sourceTree = "<group>"; };
+		206DCB328A7AD133A6E7D745 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		2EB5671E8FB92168D4EBDD8C /* TapFSProvider.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TapFSProvider.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		5528C9A6AA3748332B088421 /* TapFS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TapFS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		87BA52D0623D0F62A097A1CE /* TapFSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TapFSApp.swift; sourceTree = "<group>"; };
+		8F85718FDCAB7FC8884CAF5B /* FileProviderExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderExtension.swift; sourceTree = "<group>"; };
+		C7BFCD0F0E8D3BB6DC702B2C /* FileProviderEnumerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderEnumerator.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		170CD3456EDF0ACEE94E624C /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				5528C9A6AA3748332B088421 /* TapFS.app */,
+				2EB5671E8FB92168D4EBDD8C /* TapFSProvider.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		5D8DE13F239AAF6298EE42AA /* HostApp */ = {
+			isa = PBXGroup;
+			children = (
+				87BA52D0623D0F62A097A1CE /* TapFSApp.swift */,
+			);
+			path = HostApp;
+			sourceTree = "<group>";
+		};
+		839CB96B1EFA6559680D5A4D = {
+			isa = PBXGroup;
+			children = (
+				B78E0AB29DF91F808CA9CF78 /* TapFS */,
+				170CD3456EDF0ACEE94E624C /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		B753E335A38CD7D9DD97D0AE /* TapFSProvider */ = {
+			isa = PBXGroup;
+			children = (
+				C7BFCD0F0E8D3BB6DC702B2C /* FileProviderEnumerator.swift */,
+				8F85718FDCAB7FC8884CAF5B /* FileProviderExtension.swift */,
+				0FC5F6D889CF74B5D65389C0 /* FileProviderItem.swift */,
+				206DCB328A7AD133A6E7D745 /* Info.plist */,
+			);
+			path = TapFSProvider;
+			sourceTree = "<group>";
+		};
+		B78E0AB29DF91F808CA9CF78 /* TapFS */ = {
+			isa = PBXGroup;
+			children = (
+				5D8DE13F239AAF6298EE42AA /* HostApp */,
+				B753E335A38CD7D9DD97D0AE /* TapFSProvider */,
+			);
+			path = TapFS;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		9F02F2DABDC2FB4C9CAAD2EE /* TapFSProvider */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 4B6F6ABBB7D5BD7B28A8A461 /* Build configuration list for PBXNativeTarget "TapFSProvider" */;
+			buildPhases = (
+				027899681A59092145C9A7BC /* Fix libtapfs install name */,
+				47F1B8FD16E2CC61D0E16C13 /* Sources */,
+				772363BA08178E22654C1D6F /* Fix libtapfs rpath reference */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TapFSProvider;
+			packageProductDependencies = (
+			);
+			productName = TapFSProvider;
+			productReference = 2EB5671E8FB92168D4EBDD8C /* TapFSProvider.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		AD2CEA3DF58FA79DBA876DC3 /* TapFS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F27B5F3C692D7FBDA8E3C666 /* Build configuration list for PBXNativeTarget "TapFS" */;
+			buildPhases = (
+				1603DED79ABD11804B6C5F54 /* Sources */,
+				343D617130CFD8F3D5809D6F /* Copy libtapfs.dylib */,
+				7027B9DBFF4117F5B3010F45 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				7B7BC391FA12F8F9E3A925EE /* PBXTargetDependency */,
+			);
+			name = TapFS;
+			packageProductDependencies = (
+			);
+			productName = TapFS;
+			productReference = 5528C9A6AA3748332B088421 /* TapFS.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		E76986C4BE9AC207AAE0C82F /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					9F02F2DABDC2FB4C9CAAD2EE = {
+						ProvisioningStyle = Automatic;
+					};
+					AD2CEA3DF58FA79DBA876DC3 = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 3FA8EDF62B3C9CB54672427D /* Build configuration list for PBXProject "TapFS" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 839CB96B1EFA6559680D5A4D;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 170CD3456EDF0ACEE94E624C /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				AD2CEA3DF58FA79DBA876DC3 /* TapFS */,
+				9F02F2DABDC2FB4C9CAAD2EE /* TapFSProvider */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		027899681A59092145C9A7BC /* Fix libtapfs install name */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Fix libtapfs install name";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Fix the install name of libtapfs.dylib so the linker records @rpath\nDYLIB=\"${SRCROOT}/../target/release/libtapfs.dylib\"\nif [ -f \"${DYLIB}\" ]; then\n  install_name_tool -id \"@rpath/libtapfs.dylib\" \"${DYLIB}\" 2>/dev/null || true\nfi\n# Also fix the copy in deps/ if it exists\nfor f in \"${SRCROOT}\"/../target/release/deps/libtapfs*.dylib; do\n  if [ -f \"$f\" ]; then\n    install_name_tool -id \"@rpath/libtapfs.dylib\" \"$f\" 2>/dev/null || true\n  fi\ndone\n";
+		};
+		343D617130CFD8F3D5809D6F /* Copy libtapfs.dylib */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Copy libtapfs.dylib";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libtapfs.dylib",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Copy libtapfs.dylib into Frameworks so the extension can find it at runtime\nFRAMEWORKS_DIR=\"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}\"\nmkdir -p \"${FRAMEWORKS_DIR}\"\nDYLIB_SRC=\"${SRCROOT}/../target/release/libtapfs.dylib\"\nif [ -f \"${DYLIB_SRC}\" ]; then\n  cp -f \"${DYLIB_SRC}\" \"${FRAMEWORKS_DIR}/libtapfs.dylib\"\n  install_name_tool -id \"@rpath/libtapfs.dylib\" \"${FRAMEWORKS_DIR}/libtapfs.dylib\" 2>/dev/null || true\nfi\n";
+		};
+		772363BA08178E22654C1D6F /* Fix libtapfs rpath reference */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Fix libtapfs rpath reference";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Fix any remaining absolute references to libtapfs in the extension binary\nBINARY=\"${BUILT_PRODUCTS_DIR}/${EXECUTABLE_PATH}\"\nif [ -f \"${BINARY}\" ]; then\n  for ref in $(otool -L \"${BINARY}\" 2>/dev/null | grep tapfs | awk '{print $1}'); do\n    if [[ \"$ref\" != @* ]]; then\n      install_name_tool -change \"$ref\" \"@rpath/libtapfs.dylib\" \"${BINARY}\" 2>/dev/null || true\n    fi\n  done\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1603DED79ABD11804B6C5F54 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				485AC112A391FF5B1BE37003 /* TapFSApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		47F1B8FD16E2CC61D0E16C13 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				17A8D15D04266E694001294F /* FileProviderEnumerator.swift in Sources */,
+				DDBC1DBBE87F675807A76B4C /* FileProviderExtension.swift in Sources */,
+				20631A09215AF009A8218D73 /* FileProviderItem.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		7B7BC391FA12F8F9E3A925EE /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 9F02F2DABDC2FB4C9CAAD2EE /* TapFSProvider */;
+			targetProxy = EC6E4003B153D7C98E3D6289 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		7272FF26EC33DCC5F956E3A2 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = TapFS/TapFSProvider/TapFSProvider.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = TapFS/TapFSProvider/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/../../../../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/../target/release",
+				);
+				OTHER_LDFLAGS = (
+					"-L$(SRCROOT)/../target/release",
+					"-ltapfs",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.tapfs.app.provider;
+				PRODUCT_NAME = TapFSProvider;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";
+				SWIFT_OBJC_BRIDGING_HEADER = TapFS/TapFSProvider/TapFSBridge.h;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		B1554E86135DAEB1087D2725 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = TapFS/TapFSProvider/TapFSProvider.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = TapFS/TapFSProvider/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/../../../../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/../target/release",
+				);
+				OTHER_LDFLAGS = (
+					"-L$(SRCROOT)/../target/release",
+					"-ltapfs",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.tapfs.app.provider;
+				PRODUCT_NAME = TapFSProvider;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";
+				SWIFT_OBJC_BRIDGING_HEADER = TapFS/TapFSProvider/TapFSBridge.h;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		B83C090D516F3BE83E4574B3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		BCA994FA77197B14C8D15299 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		BDF463B48600CB2745D578EC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = TapFS/TapFS.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = TapFS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.tapfs.app;
+				PRODUCT_NAME = TapFS;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		D53C04A84F896AB1F10AFD05 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = TapFS/TapFS.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = TapFS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.tapfs.app;
+				PRODUCT_NAME = TapFS;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		3FA8EDF62B3C9CB54672427D /* Build configuration list for PBXProject "TapFS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BCA994FA77197B14C8D15299 /* Debug */,
+				B83C090D516F3BE83E4574B3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		4B6F6ABBB7D5BD7B28A8A461 /* Build configuration list for PBXNativeTarget "TapFSProvider" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7272FF26EC33DCC5F956E3A2 /* Debug */,
+				B1554E86135DAEB1087D2725 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		F27B5F3C692D7FBDA8E3C666 /* Build configuration list for PBXNativeTarget "TapFS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BDF463B48600CB2745D578EC /* Debug */,
+				D53C04A84F896AB1F10AFD05 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = E76986C4BE9AC207AAE0C82F /* Project object */;
+}

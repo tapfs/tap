@@ -148,22 +148,36 @@ pub unsafe extern "C" fn tapfs_init(
     // Parse the connector spec.
     let spec = match ConnectorSpec::from_yaml(yaml) {
         Ok(s) => s,
-        Err(_) => return std::ptr::null_mut(),
+        Err(e) => {
+            eprintln!("tapfs_init: failed to parse YAML spec: {}", e);
+            return std::ptr::null_mut();
+        }
     };
 
     // Create the tokio runtime used by this handle.
     let rt = match tokio::runtime::Runtime::new() {
         Ok(r) => r,
-        Err(_) => return std::ptr::null_mut(),
+        Err(e) => {
+            eprintln!("tapfs_init: failed to create tokio runtime: {}", e);
+            return std::ptr::null_mut();
+        }
     };
 
     // Ensure data directories exist.
     let drafts_dir = data_dir.join("drafts");
     let versions_dir = data_dir.join("versions");
     let audit_log = data_dir.join("audit.log");
-    let _ = std::fs::create_dir_all(&data_dir);
-    let _ = std::fs::create_dir_all(&drafts_dir);
-    let _ = std::fs::create_dir_all(&versions_dir);
+    if let Err(e) = std::fs::create_dir_all(&data_dir) {
+        eprintln!("tapfs_init: failed to create data dir {:?}: {}", data_dir, e);
+    }
+    if let Err(e) = std::fs::create_dir_all(&drafts_dir) {
+        eprintln!("tapfs_init: failed to create drafts dir: {}", e);
+    }
+    if let Err(e) = std::fs::create_dir_all(&versions_dir) {
+        eprintln!("tapfs_init: failed to create versions dir: {}", e);
+    }
+
+    eprintln!("tapfs_init: spec={}, data_dir={:?}", spec.name, data_dir);
 
     // Build subsystems.
     let client = reqwest::Client::new();
@@ -171,7 +185,10 @@ pub unsafe extern "C" fn tapfs_init(
 
     let audit = match AuditLogger::new(audit_log) {
         Ok(a) => Arc::new(a),
-        Err(_) => return std::ptr::null_mut(),
+        Err(e) => {
+            eprintln!("tapfs_init: failed to create audit logger: {}", e);
+            return std::ptr::null_mut();
+        }
     };
 
     let inner: Arc<dyn crate::connector::traits::Connector> = Arc::new(rest);
@@ -186,15 +203,25 @@ pub unsafe extern "C" fn tapfs_init(
 
     let drafts = match DraftStore::new(drafts_dir) {
         Ok(d) => Arc::new(d),
-        Err(_) => return std::ptr::null_mut(),
+        Err(e) => {
+            eprintln!("tapfs_init: failed to create draft store: {}", e);
+            return std::ptr::null_mut();
+        }
     };
 
     let versions = match VersionStore::new(versions_dir) {
         Ok(v) => Arc::new(v),
-        Err(_) => return std::ptr::null_mut(),
+        Err(e) => {
+            eprintln!("tapfs_init: failed to create version store: {}", e);
+            return std::ptr::null_mut();
+        }
     };
 
     let vfs = Arc::new(VirtualFs::new(registry, cache, drafts, versions, audit));
+
+    // Write debug status to /tmp (visible even in sandbox)
+    let _ = std::fs::write("/tmp/tapfs-init.log",
+        format!("tapfs_init OK: spec={}, data_dir={:?}\n", "rest", data_dir));
 
     let handle = Box::new(TapFsHandle { vfs, rt });
     Box::into_raw(handle)

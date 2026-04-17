@@ -69,10 +69,21 @@ pub struct NodeTable {
 impl NodeTable {
     /// Create a new node table with the root node (ID 1) pre-allocated.
     pub fn new() -> Self {
+        // Start at a high random-ish offset so node IDs don't collide with
+        // stale entries from previous File Provider Extension sessions.
+        // The macOS fileproviderd caches item identifiers across restarts;
+        // small sequential IDs (2, 3, 4...) from one session conflict with
+        // different items in the next session.
+        let epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let base = (epoch % 1_000_000) * 1000 + 1000; // e.g., 735_421_000
+
         let table = Self {
             entries: DashMap::new(),
             reverse: DashMap::new(),
-            next_id: AtomicU64::new(2), // 1 is reserved for root
+            next_id: AtomicU64::new(base),
         };
         table.entries.insert(1, NodeKind::Root);
         table.reverse.insert(NodeKind::Root, 1);

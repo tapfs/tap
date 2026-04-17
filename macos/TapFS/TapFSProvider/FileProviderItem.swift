@@ -106,9 +106,11 @@ class FileProviderItem: NSObject, NSFileProviderItem {
     }
 
     var itemVersion: NSFileProviderItemVersion {
-        // Use the file size as a rough content version; metadata version is always 1.
-        let contentData = withUnsafeBytes(of: fileSize) { Data($0) }
-        let metaData = Data([0x01])
+        // Use the node ID as a stable version. This prevents fileproviderd from
+        // thinking items changed (and removing them) when the size differs
+        // between placeholder and fetched content.
+        let contentData = withUnsafeBytes(of: nodeId) { Data($0) }
+        let metaData = withUnsafeBytes(of: nodeId) { Data($0) }
         return NSFileProviderItemVersion(contentVersion: contentData, metadataVersion: metaData)
     }
 }

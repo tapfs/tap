@@ -13,14 +13,13 @@ class TapFSEnumerator: NSObject, NSFileProviderEnumerator {
 
     private let handle: OpaquePointer
     private let nodeId: UInt64
+    private weak var ext: FileProviderExtension?
     private let logger = Logger(subsystem: "com.tapfs.provider", category: "enumerator")
 
-    /// - Parameters:
-    ///   - handle: Opaque pointer to the Rust TapFsHandle.
-    ///   - nodeId: The VFS node ID of the directory to enumerate.
-    init(handle: OpaquePointer, nodeId: UInt64) {
+    init(handle: OpaquePointer, nodeId: UInt64, extension ext: FileProviderExtension? = nil) {
         self.handle = handle
         self.nodeId = nodeId
+        self.ext = ext
         super.init()
     }
 
@@ -53,9 +52,15 @@ class TapFSEnumerator: NSObject, NSFileProviderEnumerator {
             guard let cName = entry.name else { continue }
             let name = String(cString: cName)
 
+            // Skip . and .. directory entries — File Provider doesn't use them.
+            if name == "." || name == ".." { continue }
+
             // Fetch full attributes so we have size / permissions.
             let attr = tapfs_getattr(handle, entry.id)
             guard attr.id != 0 else { continue }
+
+            // Cache this item's name/parent so item(for:) and fetchContents work.
+            ext?.cacheItem(nodeId: attr.id, name: name, parentId: nodeId)
 
             let item = FileProviderItem(
                 nodeId: attr.id,
@@ -74,15 +79,15 @@ class TapFSEnumerator: NSObject, NSFileProviderEnumerator {
     }
 
     func enumerateChanges(for observer: NSFileProviderChangeObserver, from anchor: NSFileProviderSyncAnchor) {
-        // TapFS does not yet support incremental change tracking.
-        // Signal that the client should re-enumerate from scratch.
-        observer.finishEnumeratingWithError(
-            NSFileProviderError(.syncAnchorExpired)
-        )
+        // No incremental changes — report nothing changed.
+        // Returning an empty change set (instead of syncAnchorExpired) keeps
+        // existing items stable and prevents fileproviderd from re-enumerating
+        // and wiping items after fetchContents.
+        observer.finishEnumeratingChanges(upTo: anchor, moreComing: false)
     }
 
     func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
-        // Return a constant anchor; change enumeration is not supported yet.
+        // Stable anchor — items don't change unless the agent writes.
         let data = Data("tapfs-anchor-v1".utf8)
         completionHandler(NSFileProviderSyncAnchor(data))
     }

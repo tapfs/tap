@@ -16,6 +16,23 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     private var handle: OpaquePointer?
     private let logger = Logger(subsystem: "com.tapfs.provider", category: "extension")
 
+    /// Cache of node ID → (name, parentNodeId) populated by enumerator.
+    /// This lets item(for:) and fetchContents return correct names.
+    private var itemCache: [UInt64: (name: String, parentId: UInt64)] = [:]
+    private let cacheLock = NSLock()
+
+    func cacheItem(nodeId: UInt64, name: String, parentId: UInt64) {
+        cacheLock.lock()
+        itemCache[nodeId] = (name: name, parentId: parentId)
+        cacheLock.unlock()
+    }
+
+    func cachedItem(nodeId: UInt64) -> (name: String, parentId: UInt64)? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return itemCache[nodeId]
+    }
+
     // MARK: - Lifecycle
 
     required init(domain: NSFileProviderDomain) {
@@ -24,36 +41,58 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         initializeRustBackend()
     }
 
-    /// Stand up the Rust VirtualFs by loading the connector spec from a
-    /// well-known location and calling `tapfs_init`.
+    /// Stand up the Rust VirtualFs by loading the connector spec.
     private func initializeRustBackend() {
         let fm = FileManager.default
 
-        // Data directory -- also used as the Rust data_dir for drafts, versions,
-        // audit logs, etc.
+        // Data directory inside the sandbox container
         let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dataDir = appSupport.appendingPathComponent("tapfs")
+        try? fm.createDirectory(at: dataDir, withIntermediateDirectories: true)
 
-        // Try the shared app-group container first (preferred) then fall back
-        // to the per-user Application Support directory.
-        var specUrl = dataDir.appendingPathComponent("connector.yaml")
+        // Try to load spec from multiple locations
+        var specYaml: String? = nil
 
+        // 1. App group container
         if let groupContainer = fm.containerURL(forSecurityApplicationGroupIdentifier: "group.com.tapfs") {
             let groupSpec = groupContainer.appendingPathComponent("connector.yaml")
-            if fm.fileExists(atPath: groupSpec.path) {
-                specUrl = groupSpec
-            }
+            specYaml = try? String(contentsOf: groupSpec, encoding: .utf8)
         }
 
-        guard let specYaml = try? String(contentsOf: specUrl, encoding: .utf8) else {
-            logger.error("No connector spec found at \(specUrl.path, privacy: .public)")
+        // 2. Sandbox Application Support
+        if specYaml == nil {
+            let specUrl = dataDir.appendingPathComponent("connector.yaml")
+            specYaml = try? String(contentsOf: specUrl, encoding: .utf8)
+        }
+
+        // 3. Embedded default (JSONPlaceholder — works without auth)
+        if specYaml == nil {
+            logger.info("No connector spec found, using embedded JSONPlaceholder demo")
+            specYaml = """
+            name: jsonplaceholder
+            base_url: "https://jsonplaceholder.typicode.com"
+            collections:
+              - name: posts
+                list_endpoint: "/posts"
+                get_endpoint: "/posts/{id}"
+                id_field: "id"
+                slug_field: "id"
+                title_field: "title"
+              - name: users
+                list_endpoint: "/users"
+                get_endpoint: "/users/{id}"
+                id_field: "id"
+                slug_field: "username"
+                title_field: "name"
+            """
+        }
+
+        guard let yaml = specYaml else {
+            logger.error("Failed to load any connector spec")
             return
         }
 
-        // Ensure the data directory tree exists.
-        try? fm.createDirectory(at: dataDir, withIntermediateDirectories: true)
-
-        handle = specYaml.withCString { specPtr in
+        handle = yaml.withCString { specPtr in
             dataDir.path.withCString { dirPtr in
                 tapfs_init(specPtr, dirPtr)
             }
@@ -111,17 +150,20 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             return Progress()
         }
 
-        // For items fetched by ID we may not know the name.  The root always
-        // has a well-known name; for other items we perform a reverse lookup
-        // by looking up the parent.  As a fallback, use the raw ID string.
         let name: String
+        let parentId: UInt64
         if nid == 1 {
             name = "TapFS"
+            parentId = 0
+        } else if let cached = cachedItem(nodeId: nid) {
+            name = cached.name
+            parentId = cached.parentId
         } else {
-            name = identifier.rawValue  // placeholder -- filled in by enumerator
+            name = identifier.rawValue
+            parentId = 1
         }
 
-        let item = FileProviderItem(attr: attr, name: name, parentNodeId: 1)
+        let item = FileProviderItem(attr: attr, name: name, parentNodeId: parentId)
         completionHandler(item, nil)
         return Progress()
     }
@@ -171,10 +213,23 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             return Progress()
         }
 
+        let name: String
+        let parentId: UInt64
+        if let cached = cachedItem(nodeId: nid) {
+            name = cached.name
+            parentId = cached.parentId
+        } else {
+            name = itemIdentifier.rawValue
+            parentId = 1
+        }
+
         let item = FileProviderItem(
-            attr: attr,
-            name: itemIdentifier.rawValue,
-            parentNodeId: 1
+            nodeId: attr.id,
+            name: name,
+            parentNodeId: parentId,
+            size: UInt64(ffiData.len),  // actual content size, not attr.size
+            isDirectory: attr.file_type == 0,
+            permissions: attr.perm
         )
         completionHandler(tempFile, item, nil)
         return Progress()
@@ -352,13 +407,13 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         // Working set: return an enumerator over the root so that Spotlight
         // can index top-level items.
         if containerItemIdentifier == .workingSet {
-            return TapFSEnumerator(handle: h, nodeId: 1)
+            return TapFSEnumerator(handle: h, nodeId: 1, extension: self)
         }
 
         guard let nid = nodeId(for: containerItemIdentifier) else {
             throw NSFileProviderError(.noSuchItem)
         }
 
-        return TapFSEnumerator(handle: h, nodeId: nid)
+        return TapFSEnumerator(handle: h, nodeId: nid, extension: self)
     }
 }

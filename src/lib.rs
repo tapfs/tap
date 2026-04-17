@@ -1,9 +1,11 @@
 pub mod cache;
+#[cfg(feature = "fuse")]
 pub mod cli;
 pub mod config;
 pub mod connector;
 pub mod draft;
 pub mod ffi;
+#[cfg(feature = "fuse")]
 pub mod fs;
 pub mod governance;
 pub mod path;
