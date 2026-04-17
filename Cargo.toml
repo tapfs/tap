@@ -14,11 +14,13 @@ name = "tap"
 path = "src/main.rs"
 
 [features]
-default = ["fuse"]
+default = ["fuse", "nfs"]
 fuse = ["fuser"]
+nfs = ["nfsserve"]
 
 [dependencies]
 fuser = { version = "0.14", optional = true }
+nfsserve = { version = "0.11", optional = true }
 clap = { version = "=4.4.18", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"] }

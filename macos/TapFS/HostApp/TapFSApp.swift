@@ -5,8 +5,8 @@ import FileProvider
 struct TapFSApp {
     static func main() {
         let domain = NSFileProviderDomain(
-            identifier: NSFileProviderDomainIdentifier(rawValue: "com.tapfs.v2"),
-            displayName: "tapfs"
+            identifier: NSFileProviderDomainIdentifier(rawValue: "com.tapfs.v3"),
+            displayName: "tap"
         )
         NSFileProviderManager.add(domain) { error in
             if let error = error {

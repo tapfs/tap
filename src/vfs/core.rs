@@ -62,51 +62,56 @@ pub struct NodeTable {
     entries: DashMap<u64, NodeKind>,
     /// Reverse map: kind -> node ID, for fast lookup.
     reverse: DashMap<NodeKind, u64>,
-    /// Monotonically increasing counter for allocating new node IDs.
-    next_id: AtomicU64,
 }
 
 impl NodeTable {
     /// Create a new node table with the root node (ID 1) pre-allocated.
     pub fn new() -> Self {
-        // Start at a high random-ish offset so node IDs don't collide with
-        // stale entries from previous File Provider Extension sessions.
-        // The macOS fileproviderd caches item identifiers across restarts;
-        // small sequential IDs (2, 3, 4...) from one session conflict with
-        // different items in the next session.
-        let epoch = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        let base = (epoch % 1_000_000) * 1000 + 1000; // e.g., 735_421_000
-
         let table = Self {
             entries: DashMap::new(),
             reverse: DashMap::new(),
-            next_id: AtomicU64::new(base),
         };
         table.entries.insert(1, NodeKind::Root);
         table.reverse.insert(NodeKind::Root, 1);
         table
     }
 
-    /// Allocate a new node ID for the given kind.
+    /// Deterministic node ID derived from the NodeKind's content.
     ///
-    /// If the kind already has a node ID, returns the existing one.
-    /// Otherwise, assigns the next available ID.
+    /// The same NodeKind always produces the same ID, across restarts.
+    /// This is critical for macOS File Provider, which caches item
+    /// identifiers persistently. ID 1 is reserved for root.
+    fn stable_id(kind: &NodeKind) -> u64 {
+        use std::hash::{Hash, Hasher};
+        use std::collections::hash_map::DefaultHasher;
+
+        if *kind == NodeKind::Root {
+            return 1;
+        }
+
+        let mut hasher = DefaultHasher::new();
+        kind.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        // Avoid 0 (invalid) and 1 (root).
+        let id = (hash % (u64::MAX - 2)) + 2;
+        id
+    }
+
+    /// Allocate a node ID for the given kind.
+    ///
+    /// The ID is deterministic — the same NodeKind always gets the same ID.
+    /// If the kind was already allocated, returns the existing ID.
     pub fn allocate(&self, kind: NodeKind) -> u64 {
         // Check reverse map first.
         if let Some(existing) = self.reverse.get(&kind) {
             return *existing;
         }
 
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let id = Self::stable_id(&kind);
         self.entries.insert(id, kind.clone());
-        // Use `or_insert` to handle the (rare) race where another thread
-        // allocated the same kind between our check and insert.
         let actual = *self.reverse.entry(kind).or_insert(id);
         if actual != id {
-            // Another thread won the race; clean up our allocation.
             self.entries.remove(&id);
         }
         actual

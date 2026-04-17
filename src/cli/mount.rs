@@ -13,7 +13,6 @@ use crate::connector::registry::ConnectorRegistry;
 use crate::connector::rest::RestConnector;
 use crate::connector::spec::ConnectorSpec;
 use crate::draft::store::DraftStore;
-use crate::fs::tapfs::TapFs;
 use crate::governance::audit::AuditLogger;
 use crate::governance::interceptor::AuditedConnector;
 use crate::version::store::VersionStore;
@@ -135,23 +134,135 @@ pub async fn run(config: TapConfig) -> Result<()> {
         serde_json::to_string_pretty(&mount_info)?,
     )?;
 
+    // 11. Build VirtualFs
+    let vfs = Arc::new(VirtualFs::new(
+        registry,
+        cache,
+        drafts,
+        versions,
+        audit,
+    ));
+
+    // 12. Choose transport
+    #[cfg(all(feature = "nfs", feature = "fuse"))]
+    {
+        if cfg!(target_os = "macos") || std::env::var("TAPFS_NFS").is_ok() {
+            return mount_nfs(vfs, &config).await;
+        } else {
+            return mount_fuse(vfs, &config).await;
+        }
+    }
+
+    #[cfg(all(feature = "nfs", not(feature = "fuse")))]
+    {
+        return mount_nfs(vfs, &config).await;
+    }
+
+    #[cfg(all(feature = "fuse", not(feature = "nfs")))]
+    {
+        return mount_fuse(vfs, &config).await;
+    }
+
+    #[cfg(not(any(feature = "fuse", feature = "nfs")))]
+    anyhow::bail!("No transport available. Build with --features fuse or --features nfs");
+}
+
+#[cfg(feature = "nfs")]
+async fn mount_nfs(vfs: Arc<VirtualFs>, config: &TapConfig) -> Result<()> {
+    use crate::nfs::server::TapNfs;
+    use nfsserve::tcp::{NFSTcp, NFSTcpListener};
+
+    let port = std::env::var("TAPFS_NFS_PORT")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(11111);
+
+    let bind_addr = format!("127.0.0.1:{}", port);
+
+    tracing::info!(
+        mount_point = %config.mount_point.display(),
+        port = port,
+        "starting NFS server"
+    );
+
+    let nfs = TapNfs {
+        vfs,
+        rt: tokio::runtime::Handle::current(),
+    };
+
+    let listener = NFSTcpListener::bind(&bind_addr, nfs)
+        .await
+        .context("failed to bind NFS server")?;
+
+    tracing::info!(port = port, "NFS server listening");
+
+    std::fs::create_dir_all(&config.mount_point)
+        .with_context(|| format!("creating mount point {:?}", config.mount_point))?;
+
+    // Mount in a background task (mount_nfs blocks until server responds,
+    // so it must not run on the same task as the server).
+    let mount_point = config.mount_point.clone();
+    let mounts_path = config.mounts_path();
+    tokio::spawn(async move {
+        // Give the server a moment to start accepting connections
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let mount_opts = format!(
+            "nolocks,vers=3,tcp,rsize=131072,actimeo=2,port={},mountport={}",
+            port, port
+        );
+        tracing::info!(mount_point = %mount_point.display(), "running mount_nfs");
+
+        let result = tokio::process::Command::new("mount_nfs")
+            .args(["-o", &mount_opts, "localhost:/", &mount_point.display().to_string()])
+            .status()
+            .await;
+
+        match result {
+            Ok(status) if status.success() => {
+                tracing::info!(mount_point = %mount_point.display(), "mounted via NFS");
+            }
+            Ok(status) => {
+                tracing::error!("mount_nfs failed with exit code {:?}", status.code());
+            }
+            Err(e) => {
+                tracing::error!("mount_nfs error: {}", e);
+            }
+        }
+
+        // Signal handler
+        tokio::signal::ctrl_c().await.ok();
+        tracing::info!("received signal, unmounting");
+        let _ = tokio::process::Command::new("umount")
+            .arg(&mount_point)
+            .status()
+            .await;
+        let _ = std::fs::remove_file(&mounts_path);
+        std::process::exit(0);
+    });
+
+    // Serve forever (this is the main loop)
+    listener.handle_forever().await.context("NFS server error")?;
+
+    Ok(())
+}
+
+#[cfg(feature = "fuse")]
+async fn mount_fuse(vfs: Arc<VirtualFs>, config: &TapConfig) -> Result<()> {
+    use crate::fs::tapfs::TapFs;
+
     tracing::info!(
         mount_point = %config.mount_point.display(),
         "mounting FUSE filesystem"
     );
 
-    // 11. Build FUSE mount options
-    let mut options = vec![
-        fuser::MountOption::FSName("tapfs".into()),
-    ];
-    // macOS-specific options to suppress .DS_Store / resource fork access
+    let mut options = vec![fuser::MountOption::FSName("tapfs".into())];
     #[cfg(target_os = "macos")]
     {
         options.push(fuser::MountOption::CUSTOM("noappledouble".into()));
         options.push(fuser::MountOption::CUSTOM("noapplexattr".into()));
     }
 
-    // 12. Set up SIGINT / SIGTERM handling for clean unmount
     let mount_point = config.mount_point.clone();
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
@@ -172,20 +283,6 @@ pub async fn run(config: TapConfig) -> Result<()> {
         std::process::exit(0);
     });
 
-    // 13. Build VirtualFs and the FUSE adapter, then mount.
-    //
-    // fuser::mount2() blocks the calling thread. FUSE callbacks inside that
-    // thread use rt.block_on() to call async connector methods.  If mount2()
-    // runs on a tokio worker thread, block_on() panics ("cannot block from
-    // within a runtime"). So we move the entire FUSE loop to a dedicated
-    // OS thread via spawn_blocking.
-    let vfs = Arc::new(VirtualFs::new(
-        registry,
-        cache,
-        drafts,
-        versions,
-        audit,
-    ));
     let rt = tokio::runtime::Handle::current();
     let mount_point_clone = config.mount_point.clone();
     let mounts_path = config.mounts_path();
@@ -199,7 +296,6 @@ pub async fn run(config: TapConfig) -> Result<()> {
         if let Err(e) = fuser::mount2(fs, &mount_point_clone, &options) {
             tracing::error!("FUSE mount error: {}", e);
         }
-        // Clean up mounts status file on exit
         let _ = std::fs::remove_file(&mounts_path);
         tracing::info!("unmounted, exiting");
     })
