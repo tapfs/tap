@@ -185,19 +185,13 @@ async fn mount_nfs(vfs: Arc<VirtualFs>, config: &TapConfig) -> Result<()> {
         "starting NFS server"
     );
 
-    let nfs = TapNfs {
-        vfs,
-        rt: tokio::runtime::Handle::current(),
-    };
+    let nfs = TapNfs::new(vfs, tokio::runtime::Handle::current());
 
     let listener = NFSTcpListener::bind(&bind_addr, nfs)
         .await
         .context("failed to bind NFS server")?;
 
     tracing::info!(port = port, "NFS server listening");
-
-    std::fs::create_dir_all(&config.mount_point)
-        .with_context(|| format!("creating mount point {:?}", config.mount_point))?;
 
     // Mount in a background task (mount_nfs blocks until server responds,
     // so it must not run on the same task as the server).

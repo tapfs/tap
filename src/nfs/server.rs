@@ -17,28 +17,42 @@ use crate::vfs::types::*;
 pub struct TapNfs {
     pub vfs: Arc<VirtualFs>,
     pub rt: tokio::runtime::Handle,
+    uid: u32,
+    gid: u32,
 }
 
 impl TapNfs {
+    pub fn new(vfs: Arc<VirtualFs>, rt: tokio::runtime::Handle) -> Self {
+        Self {
+            vfs,
+            rt,
+            uid: unsafe { libc::getuid() },
+            gid: unsafe { libc::getgid() },
+        }
+    }
+
     fn vfs_attr_to_fattr(&self, attr: &VfsAttr) -> fattr3 {
         let ftype = match attr.file_type {
             VfsFileType::Directory => ftype3::NF3DIR,
             VfsFileType::RegularFile => ftype3::NF3REG,
         };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default();
-        let ts = nfstime3 {
-            seconds: now.as_secs() as u32,
-            nseconds: now.subsec_nanos(),
+        let ts = if let Some(ref mtime_str) = attr.mtime {
+            chrono::DateTime::parse_from_rfc3339(mtime_str)
+                .map(|dt| nfstime3 {
+                    seconds: dt.timestamp() as u32,
+                    nseconds: dt.timestamp_subsec_nanos(),
+                })
+                .unwrap_or_else(|_| Self::now_nfstime())
+        } else {
+            Self::now_nfstime()
         };
 
         fattr3 {
             ftype,
             mode: attr.perm as u32,
             nlink: if attr.file_type == VfsFileType::Directory { 2 } else { 1 },
-            uid: unsafe { libc::getuid() },
-            gid: unsafe { libc::getgid() },
+            uid: self.uid,
+            gid: self.gid,
             size: attr.size,
             used: attr.size,
             rdev: specdata3 {
@@ -50,6 +64,16 @@ impl TapNfs {
             atime: ts,
             mtime: ts,
             ctime: ts,
+        }
+    }
+
+    fn now_nfstime() -> nfstime3 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        nfstime3 {
+            seconds: now.as_secs() as u32,
+            nseconds: now.subsec_nanos(),
         }
     }
 
@@ -97,7 +121,6 @@ impl NFSFileSystem for TapNfs {
     }
 
     async fn setattr(&self, id: fileid3, setattr: sattr3) -> Result<fattr3, nfsstat3> {
-        // Handle truncation
         if let set_size3::size(new_size) = setattr.size {
             self.vfs
                 .truncate(id, new_size)

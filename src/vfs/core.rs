@@ -6,7 +6,6 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::cache::store::Cache;
 use crate::connector::registry::ConnectorRegistry;
@@ -94,8 +93,7 @@ impl NodeTable {
         let hash = hasher.finish();
 
         // Avoid 0 (invalid) and 1 (root).
-        let id = (hash % (u64::MAX - 2)) + 2;
-        id
+        (hash % (u64::MAX - 2)) + 2
     }
 
     /// Allocate a node ID for the given kind.
