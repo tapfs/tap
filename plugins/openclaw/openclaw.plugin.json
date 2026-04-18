@@ -1,0 +1,35 @@
+{
+  "id": "tapfs",
+  "name": "TapFS",
+  "description": "Mount enterprise REST APIs as files. Browse Jira, GitHub, Salesforce, and 10+ services using shell commands.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "connector": {
+        "type": "string",
+        "description": "Connector name (github, jira, salesforce, slack, notion, hubspot, stripe, zendesk, pagerduty, linear, servicenow, confluence) or path to custom YAML spec"
+      },
+      "apiToken": {
+        "type": "string",
+        "description": "API token or key for authentication"
+      },
+      "baseUrl": {
+        "type": "string",
+        "description": "API base URL override (e.g. https://myorg.atlassian.net)"
+      },
+      "mountPoint": {
+        "type": "string",
+        "description": "Local directory where APIs are mounted",
+        "default": "/tmp/tap"
+      }
+    },
+    "required": ["connector", "apiToken"]
+  },
+  "uiHints": {
+    "apiToken": {
+      "label": "API Token",
+      "sensitive": true
+    }
+  }
+}

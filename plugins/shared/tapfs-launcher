@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# tapfs-launcher — shared launcher for Claude Code, Codex, and OpenClaw plugins.
+# Detects platform, selects the right tap binary, starts/stops the mount.
+
+PLUGIN_ROOT="${TAPFS_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+MOUNT_POINT="${TAPFS_MOUNT_POINT:-/tmp/tap}"
+CONNECTOR="${TAPFS_CONNECTOR:-}"
+TOKEN="${TAPFS_TOKEN:-}"
+BASE_URL="${TAPFS_BASE_URL:-}"
+PORT="${TAPFS_NFS_PORT:-11111}"
+PID_FILE="${HOME}/.tapfs/tapfs-launcher.pid"
+
+# Resolve the tap binary for this platform
+resolve_binary() {
+    local os arch
+    os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    arch="$(uname -m)"
+
+    case "$arch" in
+        x86_64)  arch="x64" ;;
+        aarch64|arm64) arch="arm64" ;;
+    esac
+
+    # Check plugin bin/ directory first, then PATH
+    local bin_dir="${PLUGIN_ROOT}/bin"
+    local binary="${bin_dir}/tap-${os}-${arch}"
+
+    if [[ -x "$binary" ]]; then
+        echo "$binary"
+    elif command -v tap &>/dev/null; then
+        command -v tap
+    else
+        echo "Error: tap binary not found at ${binary} or in PATH" >&2
+        exit 1
+    fi
+}
+
+# Resolve connector spec path
+resolve_spec() {
+    local connector="$1"
+    local spec_dir="${PLUGIN_ROOT}/connectors"
+
+    # Check if it's a path to a custom spec
+    if [[ -f "$connector" ]]; then
+        echo "$connector"
+        return
+    fi
+
+    # Check bundled connectors
+    local spec="${spec_dir}/${connector}.yaml"
+    if [[ -f "$spec" ]]; then
+        echo "$spec"
+        return
+    fi
+
+    # Fall back to repo-root connectors
+    local repo_spec="${PLUGIN_ROOT}/../../connectors/${connector}.yaml"
+    if [[ -f "$repo_spec" ]]; then
+        echo "$repo_spec"
+        return
+    fi
+
+    echo "Error: connector spec not found for '${connector}'" >&2
+    exit 1
+}
+
+cmd_start() {
+    if [[ -z "$CONNECTOR" ]]; then
+        echo "Error: TAPFS_CONNECTOR not set" >&2
+        exit 1
+    fi
+
+    # Check if already running
+    if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        echo "tapfs already running (PID $(cat "$PID_FILE"))"
+        return 0
+    fi
+
+    local binary spec
+    binary="$(resolve_binary)"
+    spec="$(resolve_spec "$CONNECTOR")"
+
+    mkdir -p "$(dirname "$PID_FILE")" "$MOUNT_POINT"
+
+    # Build args
+    local args=("mount" "$CONNECTOR" "--spec" "$spec" "--mount-point" "$MOUNT_POINT")
+    if [[ -n "$TOKEN" ]]; then
+        args+=("--token" "$TOKEN")
+    fi
+    if [[ -n "$BASE_URL" ]]; then
+        args+=("--base-url" "$BASE_URL")
+    fi
+
+    echo "Starting tapfs: ${binary} ${args[*]}"
+    "$binary" "${args[@]}" &
+    local pid=$!
+    echo "$pid" > "$PID_FILE"
+    echo "tapfs started (PID ${pid}), mount at ${MOUNT_POINT}"
+
+    # Wait for mount to be ready
+    for i in $(seq 1 20); do
+        if [[ -f "${MOUNT_POINT}/agent.md" ]]; then
+            echo "tapfs mount ready"
+            return 0
+        fi
+        sleep 0.5
+    done
+    echo "Warning: mount not ready after 10s" >&2
+}
+
+cmd_stop() {
+    if [[ -f "$PID_FILE" ]]; then
+        local pid
+        pid="$(cat "$PID_FILE")"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid"
+            echo "Stopped tapfs (PID ${pid})"
+        fi
+        rm -f "$PID_FILE"
+    fi
+
+    # Unmount
+    if mount | grep -q "$MOUNT_POINT"; then
+        umount "$MOUNT_POINT" 2>/dev/null || true
+    fi
+}
+
+cmd_status() {
+    if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        echo "running (PID $(cat "$PID_FILE")), mount at ${MOUNT_POINT}"
+    else
+        echo "not running"
+    fi
+}
+
+case "${1:-help}" in
+    start)  cmd_start ;;
+    stop)   cmd_stop ;;
+    status) cmd_status ;;
+    *)
+        echo "Usage: tapfs-launcher {start|stop|status}"
+        echo ""
+        echo "Environment variables:"
+        echo "  TAPFS_CONNECTOR    Connector name or path to spec (required)"
+        echo "  TAPFS_TOKEN        API token"
+        echo "  TAPFS_BASE_URL     API base URL override"
+        echo "  TAPFS_MOUNT_POINT  Mount path (default: /tmp/tap)"
+        echo "  TAPFS_PLUGIN_ROOT  Plugin root directory"
+        ;;
+esac

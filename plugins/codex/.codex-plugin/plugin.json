@@ -1,0 +1,15 @@
+{
+  "name": "tapfs",
+  "version": "0.1.0",
+  "description": "Mount enterprise REST APIs as files. Browse Jira, GitHub, Salesforce, and 10+ services with standard file tools.",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "TapFS",
+    "shortDescription": "Mount REST APIs as files",
+    "longDescription": "TapFS mounts enterprise REST APIs as a local filesystem. Browse Jira issues, GitHub repos, Salesforce accounts using ls, cat, and grep. No SDK, no API calls — just files.",
+    "developerName": "tapfs",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://github.com/tapfs/tap"
+  }
+}

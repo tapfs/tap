@@ -1,0 +1,37 @@
+{
+  "name": "tapfs",
+  "version": "0.1.0",
+  "description": "Mount enterprise REST APIs as files. Browse Jira, GitHub, Salesforce, and 10+ services with standard file tools.",
+  "author": {
+    "name": "tapfs",
+    "url": "https://github.com/tapfs/tap"
+  },
+  "repository": "https://github.com/tapfs/tap",
+  "license": "MIT",
+  "keywords": ["api", "filesystem", "jira", "github", "salesforce", "rest"],
+  "skills": "./skills/",
+  "userConfig": {
+    "connector": {
+      "description": "Connector name (github, jira, salesforce, slack, notion, hubspot, stripe, zendesk, pagerduty, linear, servicenow, confluence) or path to custom YAML spec",
+      "required": true
+    },
+    "apiToken": {
+      "description": "API token or key for authentication",
+      "sensitive": true,
+      "required": true
+    },
+    "baseUrl": {
+      "description": "API base URL override (e.g. https://myorg.atlassian.net)"
+    },
+    "mountPoint": {
+      "description": "Local directory where APIs are mounted (default: /tmp/tap)"
+    }
+  },
+  "monitors": [
+    {
+      "name": "tapfs-server",
+      "command": "TAPFS_CONNECTOR=${user_config.connector} TAPFS_TOKEN=${user_config.apiToken} TAPFS_BASE_URL=${user_config.baseUrl} TAPFS_MOUNT_POINT=${user_config.mountPoint} ${CLAUDE_PLUGIN_ROOT}/../shared/tapfs-launcher start",
+      "when": "always"
+    }
+  ]
+}

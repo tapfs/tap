@@ -1,0 +1,9 @@
+{
+  "name": "@tapfs/openclaw-plugin",
+  "version": "0.1.0",
+  "description": "TapFS plugin for OpenClaw — mount REST APIs as files",
+  "main": "src/index.ts",
+  "keywords": ["openclaw", "plugin", "tapfs", "api", "filesystem"],
+  "repository": "https://github.com/tapfs/tap",
+  "license": "MIT"
+}
