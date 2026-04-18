@@ -456,6 +456,8 @@
     <div class="nav-links">
       <a href="#features">Features</a>
       <a href="#how-it-works">How It Works</a>
+      <a href="#connectors">Connectors</a>
+      <a href="#agentmd">agent.md</a>
       <a href="#comparison">Compare</a>
       <a href="#install">Install</a>
       <a href="https://github.com/tapfs/tap" class="nav-gh">
@@ -583,6 +585,88 @@
       <span class="file">re-deployment-plan.md</span>
     <span class="dir">calendar/</span>
       <span class="file">standup-10am.md</span>
+    </div>
+  </div>
+</section>
+
+<!-- ─── Connectors ───────────────────────────────────── -->
+<section id="connectors">
+  <div class="section-label">Connectors</div>
+  <div class="section-title">Any API becomes a filesystem in YAML</div>
+  <div class="section-desc">A connector is a YAML file that maps a REST API to filesystem paths. No code required for most APIs — describe your endpoints and tapfs handles auth, caching, rate limiting, and rendering JSON as agent-readable Markdown.</div>
+
+  <div class="tree-section">
+    <div class="tree-text">
+      <h2>Write YAML, get a filesystem</h2>
+      <p>Define <code>list_endpoint</code> and <code>get_endpoint</code> per collection. tapfs resolves slugs, paginates, caches, and translates every record to a <code>.md</code> file with YAML frontmatter.</p>
+      <p>14 connectors ship today — GitHub, Jira, Slack, Salesforce, Linear, Notion, Stripe, and more. Install from the registry or drop a YAML file in your connectors directory.</p>
+      <div style="margin-top: 24px; display: flex; gap: 10px; flex-wrap: wrap;">
+        <span style="padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; color: var(--text-muted);">github</span>
+        <span style="padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; color: var(--text-muted);">jira</span>
+        <span style="padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; color: var(--text-muted);">slack</span>
+        <span style="padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; color: var(--text-muted);">salesforce</span>
+        <span style="padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; color: var(--text-muted);">linear</span>
+        <span style="padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; color: var(--text-muted);">notion</span>
+        <span style="padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; color: var(--text-muted);">stripe</span>
+        <span style="padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; color: var(--accent); border-color: var(--accent-dim);">+ 7 more</span>
+      </div>
+    </div>
+    <div class="file-tree" style="font-size: 12.5px; line-height: 1.9;">
+<span style="color: var(--text-dim)"># connectors/github.yaml</span>
+<span style="color: var(--purple)">name</span>: github
+<span style="color: var(--purple)">base_url</span>: <span style="color: var(--green)">"https://api.github.com"</span>
+<span style="color: var(--purple)">auth</span>:
+  <span style="color: var(--purple)">type</span>: bearer
+  <span style="color: var(--purple)">token_env</span>: GITHUB_TOKEN
+<span style="color: var(--purple)">collections</span>:
+  - <span style="color: var(--purple)">name</span>: repos
+    <span style="color: var(--purple)">list_endpoint</span>: <span style="color: var(--green)">"/user/repos?sort=updated"</span>
+    <span style="color: var(--purple)">get_endpoint</span>:  <span style="color: var(--green)">"/repos/{id}"</span>
+    <span style="color: var(--purple)">id_field</span>:      full_name
+    <span style="color: var(--purple)">slug_field</span>:    name
+    <span style="color: var(--purple)">title_field</span>:   full_name
+  - <span style="color: var(--purple)">name</span>: issues
+    <span style="color: var(--purple)">list_endpoint</span>: <span style="color: var(--green)">"/issues?state=open"</span>
+    <span style="color: var(--purple)">get_endpoint</span>:  <span style="color: var(--green)">"/repos/{id}"</span>
+    <span style="color: var(--purple)">slug_field</span>:    number
+    <span style="color: var(--purple)">title_field</span>:   title
+    </div>
+  </div>
+</section>
+
+<!-- ─── agent.md ─────────────────────────────────────── -->
+<section id="agentmd">
+  <div class="section-label">agent.md</div>
+  <div class="section-title">The filesystem teaches itself</div>
+  <div class="section-desc">Every directory contains an <code>agent.md</code> — a Markdown file that tells the agent what's here, how to navigate it, and what operations are safe. No system prompt engineering. No pre-configuration. The agent learns by reading, the way it reads any file.</div>
+
+  <div class="tree-section" style="direction: rtl;">
+    <div class="file-tree" style="font-size: 12.5px; line-height: 1.9; direction: ltr;">
+<span style="color: var(--text-dim)"># /mnt/tap/github/agent.md</span>
+
+<span style="color: var(--accent)">## GitHub</span>
+
+Authenticated as <span style="color: var(--green)">your-username</span> (bearer token)
+
+<span style="color: var(--accent)">## Collections</span>
+- <span class="dir">repos/</span>   — your repositories (read, write)
+- <span class="dir">issues/</span>  — open issues assigned to you
+- <span class="dir">notifs/</span>  — unread notifications
+
+<span style="color: var(--accent)">## Navigation</span>
+Repo filenames use slugified names.
+<span style="color: var(--yellow)">ls repos/ | grep my-project</span>
+<span style="color: var(--yellow)">cat issues/123.md</span>
+
+<span style="color: var(--accent)">## Writing safely</span>
+Use draft workflow for edits:
+<span style="color: var(--yellow)">cp repos/my-repo.md repos/my-repo.draft.md</span>
+Edit the draft, then promote with <span style="color: var(--yellow)">mv</span>.
+    </div>
+    <div class="tree-text" style="direction: ltr;">
+      <h2>Discovery by reading, not configuration</h2>
+      <p><code>cat /mnt/tap/agent.md</code> is the onboarding. The root file explains tapfs conventions — drafts, locks, versions. Each connector's <code>agent.md</code> explains that backend's resources, auth context, and safe operations.</p>
+      <p>Because it's Markdown in a file, it's versionable, diffable, and human-reviewable. Connector authors embed domain-specific guidance without any framework integration — and agents discover it the same way they discover everything else.</p>
     </div>
   </div>
 </section>
