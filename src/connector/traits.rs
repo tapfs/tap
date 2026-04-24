@@ -57,6 +57,8 @@ pub struct ResourceMeta {
 pub struct Resource {
     pub meta: ResourceMeta,
     pub content: Vec<u8>,
+    /// Raw API response JSON, if available. Used by `tap inspect`.
+    pub raw_json: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

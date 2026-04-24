@@ -641,7 +641,11 @@ impl Connector for RestConnector {
             }
         }
 
-        Ok(Resource { meta, content })
+        Ok(Resource {
+            meta,
+            content,
+            raw_json: Some(json),
+        })
     }
 
     async fn write_resource(&self, collection: &str, id: &str, content: &[u8]) -> Result<()> {

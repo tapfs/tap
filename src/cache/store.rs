@@ -3,13 +3,14 @@ use std::time::{Duration, Instant};
 
 use crate::connector::traits::ResourceMeta;
 
-/// The full content of a fetched resource.
+/// Cached resource content.
 ///
-/// Uses `bytes::Bytes` so that cloning is O(1) (refcount bump) instead
-/// of deep-copying the entire buffer on every cache hit.
+/// Stores the rendered content as `bytes::Bytes` (O(1) clone) and
+/// optionally the raw JSON from the API for `tap inspect`.
 #[derive(Debug, Clone)]
 pub struct Resource {
     pub data: bytes::Bytes,
+    pub raw_json: Option<serde_json::Value>,
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -139,6 +140,7 @@ mod tests {
         cache.put_resource(
             "k",
             Resource {
+                raw_json: None,
                 data: vec![1u8, 2, 3].into(),
             },
         );
@@ -152,6 +154,7 @@ mod tests {
         cache.put_resource(
             "k",
             Resource {
+                raw_json: None,
                 data: vec![1u8].into(),
             },
         );
@@ -198,6 +201,7 @@ mod tests {
         cache.put_resource(
             "k",
             Resource {
+                raw_json: None,
                 data: vec![1u8].into(),
             },
         );
@@ -213,6 +217,7 @@ mod tests {
         cache.put_resource(
             "a",
             Resource {
+                raw_json: None,
                 data: vec![1u8].into(),
             },
         );
@@ -222,6 +227,7 @@ mod tests {
         cache.put_resource(
             "c",
             Resource {
+                raw_json: None,
                 data: vec![2u8].into(),
             },
         );

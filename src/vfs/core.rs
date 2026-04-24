@@ -1739,6 +1739,7 @@ impl VirtualFs {
                     &cache_key,
                     crate::cache::store::Resource {
                         data: data.clone(), // O(1) clone
+                        raw_json: result.raw_json,
                     },
                 );
 

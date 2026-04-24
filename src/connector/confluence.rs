@@ -174,6 +174,7 @@ impl ConfluenceConnector {
         Ok(Resource {
             meta,
             content: out.into_bytes(),
+            raw_json: None,
         })
     }
 
@@ -312,6 +313,7 @@ impl ConfluenceConnector {
         Ok(Resource {
             meta,
             content: out.into_bytes(),
+            raw_json: None,
         })
     }
 
@@ -429,6 +431,7 @@ impl ConfluenceConnector {
         Ok(Resource {
             meta,
             content: out.into_bytes(),
+            raw_json: None,
         })
     }
 }
