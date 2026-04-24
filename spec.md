@@ -388,7 +388,7 @@ tap info salesforce                     # show manifest, versions, dependencies
 # Installation
 tap install salesforce                  # latest official
 tap install salesforce@1.2.0            # pinned version
-tap install snowflake/warehouse                   # verified, namespaced
+tap install snowflake/warehouse          # verified, namespaced
 tap install jdoe/custom-erp             # community
 tap install ./my-connector              # local development
 
