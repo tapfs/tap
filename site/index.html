@@ -459,6 +459,7 @@
       <a href="#how-it-works">How It Works</a>
       <a href="#connectors">Connectors</a>
       <a href="#agentmd">agent.md</a>
+      <a href="#build">Build</a>
       <a href="#comparison">Compare</a>
       <a href="#install">Install</a>
       <a href="https://github.com/tapfs/tap" class="nav-gh">
@@ -599,7 +600,7 @@
   <div class="tree-section">
     <div class="tree-text">
       <h2>Write YAML, get a filesystem</h2>
-      <p>Define <code>list_endpoint</code> and <code>get_endpoint</code> per collection. tapfs resolves slugs, paginates, caches, and translates every record to a <code>.md</code> file with YAML frontmatter.</p>
+      <p>Define endpoints, describe your collections, and add agent tips. tapfs resolves slugs, paginates, caches, and auto-generates an <code>agent.md</code> that teaches agents how to navigate your API.</p>
       <p>14 connectors ship today — GitHub, Jira, Slack, Salesforce, Linear, Notion, Stripe, and more. Install from the registry or drop a YAML file in your connectors directory.</p>
       <div style="margin-top: 24px; display: flex; gap: 10px; flex-wrap: wrap;">
         <span style="padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; color: var(--text-muted);">github</span>
@@ -615,22 +616,27 @@
     <div class="file-tree" style="font-size: 12.5px; line-height: 1.9;">
 <span style="color: var(--text-dim)"># connectors/github.yaml</span>
 <span style="color: var(--purple)">name</span>: github
+<span style="color: var(--purple)">description</span>: <span style="color: var(--green)">"GitHub repos, issues, and PRs"</span>
 <span style="color: var(--purple)">base_url</span>: <span style="color: var(--green)">"https://api.github.com"</span>
 <span style="color: var(--purple)">auth</span>:
   <span style="color: var(--purple)">type</span>: bearer
   <span style="color: var(--purple)">token_env</span>: GITHUB_TOKEN
+<span style="color: var(--purple)">capabilities</span>:
+  <span style="color: var(--purple)">read</span>: true
+  <span style="color: var(--purple)">write</span>: true
+<span style="color: var(--purple)">agent</span>:
+  <span style="color: var(--purple)">tips</span>:
+    - <span style="color: var(--green)">"Comments are composed into issue files"</span>
+    - <span style="color: var(--green)">"Grep for Labels to find issues by label"</span>
 <span style="color: var(--purple)">collections</span>:
-  - <span style="color: var(--purple)">name</span>: repos
-    <span style="color: var(--purple)">list_endpoint</span>: <span style="color: var(--green)">"/user/repos?sort=updated"</span>
-    <span style="color: var(--purple)">get_endpoint</span>:  <span style="color: var(--green)">"/repos/{id}"</span>
-    <span style="color: var(--purple)">id_field</span>:      full_name
-    <span style="color: var(--purple)">slug_field</span>:    name
-    <span style="color: var(--purple)">title_field</span>:   full_name
   - <span style="color: var(--purple)">name</span>: issues
-    <span style="color: var(--purple)">list_endpoint</span>: <span style="color: var(--green)">"/issues?state=open"</span>
-    <span style="color: var(--purple)">get_endpoint</span>:  <span style="color: var(--green)">"/repos/{id}"</span>
-    <span style="color: var(--purple)">slug_field</span>:    number
-    <span style="color: var(--purple)">title_field</span>:   title
+    <span style="color: var(--purple)">description</span>: <span style="color: var(--green)">"Issues with labels and comments"</span>
+    <span style="color: var(--purple)">slug_hint</span>: <span style="color: var(--green)">"issue number (e.g. 42)"</span>
+    <span style="color: var(--purple)">list_endpoint</span>: <span style="color: var(--green)">"/repos/{owner}/{repo}/issues"</span>
+    <span style="color: var(--purple)">get_endpoint</span>:  <span style="color: var(--green)">"/repos/{owner}/{repo}/issues/{id}"</span>
+    <span style="color: var(--purple)">render</span>:
+      <span style="color: var(--purple)">frontmatter</span>: [title, state, <span style="color: var(--green)">"user.login as author"</span>]
+      <span style="color: var(--purple)">body</span>: <span style="color: var(--green)">"body"</span>
     </div>
   </div>
 </section>
@@ -644,30 +650,33 @@
   <div class="tree-section" style="direction: rtl;">
     <div class="file-tree" style="font-size: 12.5px; line-height: 1.9; direction: ltr;">
 <span style="color: var(--text-dim)"># /mnt/tap/github/agent.md</span>
+<span style="color: var(--text-dim)"># auto-generated from connector spec</span>
 
-<span style="color: var(--accent)">## GitHub</span>
+<span style="color: var(--accent)"># github</span>
 
-Authenticated as <span style="color: var(--green)">your-username</span> (bearer token)
+GitHub repositories, issues, pull requests, and notifications
 
 <span style="color: var(--accent)">## Collections</span>
-- <span class="dir">repos/</span>   — your repositories (read, write)
-- <span class="dir">issues/</span>  — open issues assigned to you
-- <span class="dir">notifs/</span>  — unread notifications
+- <span class="dir">repos/</span> &mdash; Git repositories (filenames: repo name)
+- <span class="dir">issues/</span> &mdash; Issues with labels and comments (filenames: issue number)
+- <span class="dir">pulls/</span> &mdash; Open PRs with review status (filenames: PR number)
 
-<span style="color: var(--accent)">## Navigation</span>
-Repo filenames use slugified names.
-<span style="color: var(--yellow)">ls repos/ | grep my-project</span>
-<span style="color: var(--yellow)">cat issues/123.md</span>
+<span style="color: var(--accent)">## Capabilities</span>
+Supported: read, write, drafts
+Rate limit: 5000 requests/min
 
-<span style="color: var(--accent)">## Writing safely</span>
-Use draft workflow for edits:
-<span style="color: var(--yellow)">cp repos/my-repo.md repos/my-repo.draft.md</span>
-Edit the draft, then promote with <span style="color: var(--yellow)">mv</span>.
+<span style="color: var(--accent)">## Tips</span>
+- Comments are composed into issue files automatically
+- To find issues by label, grep for the Labels section
+- Repo filenames use the repository name (e.g. tap.md)
+
+<span style="color: var(--accent)">## Relationships</span>
+- Pull requests reference issues via body text
     </div>
     <div class="tree-text" style="direction: ltr;">
-      <h2>Discovery by reading, not configuration</h2>
-      <p><code>cat /mnt/tap/agent.md</code> is the onboarding. The root file explains tapfs conventions — drafts, locks, versions. Each connector's <code>agent.md</code> explains that backend's resources, auth context, and safe operations.</p>
-      <p>Because it's Markdown in a file, it's versionable, diffable, and human-reviewable. Connector authors embed domain-specific guidance without any framework integration — and agents discover it the same way they discover everything else.</p>
+      <h2>Auto-generated from your spec</h2>
+      <p>Descriptions, capabilities, tips, and relationships from the connector YAML are rendered into <code>agent.md</code> automatically at mount time. The agent discovers what's available by reading &mdash; the way it reads any file.</p>
+      <p>Connector authors write domain expertise once in the spec. Every agent that mounts the filesystem inherits it. No system prompt engineering. No pre-configuration. And because it's Markdown, it's versionable, diffable, and human-reviewable.</p>
     </div>
   </div>
 </section>
@@ -693,6 +702,62 @@ Edit the draft, then promote with <span style="color: var(--yellow)">mv</span>.
                          &darr;
               <span class="layer">Enterprise APIs</span>
            REST / GraphQL / gRPC</div>
+</section>
+
+<!-- ─── Build a Connector ────────────────────────────── -->
+<section id="build">
+  <div class="section-label">Community</div>
+  <div class="section-title">Build a connector in 15 minutes</div>
+  <div class="section-desc">One YAML file. No SDK. No code. Describe your API endpoints, add descriptions for agents, and tapfs handles the rest &mdash; auth, caching, rate limiting, rendering, and agent.md generation.</div>
+
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px;">
+    <div class="feature-card">
+      <div class="feature-icon">1</div>
+      <h3>Describe your endpoints</h3>
+      <p>Map <code>list_endpoint</code> and <code>get_endpoint</code> for each collection. Set <code>id_field</code> and <code>slug_field</code> so tapfs knows how to build filenames from API responses.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">2</div>
+      <h3>Add agent context</h3>
+      <p>Write <code>description</code>, <code>slug_hint</code>, and <code>tips</code> in the spec. tapfs auto-generates a rich <code>agent.md</code> that teaches agents how to navigate your API as a filesystem.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">3</div>
+      <h3>Mount and test</h3>
+      <p>Run <code>tap mount rest --spec my-api.yaml</code>. Browse with <code>ls</code>, read with <code>cat</code>. Your API is now a filesystem that any agent can use with zero integration.</p>
+    </div>
+  </div>
+
+  <div class="terminal" style="margin-top: 32px;">
+    <div class="terminal-bar">
+      <div class="terminal-dot red"></div>
+      <div class="terminal-dot yellow"></div>
+      <div class="terminal-dot green"></div>
+      <div class="terminal-title">building a connector</div>
+    </div>
+    <div class="terminal-body">
+      <span class="line"><span class="comment"># 1. Write your connector spec</span></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">cat connectors/my-api.yaml</span></span>
+      <span class="line"><span class="output">name: my-api</span></span>
+      <span class="line"><span class="output">description: "My internal API"</span></span>
+      <span class="line"><span class="output">base_url: "https://api.example.com"</span></span>
+      <span class="line"><span class="output">auth:</span></span>
+      <span class="line"><span class="output">  type: bearer</span></span>
+      <span class="line"><span class="output">  token_env: MY_API_TOKEN</span></span>
+      <span class="line"><span class="output">collections:</span></span>
+      <span class="line"><span class="output">  - name: items</span></span>
+      <span class="line"><span class="output">    description: "API resources"</span></span>
+      <span class="line"><span class="output">    list_endpoint: "/api/items"</span></span>
+      <span class="line"><span class="output">    get_endpoint: "/api/items/{id}"</span></span>
+      <span class="line"></span>
+      <span class="line"><span class="comment"># 2. Mount it</span></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">tap mount rest --spec connectors/my-api.yaml -m /mnt/tap</span></span>
+      <span class="line"></span>
+      <span class="line"><span class="comment"># 3. It works</span></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">ls /mnt/tap/my-api/items/</span></span>
+      <span class="line"><span class="file">widget-a.md</span>  <span class="file">widget-b.md</span>  <span class="file">widget-c.md</span>  <span class="file">agent.md</span></span>
+    </div>
+  </div>
 </section>
 
 <!-- ─── Comparison ───────────────────────────────────── -->
