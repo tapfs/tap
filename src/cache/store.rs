@@ -3,6 +3,10 @@ use std::time::{Duration, Instant};
 
 use crate::connector::traits::ResourceMeta;
 
+/// Maximum size of a resource that will be cached in memory (5 MB).
+/// Larger resources are served but not cached.
+pub const MAX_CACHEABLE_SIZE: usize = 5 * 1024 * 1024;
+
 /// Cached resource content.
 ///
 /// Stores the rendered content as `bytes::Bytes` (O(1) clone) and
@@ -104,6 +108,13 @@ impl Cache {
                 ttl: self.default_ttl,
             },
         );
+    }
+
+    // ── Stats ────────────────────────────────────────────────────
+
+    /// Return (resource_count, metadata_count) for IPC status queries.
+    pub fn stats(&self) -> (usize, usize) {
+        (self.resources.len(), self.metadata.len())
     }
 
     // ── Maintenance ──────────────────────────────────────────────

@@ -39,29 +39,31 @@ pub async fn run(config: TapConfig) -> Result<()> {
     let audit =
         Arc::new(AuditLogger::new(config.audit_log_path()).context("creating audit logger")?);
 
-    let audited: Arc<dyn crate::connector::traits::Connector> = if config.connector_name == "google"
-    {
+    // Build connector and optional spec (for agent.md generation)
+    let (audited, connector_spec): (
+        Arc<dyn crate::connector::traits::Connector>,
+        Option<ConnectorSpec>,
+    ) = if config.connector_name == "google" {
         tracing::info!("initializing Google Workspace connector");
         let inner: Arc<dyn crate::connector::traits::Connector> =
             Arc::new(GoogleWorkspaceConnector::new().context("creating Google connector")?);
-        Arc::new(AuditedConnector::new(inner, audit.clone()))
+        (Arc::new(AuditedConnector::new(inner, audit.clone())), None)
     } else if config.connector_name == "jira" {
         tracing::info!("initializing Jira connector");
         let inner: Arc<dyn crate::connector::traits::Connector> =
             Arc::new(JiraConnector::new().context("creating Jira connector")?);
-        Arc::new(AuditedConnector::new(inner, audit.clone()))
+        (Arc::new(AuditedConnector::new(inner, audit.clone())), None)
     } else if config.connector_name == "confluence" {
         tracing::info!("initializing Confluence connector");
         let inner: Arc<dyn crate::connector::traits::Connector> =
             Arc::new(ConfluenceConnector::new().context("creating Confluence connector")?);
-        Arc::new(AuditedConnector::new(inner, audit.clone()))
+        (Arc::new(AuditedConnector::new(inner, audit.clone())), None)
     } else {
         // Generic REST connector from YAML spec
         let spec = if let Some(ref spec_path) = config.connector_spec {
             let yaml = std::fs::read_to_string(spec_path)
                 .with_context(|| format!("reading spec file {:?}", spec_path))?;
             let mut spec = ConnectorSpec::from_yaml(&yaml)?;
-            // Apply base URL override if provided
             if let Some(ref url) = config.base_url {
                 spec.base_url = url.clone();
             }
@@ -72,16 +74,21 @@ pub async fn run(config: TapConfig) -> Result<()> {
                 .clone()
                 .unwrap_or_else(|| "http://localhost:8080".to_string());
             ConnectorSpec {
+                spec_version: None,
+                version: None,
+                description: None,
                 name: config.connector_name.clone(),
                 base_url,
                 auth: None,
+                transport: None,
+                capabilities: None,
+                agent: None,
                 collections: vec![],
             }
         };
 
         tracing::info!(name = %spec.name, base_url = %spec.base_url, "loaded connector spec");
 
-        // Create reqwest client
         let client = reqwest::Client::builder()
             .pool_max_idle_per_host(10)
             .connect_timeout(Duration::from_secs(5))
@@ -89,15 +96,21 @@ pub async fn run(config: TapConfig) -> Result<()> {
             .tcp_keepalive(Duration::from_secs(60))
             .build()?;
 
-        // Create REST connector from spec
-        let rest = RestConnector::new(spec, client);
+        let rest = RestConnector::new(spec.clone(), client);
         let inner: Arc<dyn crate::connector::traits::Connector> = Arc::new(rest);
-        Arc::new(AuditedConnector::new(inner, audit.clone()))
+        (
+            Arc::new(AuditedConnector::new(inner, audit.clone())),
+            Some(spec),
+        )
     };
 
-    // 7. Create registry and register connector
+    // 7. Create registry and register connector (with spec if available)
     let mut registry = ConnectorRegistry::new();
-    registry.register(audited);
+    if let Some(spec) = connector_spec {
+        registry.register_with_spec(audited, spec);
+    } else {
+        registry.register(audited);
+    }
     let registry = Arc::new(registry);
 
     // 8. Create cache, draft store, version store
@@ -136,9 +149,13 @@ pub async fn run(config: TapConfig) -> Result<()> {
     )?;
 
     // 11. Build VirtualFs
+    let cache_for_ipc = cache.clone();
     let vfs = Arc::new(VirtualFs::new(registry, cache, drafts, versions, audit));
 
-    // 12. Choose transport
+    // 12. Start IPC socket for CLI commands (inspect, status, invalidate)
+    crate::ipc::start(cache_for_ipc, config.socket_path());
+
+    // 13. Choose transport
     #[cfg(all(feature = "nfs", feature = "fuse"))]
     {
         if cfg!(target_os = "macos") || std::env::var("TAPFS_NFS").is_ok() {

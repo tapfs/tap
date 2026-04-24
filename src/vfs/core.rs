@@ -1614,21 +1614,97 @@ impl VirtualFs {
     }
 
     fn generate_connector_agent_md(&self, rt: &tokio::runtime::Handle, connector: &str) -> String {
+        let spec = self.registry.get_spec(connector);
         let mut out = String::new();
         out.push_str("---\n");
         out.push_str(&format!("connector: {}\n", connector));
         out.push_str("---\n\n");
         out.push_str(&format!("# {}\n\n", connector));
 
-        // List collections
+        // Connector description from spec
+        if let Some(desc) = spec.and_then(|s| s.description.as_ref()) {
+            out.push_str(desc);
+            out.push_str("\n\n");
+        }
+
+        // List collections with descriptions from spec
         if let Ok(collections) = self.get_collections_cached(rt, connector) {
             out.push_str("## Collections\n\n");
             for col in &collections {
                 out.push_str(&format!("- **{}/**", col.name));
-                if let Some(ref desc) = col.description {
+                // Prefer description from spec (richer), fall back to trait
+                let spec_desc = spec
+                    .and_then(|s| s.collections.iter().find(|c| c.name == col.name))
+                    .and_then(|c| c.description.as_ref());
+                if let Some(desc) = spec_desc.or(col.description.as_ref()) {
                     out.push_str(&format!(" — {}", desc));
                 }
+                // Show slug hint if available
+                if let Some(hint) = spec
+                    .and_then(|s| s.collections.iter().find(|c| c.name == col.name))
+                    .and_then(|c| c.slug_hint.as_ref())
+                {
+                    out.push_str(&format!(" (filenames: {})", hint));
+                }
                 out.push('\n');
+            }
+        }
+
+        // Capabilities from spec
+        if let Some(caps) = spec.and_then(|s| s.capabilities.as_ref()) {
+            out.push_str("\n## Capabilities\n\n");
+            let mut cap_list = Vec::new();
+            if caps.read.unwrap_or(true) {
+                cap_list.push("read");
+            }
+            if caps.write.unwrap_or(false) {
+                cap_list.push("write");
+            }
+            if caps.create.unwrap_or(false) {
+                cap_list.push("create");
+            }
+            if caps.delete.unwrap_or(false) {
+                cap_list.push("delete");
+            }
+            if caps.drafts.unwrap_or(true) {
+                cap_list.push("drafts");
+            }
+            if caps.versions.unwrap_or(false) {
+                cap_list.push("versions");
+            }
+            if !cap_list.is_empty() {
+                out.push_str(&format!("Supported: {}\n", cap_list.join(", ")));
+            }
+            if let Some(ref rl) = caps.rate_limit {
+                if let Some(rpm) = rl.requests_per_minute {
+                    out.push_str(&format!("\nRate limit: {} requests/min\n", rpm));
+                }
+            }
+        }
+
+        // Agent tips from spec
+        if let Some(tips) = spec
+            .and_then(|s| s.agent.as_ref())
+            .and_then(|a| a.tips.as_ref())
+        {
+            if !tips.is_empty() {
+                out.push_str("\n## Tips\n\n");
+                for tip in tips {
+                    out.push_str(&format!("- {}\n", tip));
+                }
+            }
+        }
+
+        // Relationships from spec
+        if let Some(rels) = spec
+            .and_then(|s| s.agent.as_ref())
+            .and_then(|a| a.relationships.as_ref())
+        {
+            if !rels.is_empty() {
+                out.push_str("\n## Relationships\n\n");
+                for rel in rels {
+                    out.push_str(&format!("- {}\n", rel));
+                }
             }
         }
 
@@ -1652,12 +1728,33 @@ impl VirtualFs {
         connector: &str,
         collection: &str,
     ) -> String {
+        let spec = self.registry.get_spec(connector);
+        let col_spec = spec.and_then(|s| s.collections.iter().find(|c| c.name == collection));
+
         let mut out = String::new();
         out.push_str("---\n");
         out.push_str(&format!("connector: {}\n", connector));
         out.push_str(&format!("collection: {}\n", collection));
         out.push_str("---\n\n");
         out.push_str(&format!("# {}/{}\n\n", connector, collection));
+
+        // Collection description from spec
+        if let Some(desc) = col_spec.and_then(|c| c.description.as_ref()) {
+            out.push_str(desc);
+            out.push_str("\n\n");
+        }
+
+        // Operations supported
+        if let Some(ops) = col_spec.and_then(|c| c.operations.as_ref()) {
+            if !ops.is_empty() {
+                out.push_str(&format!("**Operations:** {}\n\n", ops.join(", ")));
+            }
+        }
+
+        // Slug hint
+        if let Some(hint) = col_spec.and_then(|c| c.slug_hint.as_ref()) {
+            out.push_str(&format!("**Filenames:** {}\n\n", hint));
+        }
 
         // List some resources
         if let Ok(resources) = self.get_resources_cached(rt, connector, collection) {
@@ -1675,6 +1772,20 @@ impl VirtualFs {
                     "\n... and {} more. Use `ls` to see all.\n",
                     resources.len() - 10
                 ));
+            }
+        }
+
+        // Collection-level relationships
+        if let Some(rels) = col_spec.and_then(|c| c.relationships.as_ref()) {
+            if !rels.is_empty() {
+                out.push_str("\n## Related collections\n\n");
+                for rel in rels {
+                    out.push_str(&format!("- **{}/**", rel.target));
+                    if let Some(ref desc) = rel.description {
+                        out.push_str(&format!(" — {}", desc));
+                    }
+                    out.push('\n');
+                }
             }
         }
 
@@ -1734,14 +1845,22 @@ impl VirtualFs {
                 self.content_lengths
                     .insert(cache_key.clone(), data.len() as u64);
 
-                // Cache the result.
-                self.cache.put_resource(
-                    &cache_key,
-                    crate::cache::store::Resource {
-                        data: data.clone(), // O(1) clone
-                        raw_json: result.raw_json,
-                    },
-                );
+                // Only cache resources under the size cap to prevent OOM.
+                if data.len() <= crate::cache::store::MAX_CACHEABLE_SIZE {
+                    self.cache.put_resource(
+                        &cache_key,
+                        crate::cache::store::Resource {
+                            data: data.clone(), // O(1) clone
+                            raw_json: result.raw_json,
+                        },
+                    );
+                } else {
+                    tracing::info!(
+                        key = %cache_key,
+                        size = data.len(),
+                        "resource exceeds cache size cap, not caching"
+                    );
+                }
 
                 Ok(data)
             }

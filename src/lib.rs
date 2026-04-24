@@ -24,6 +24,8 @@ pub mod ffi;
 #[cfg(feature = "fuse")]
 pub mod fs;
 pub mod governance;
+#[cfg(any(feature = "fuse", feature = "nfs"))]
+pub mod ipc;
 #[cfg(feature = "nfs")]
 pub mod nfs;
 pub mod path;

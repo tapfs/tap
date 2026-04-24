@@ -50,4 +50,9 @@ impl TapConfig {
     pub fn mounts_path(&self) -> PathBuf {
         self.data_dir().join("mounts.json")
     }
+
+    /// Path to the Unix domain socket for CLI ↔ mount IPC.
+    pub fn socket_path(&self) -> PathBuf {
+        self.data_dir().join("tap.sock")
+    }
 }
