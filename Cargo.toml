@@ -3,6 +3,11 @@ name = "tapfs"
 version = "0.1.0"
 edition = "2021"
 description = "FUSE filesystem that mounts enterprise REST APIs as agent-readable files"
+license = "Apache-2.0"
+repository = "https://github.com/tapfs/tap"
+homepage = "https://tapfs.dev"
+keywords = ["fuse", "filesystem", "api", "agent", "enterprise"]
+categories = ["development-tools", "filesystem"]
 
 [lib]
 name = "tapfs"
@@ -37,6 +42,7 @@ oauth2 = "4"
 libc = "0.2"
 dirs = "5"
 bytes = "1"
+siphasher = "1"
 
 [dev-dependencies]
 wiremock = "=0.6.2"

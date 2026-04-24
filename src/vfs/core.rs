@@ -80,36 +80,71 @@ impl NodeTable {
     /// The same NodeKind always produces the same ID, across restarts.
     /// This is critical for macOS File Provider, which caches item
     /// identifiers persistently. ID 1 is reserved for root.
+    ///
+    /// Uses SipHash-1-3 with fixed keys to guarantee stability across
+    /// Rust toolchain upgrades (unlike `DefaultHasher`).
     fn stable_id(kind: &NodeKind) -> u64 {
+        use siphasher::sip::SipHasher13;
         use std::hash::{Hash, Hasher};
-        use std::collections::hash_map::DefaultHasher;
 
         if *kind == NodeKind::Root {
             return 1;
         }
 
-        let mut hasher = DefaultHasher::new();
+        // Fixed keys — MUST NEVER CHANGE or all cached File Provider
+        // identifiers and NFS file handles become invalid.
+        let mut hasher = SipHasher13::new_with_keys(
+            0x_7a31_6f62_6573_7461,
+            0x_6964_656e_7469_6669,
+        );
         kind.hash(&mut hasher);
         let hash = hasher.finish();
 
         // Avoid 0 (invalid) and 1 (root).
-        (hash % (u64::MAX - 2)) + 2
+        match hash {
+            0 => 2,
+            1 => 3,
+            h => h,
+        }
     }
 
     /// Allocate a node ID for the given kind.
     ///
     /// The ID is deterministic — the same NodeKind always gets the same ID.
     /// If the kind was already allocated, returns the existing ID.
+    /// On hash collision (different NodeKind, same hash), linearly probes
+    /// for the next free slot.
     pub fn allocate(&self, kind: NodeKind) -> u64 {
-        // Check reverse map first.
+        // Fast path: already allocated.
         if let Some(existing) = self.reverse.get(&kind) {
             return *existing;
         }
 
-        let id = Self::stable_id(&kind);
-        self.entries.insert(id, kind.clone());
-        let actual = *self.reverse.entry(kind).or_insert(id);
+        let mut id = Self::stable_id(&kind);
+
+        // Atomic insert with linear probing on collision.
+        loop {
+            match self.entries.entry(id) {
+                dashmap::mapref::entry::Entry::Vacant(entry) => {
+                    entry.insert(kind.clone());
+                    break;
+                }
+                dashmap::mapref::entry::Entry::Occupied(entry) => {
+                    if entry.get() == &kind {
+                        // Same kind stored by a concurrent thread — use it.
+                        break;
+                    }
+                    // Genuine collision with a different NodeKind — probe next slot.
+                    tracing::warn!(id = id, existing = ?entry.get(), new = ?kind, "stable_id hash collision, probing");
+                    id = if id == u64::MAX { 2 } else { id + 1 };
+                }
+            }
+        }
+
+        // Use or_insert to handle concurrent allocations of the same kind.
+        let actual = *self.reverse.entry(kind.clone()).or_insert(id);
         if actual != id {
+            // Another thread won the race — remove our entry.
             self.entries.remove(&id);
         }
         actual
@@ -163,6 +198,13 @@ pub struct VirtualFs {
     /// chunks) accumulate in RAM instead of doing O(n^2) read-modify-write
     /// cycles on disk.
     write_buffers: DashMap<u64, Vec<u8>>,
+    /// Modification timestamps (RFC 3339) by inode ID, populated from
+    /// `ResourceMeta.updated_at` when resources are discovered.
+    resource_mtimes: DashMap<u64, String>,
+    /// Known content lengths by cache key (`connector/collection/resource`),
+    /// populated on first read so that subsequent `getattr` calls can report
+    /// accurate sizes instead of the 4096 placeholder.
+    content_lengths: DashMap<String, u64>,
 }
 
 impl VirtualFs {
@@ -181,6 +223,8 @@ impl VirtualFs {
             versions,
             audit,
             write_buffers: DashMap::new(),
+            resource_mtimes: DashMap::new(),
+            content_lengths: DashMap::new(),
         }
     }
 
@@ -199,14 +243,15 @@ impl VirtualFs {
 
         let child_kind = match &parent_kind {
             NodeKind::Root => self.resolve_root_child(name)?,
-            NodeKind::Connector { name: conn } => {
-                self.resolve_connector_child(rt, conn, name)?
-            }
+            NodeKind::Connector { name: conn } => self.resolve_connector_child(rt, conn, name)?,
             NodeKind::Collection {
                 connector,
                 collection,
             } => self.resolve_collection_child(rt, connector, collection, name)?,
-            NodeKind::TxDir { connector, collection } => {
+            NodeKind::TxDir {
+                connector,
+                collection,
+            } => {
                 // Looking up a named transaction
                 NodeKind::Transaction {
                     connector: connector.clone(),
@@ -214,7 +259,11 @@ impl VirtualFs {
                     tx_name: name.to_string(),
                 }
             }
-            NodeKind::Transaction { connector, collection, tx_name } => {
+            NodeKind::Transaction {
+                connector,
+                collection,
+                tx_name,
+            } => {
                 // Looking up a file inside a transaction
                 let resource = name.strip_suffix(".md").unwrap_or(name);
                 let tx_slug = format!("__tx_{}_{}", tx_name, resource);
@@ -265,12 +314,15 @@ impl VirtualFs {
                 connector,
                 collection,
             } => self.readdir_collection(rt, id, connector, collection),
-            NodeKind::TxDir { connector, collection } => {
-                self.readdir_tx_dir(id, connector, collection)
-            }
-            NodeKind::Transaction { connector, collection, tx_name } => {
-                self.readdir_transaction(id, connector, collection, tx_name)
-            }
+            NodeKind::TxDir {
+                connector,
+                collection,
+            } => self.readdir_tx_dir(id, connector, collection),
+            NodeKind::Transaction {
+                connector,
+                collection,
+                tx_name,
+            } => self.readdir_transaction(id, connector, collection, tx_name),
             _ => Err(VfsError::NotDirectory),
         }
     }
@@ -301,36 +353,58 @@ impl VirtualFs {
         }
 
         let kind = self.nodes.get(id).ok_or(VfsError::NotFound)?;
-        let data = match &kind {
-            NodeKind::AgentMd => AGENT_MD_CONTENT.as_bytes().to_vec(),
+
+        // For resource data (live/draft/lock) use Bytes for O(1) slicing.
+        // Other node types produce small content that doesn't benefit from
+        // refcounted buffers.
+        let data: bytes::Bytes = match &kind {
+            NodeKind::AgentMd => bytes::Bytes::from_static(AGENT_MD_CONTENT.as_bytes()),
             NodeKind::ConnectorAgentMd { connector } => {
-                self.generate_connector_agent_md(rt, connector).into_bytes()
+                bytes::Bytes::from(self.generate_connector_agent_md(rt, connector).into_bytes())
             }
-            NodeKind::CollectionAgentMd { connector, collection } => {
-                self.generate_collection_agent_md(rt, connector, collection).into_bytes()
-            }
+            NodeKind::CollectionAgentMd {
+                connector,
+                collection,
+            } => bytes::Bytes::from(
+                self.generate_collection_agent_md(rt, connector, collection)
+                    .into_bytes(),
+            ),
             NodeKind::Resource {
                 connector,
                 collection,
                 resource,
                 variant,
             } => self.read_resource_data(rt, connector, collection, resource, variant)?,
-            NodeKind::Version { connector, collection, resource, version_id } => {
+            NodeKind::Version {
+                connector,
+                collection,
+                resource,
+                version_id,
+            } => {
                 if let Some(v) = version_id {
-                    self.versions
-                        .read_version(connector, collection, resource, *v as u32)
-                        .map_err(|e| VfsError::IoError(e.to_string()))?
-                        .ok_or(VfsError::NotFound)?
+                    bytes::Bytes::from(
+                        self.versions
+                            .read_version(connector, collection, resource, *v as u32)
+                            .map_err(|e| VfsError::IoError(e.to_string()))?
+                            .ok_or(VfsError::NotFound)?,
+                    )
                 } else {
                     return Err(VfsError::NotFound);
                 }
             }
-            NodeKind::TxResource { connector, collection, tx_name, resource } => {
+            NodeKind::TxResource {
+                connector,
+                collection,
+                tx_name,
+                resource,
+            } => {
                 let tx_slug = format!("__tx_{}_{}", tx_name, resource);
-                self.drafts
-                    .read_draft(connector, collection, &tx_slug)
-                    .map_err(|e| VfsError::IoError(e.to_string()))?
-                    .ok_or(VfsError::NotFound)?
+                bytes::Bytes::from(
+                    self.drafts
+                        .read_draft(connector, collection, &tx_slug)
+                        .map_err(|e| VfsError::IoError(e.to_string()))?
+                        .ok_or(VfsError::NotFound)?,
+                )
             }
             _ => return Err(VfsError::IsDirectory),
         };
@@ -340,7 +414,8 @@ impl VirtualFs {
             return Ok(Vec::new());
         }
         let end = std::cmp::min(offset + size as usize, data.len());
-        Ok(data[offset..end].to_vec())
+        // Only allocate the requested slice, not the full content.
+        Ok(data.slice(offset..end).to_vec())
     }
 
     // -----------------------------------------------------------------------
@@ -351,15 +426,10 @@ impl VirtualFs {
     ///
     /// Data is buffered in memory (keyed by inode ID) rather than flushed to
     /// the draft store on every call.  The buffer is written to disk when
-    /// [`flush()`] is called (typically on file close).  This turns the
+    /// `flush()` is called (typically on file close).  This turns the
     /// previous O(n^2) read-modify-write pattern into O(n) for sequential
     /// writes.
-    pub fn write(
-        &self,
-        id: u64,
-        offset: u64,
-        data: &[u8],
-    ) -> Result<u32, VfsError> {
+    pub fn write(&self, id: u64, offset: u64, data: &[u8]) -> Result<u32, VfsError> {
         let kind = self.nodes.get(id).ok_or(VfsError::NotFound)?;
         match &kind {
             NodeKind::Resource {
@@ -391,7 +461,12 @@ impl VirtualFs {
 
                 Ok(data.len() as u32)
             }
-            NodeKind::TxResource { connector, collection, tx_name, resource } => {
+            NodeKind::TxResource {
+                connector,
+                collection,
+                tx_name,
+                resource,
+            } => {
                 let tx_slug = format!("__tx_{}_{}", tx_name, resource);
                 self.buffer_write(id, connector, collection, &tx_slug, offset, data)?;
 
@@ -420,18 +495,19 @@ impl VirtualFs {
     // -----------------------------------------------------------------------
 
     /// Create a new file (draft or lock).
-    pub fn create(
-        &self,
-        parent_id: u64,
-        name: &str,
-    ) -> Result<VfsAttr, VfsError> {
+    pub fn create(&self, parent_id: u64, name: &str) -> Result<VfsAttr, VfsError> {
         let parent_kind = self.nodes.get(parent_id).ok_or(VfsError::NotFound)?;
 
         // Handle creating files inside a transaction
-        if let NodeKind::Transaction { connector, collection, tx_name } = &parent_kind {
+        if let NodeKind::Transaction {
+            connector,
+            collection,
+            tx_name,
+        } = &parent_kind
+        {
             let resource = name.strip_suffix(".md").unwrap_or(name);
             let tx_slug = format!("__tx_{}_{}", tx_name, resource);
-            if !self.drafts.has_draft(&connector, &collection, &tx_slug) {
+            if !self.drafts.has_draft(connector, collection, &tx_slug) {
                 // Try to pre-populate from live content (copy-on-write)
                 let cache_key = format!("{}/{}/{}", connector, collection, resource);
                 let initial_content = if let Some(cached) = self.cache.get_resource(&cache_key) {
@@ -440,13 +516,13 @@ impl VirtualFs {
                     vec![]
                 };
                 self.drafts
-                    .create_draft(&connector, &collection, &tx_slug, &initial_content)
+                    .create_draft(connector, collection, &tx_slug, &initial_content)
                     .map_err(|e| VfsError::IoError(e.to_string()))?;
             }
             let _ = self.audit.record(
                 "create_tx_resource",
-                &connector,
-                Some(&collection),
+                connector,
+                Some(collection),
                 Some(resource),
                 "success",
                 Some(format!("tx={}", tx_name)),
@@ -482,7 +558,8 @@ impl VirtualFs {
                 if !self.drafts.has_draft(&connector, &collection, &slug) {
                     // Try to pre-populate from live content (copy-on-write)
                     let cache_key = format!("{}/{}/{}", connector, collection, slug);
-                    let initial_content = if let Some(cached) = self.cache.get_resource(&cache_key) {
+                    let initial_content = if let Some(cached) = self.cache.get_resource(&cache_key)
+                    {
                         cached.data.to_vec()
                     } else {
                         vec![]
@@ -538,7 +615,9 @@ impl VirtualFs {
         }
 
         // For live files, we store as draft but present as live to the caller.
-        let actual_variant = if variant == ResourceVariant::Live && self.drafts.has_draft(&connector, &collection, &slug) {
+        let actual_variant = if variant == ResourceVariant::Live
+            && self.drafts.has_draft(&connector, &collection, &slug)
+        {
             ResourceVariant::Live // keep it as Live in the inode table
         } else {
             variant
@@ -659,11 +738,7 @@ impl VirtualFs {
     // -----------------------------------------------------------------------
 
     /// Delete a file (draft or lock).
-    pub fn unlink(
-        &self,
-        parent_id: u64,
-        name: &str,
-    ) -> Result<(), VfsError> {
+    pub fn unlink(&self, parent_id: u64, name: &str) -> Result<(), VfsError> {
         let parent_kind = self.nodes.get(parent_id).ok_or(VfsError::NotFound)?;
 
         // Delegate to unlink_tx for transaction-related parents
@@ -743,22 +818,66 @@ impl VirtualFs {
     // flush (auto-promote live files with pending writes)
     // -----------------------------------------------------------------------
 
+    /// Flush all pending write buffers to disk.
+    ///
+    /// Called during graceful shutdown to ensure no data is lost. Buffers are
+    /// persisted to the draft store but live files are **not** auto-promoted
+    /// (no API calls are made) to keep shutdown fast and predictable.
+    pub fn flush_all(&self) {
+        let ids: Vec<u64> = self.write_buffers.iter().map(|r| *r.key()).collect();
+        for id in ids {
+            if let Some((_, buf)) = self.write_buffers.remove(&id) {
+                if let Some(kind) = self.nodes.get(id) {
+                    match &kind {
+                        NodeKind::Resource {
+                            connector,
+                            collection,
+                            resource,
+                            variant,
+                        } => {
+                            let slug = match variant {
+                                ResourceVariant::Lock => lock_slug(resource),
+                                _ => resource.clone(),
+                            };
+                            let _ = self.drafts.write_draft(connector, collection, &slug, &buf);
+                        }
+                        NodeKind::TxResource {
+                            connector,
+                            collection,
+                            tx_name,
+                            resource,
+                        } => {
+                            let tx_slug = format!("__tx_{}_{}", tx_name, resource);
+                            let _ = self
+                                .drafts
+                                .write_draft(connector, collection, &tx_slug, &buf);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        tracing::info!("flushed all pending write buffers to disk");
+    }
+
     /// Flush a file.
     ///
     /// 1. If there is an in-memory write buffer for this inode, persist it to
     ///    the draft store (single write, not read-modify-write).
     /// 2. For live files with pending draft content, auto-promote (push to API
     ///    and clean up the draft).
-    pub fn flush(
-        &self,
-        rt: &tokio::runtime::Handle,
-        id: u64,
-    ) -> Result<(), VfsError> {
+    pub fn flush(&self, rt: &tokio::runtime::Handle, id: u64) -> Result<(), VfsError> {
         let kind = self.nodes.get(id).ok_or(VfsError::NotFound)?;
 
         // Step 1: flush the in-memory write buffer to the draft store.
         if let Some((_, buf)) = self.write_buffers.remove(&id) {
-            if let NodeKind::Resource { connector, collection, resource, variant } = &kind {
+            if let NodeKind::Resource {
+                connector,
+                collection,
+                resource,
+                variant,
+            } = &kind
+            {
                 let slug = match variant {
                     ResourceVariant::Lock => lock_slug(resource),
                     _ => resource.clone(),
@@ -766,7 +885,13 @@ impl VirtualFs {
                 self.drafts
                     .write_draft(connector, collection, &slug, &buf)
                     .map_err(|e| VfsError::IoError(e.to_string()))?;
-            } else if let NodeKind::TxResource { connector, collection, tx_name, resource } = &kind {
+            } else if let NodeKind::TxResource {
+                connector,
+                collection,
+                tx_name,
+                resource,
+            } = &kind
+            {
                 let tx_slug = format!("__tx_{}_{}", tx_name, resource);
                 self.drafts
                     .write_draft(connector, collection, &tx_slug, &buf)
@@ -798,7 +923,9 @@ impl VirtualFs {
                     })?;
 
                 // Snapshot + cleanup
-                let _ = self.versions.save_snapshot(connector, collection, resource, &data);
+                let _ = self
+                    .versions
+                    .save_snapshot(connector, collection, resource, &data);
                 let _ = self.drafts.delete_draft(connector, collection, resource);
                 let cache_key = format!("{}/{}/{}", connector, collection, resource);
                 self.cache.invalidate(&cache_key);
@@ -842,12 +969,18 @@ impl VirtualFs {
 
         // No write buffer -- apply to the draft store directly.
         match &kind {
-            NodeKind::Resource { connector, collection, resource, variant } => {
+            NodeKind::Resource {
+                connector,
+                collection,
+                resource,
+                variant,
+            } => {
                 let slug = match variant {
                     ResourceVariant::Lock => lock_slug(resource),
                     _ => resource.clone(),
                 };
-                let mut data = self.drafts
+                let mut data = self
+                    .drafts
                     .read_draft(connector, collection, &slug)
                     .map_err(|e| VfsError::IoError(e.to_string()))?
                     .unwrap_or_default();
@@ -856,9 +989,15 @@ impl VirtualFs {
                     .write_draft(connector, collection, &slug, &data)
                     .map_err(|e| VfsError::IoError(e.to_string()))?;
             }
-            NodeKind::TxResource { connector, collection, tx_name, resource } => {
+            NodeKind::TxResource {
+                connector,
+                collection,
+                tx_name,
+                resource,
+            } => {
                 let tx_slug = format!("__tx_{}_{}", tx_name, resource);
-                let mut data = self.drafts
+                let mut data = self
+                    .drafts
                     .read_draft(connector, collection, &tx_slug)
                     .map_err(|e| VfsError::IoError(e.to_string()))?
                     .unwrap_or_default();
@@ -909,24 +1048,20 @@ impl VirtualFs {
 
     fn kind_to_attr(&self, id: u64, kind: &NodeKind) -> VfsAttr {
         match kind {
-            NodeKind::Root | NodeKind::Connector { .. } | NodeKind::Collection { .. } => {
-                VfsAttr {
-                    id,
-                    size: 0,
-                    file_type: VfsFileType::Directory,
-                    perm: 0o755,
-                    mtime: None,
-                }
-            }
-            NodeKind::TxDir { .. } | NodeKind::Transaction { .. } => {
-                VfsAttr {
-                    id,
-                    size: 0,
-                    file_type: VfsFileType::Directory,
-                    perm: 0o755,
-                    mtime: None,
-                }
-            }
+            NodeKind::Root | NodeKind::Connector { .. } | NodeKind::Collection { .. } => VfsAttr {
+                id,
+                size: 0,
+                file_type: VfsFileType::Directory,
+                perm: 0o755,
+                mtime: None,
+            },
+            NodeKind::TxDir { .. } | NodeKind::Transaction { .. } => VfsAttr {
+                id,
+                size: 0,
+                file_type: VfsFileType::Directory,
+                perm: 0o755,
+                mtime: None,
+            },
             NodeKind::AgentMd => VfsAttr {
                 id,
                 size: AGENT_MD_CONTENT.len() as u64,
@@ -964,17 +1099,24 @@ impl VirtualFs {
                     ResourceVariant::Lock => 0o444,
                     _ => 0o644,
                 };
+                let mtime = self.resource_mtimes.get(&id).map(|v| v.clone());
                 VfsAttr {
                     id,
                     size,
                     file_type: VfsFileType::RegularFile,
                     perm,
-                    mtime: None,
+                    mtime,
                 }
             }
-            NodeKind::Version { connector, collection, resource, version_id } => {
+            NodeKind::Version {
+                connector,
+                collection,
+                resource,
+                version_id,
+            } => {
                 let size = if let Some(v) = version_id {
-                    self.versions.read_version(connector, collection, resource, *v as u32)
+                    self.versions
+                        .read_version(connector, collection, resource, *v as u32)
                         .ok()
                         .flatten()
                         .map(|d| d.len() as u64)
@@ -990,7 +1132,12 @@ impl VirtualFs {
                     mtime: None,
                 }
             }
-            NodeKind::TxResource { connector, collection, tx_name, resource } => {
+            NodeKind::TxResource {
+                connector,
+                collection,
+                tx_name,
+                resource,
+            } => {
                 // Check write buffer first for accurate size during writes.
                 let size = if let Some(buf) = self.write_buffers.get(&id) {
                     buf.value().len() as u64
@@ -1031,7 +1178,9 @@ impl VirtualFs {
         name: &str,
     ) -> Result<NodeKind, VfsError> {
         if name == "agent.md" {
-            return Ok(NodeKind::ConnectorAgentMd { connector: connector.to_string() });
+            return Ok(NodeKind::ConnectorAgentMd {
+                connector: connector.to_string(),
+            });
         }
         let collections = self.get_collections_cached(rt, connector)?;
         if collections.iter().any(|c| c.name == name) {
@@ -1167,13 +1316,19 @@ impl VirtualFs {
         // Live resource -- check cache first, then API.
         let resources = self.get_resources_cached(rt, connector, collection)?;
 
-        if resources.iter().any(|r| r.slug == slug || r.id == slug) {
-            return Ok(NodeKind::Resource {
+        if let Some(meta) = resources.iter().find(|r| r.slug == slug || r.id == slug) {
+            let kind = NodeKind::Resource {
                 connector: connector.to_string(),
                 collection: collection.to_string(),
                 resource: slug,
                 variant: ResourceVariant::Live,
-            });
+            };
+            // Store mtime from API metadata so getattr can report it.
+            if let Some(ts) = &meta.updated_at {
+                let id = self.nodes.allocate(kind.clone());
+                self.resource_mtimes.insert(id, ts.clone());
+            }
+            return Ok(kind);
         }
 
         Err(VfsError::NotFound)
@@ -1202,7 +1357,13 @@ impl VirtualFs {
                 if let Some(cached) = self.cache.get_resource(&cache_key) {
                     return cached.data.len() as u64;
                 }
-                4096
+                // Use previously recorded content length if available,
+                // otherwise fall back to 0 (unknown) instead of a misleading
+                // hardcoded value.
+                self.content_lengths
+                    .get(&cache_key)
+                    .map(|v| *v)
+                    .unwrap_or(0)
             }
         }
     }
@@ -1263,7 +1424,9 @@ impl VirtualFs {
         ];
 
         // agent.md for this connector
-        let agent_kind = NodeKind::ConnectorAgentMd { connector: connector.to_string() };
+        let agent_kind = NodeKind::ConnectorAgentMd {
+            connector: connector.to_string(),
+        };
         let agent_id = self.nodes.allocate(agent_kind);
         entries.push(VfsDirEntry {
             name: "agent.md".to_string(),
@@ -1341,6 +1504,9 @@ impl VirtualFs {
                 variant: ResourceVariant::Live,
             };
             let id = self.nodes.allocate(kind);
+            if let Some(ts) = &res.updated_at {
+                self.resource_mtimes.insert(id, ts.clone());
+            }
             entries.push(VfsDirEntry {
                 name: filename,
                 id,
@@ -1383,7 +1549,9 @@ impl VirtualFs {
             }
 
             // List version files for this resource
-            let versions = self.versions.list_versions(connector, collection, &res.slug)
+            let versions = self
+                .versions
+                .list_versions(connector, collection, &res.slug)
                 .unwrap_or_default();
             for v in versions {
                 let ver_filename = format!("{}@v{}.md", res.slug, v);
@@ -1407,7 +1575,10 @@ impl VirtualFs {
             let live_slugs: std::collections::HashSet<&str> =
                 resources.iter().map(|r| r.slug.as_str()).collect();
             for slug in draft_slugs {
-                if slug.ends_with(".lock") || slug.starts_with("__tx_") || live_slugs.contains(slug.as_str()) {
+                if slug.ends_with(".lock")
+                    || slug.starts_with("__tx_")
+                    || live_slugs.contains(slug.as_str())
+                {
                     continue;
                 }
                 let draft_filename = format!("{}.draft.md", slug);
@@ -1462,15 +1633,29 @@ impl VirtualFs {
 
         out.push_str("\n## Workflow\n\n");
         out.push_str("```bash\n");
-        out.push_str(&format!("ls /mnt/tap/{}/           # list collections\n", connector));
-        out.push_str(&format!("ls /mnt/tap/{}/drive/     # list resources\n", connector));
-        out.push_str(&format!("cat /mnt/tap/{}/drive/file.md  # read a resource\n", connector));
+        out.push_str(&format!(
+            "ls /mnt/tap/{}/           # list collections\n",
+            connector
+        ));
+        out.push_str(&format!(
+            "ls /mnt/tap/{}/drive/     # list resources\n",
+            connector
+        ));
+        out.push_str(&format!(
+            "cat /mnt/tap/{}/drive/file.md  # read a resource\n",
+            connector
+        ));
         out.push_str("```\n");
 
         out
     }
 
-    fn generate_collection_agent_md(&self, rt: &tokio::runtime::Handle, connector: &str, collection: &str) -> String {
+    fn generate_collection_agent_md(
+        &self,
+        rt: &tokio::runtime::Handle,
+        connector: &str,
+        collection: &str,
+    ) -> String {
         let mut out = String::new();
         out.push_str("---\n");
         out.push_str(&format!("connector: {}\n", connector));
@@ -1490,14 +1675,20 @@ impl VirtualFs {
                 out.push('\n');
             }
             if resources.len() > 10 {
-                out.push_str(&format!("\n... and {} more. Use `ls` to see all.\n", resources.len() - 10));
+                out.push_str(&format!(
+                    "\n... and {} more. Use `ls` to see all.\n",
+                    resources.len() - 10
+                ));
             }
         }
 
         out.push_str("\n## Operations\n\n");
         out.push_str("```bash\n");
         out.push_str(&format!("cat {}.md         # read resource\n", "resource"));
-        out.push_str(&format!("echo 'x' > {}.md  # write (auto-promotes)\n", "resource"));
+        out.push_str(&format!(
+            "echo 'x' > {}.md  # write (auto-promotes)\n",
+            "resource"
+        ));
         out.push_str(&format!("touch {}.draft.md  # create draft\n", "resource"));
         out.push_str(&format!("touch {}.lock      # lock resource\n", "resource"));
         out.push_str("```\n");
@@ -1505,6 +1696,11 @@ impl VirtualFs {
         out
     }
 
+    /// Read full resource content, returning `Bytes` for O(1) slicing.
+    ///
+    /// For live resources the data comes from the cache (or is fetched and
+    /// cached).  Drafts and locks are read from the draft store and wrapped
+    /// in `Bytes`.
     fn read_resource_data(
         &self,
         rt: &tokio::runtime::Handle,
@@ -1512,26 +1708,30 @@ impl VirtualFs {
         collection: &str,
         resource: &str,
         variant: &ResourceVariant,
-    ) -> Result<Vec<u8>, VfsError> {
+    ) -> Result<bytes::Bytes, VfsError> {
         match variant {
-            ResourceVariant::Draft => self
-                .drafts
-                .read_draft(connector, collection, resource)
-                .map_err(|e| VfsError::IoError(e.to_string()))?
-                .ok_or(VfsError::NotFound),
+            ResourceVariant::Draft => {
+                let data = self
+                    .drafts
+                    .read_draft(connector, collection, resource)
+                    .map_err(|e| VfsError::IoError(e.to_string()))?
+                    .ok_or(VfsError::NotFound)?;
+                Ok(bytes::Bytes::from(data))
+            }
             ResourceVariant::Lock => {
                 let lslug = lock_slug(resource);
-                self.drafts
+                let data = self
+                    .drafts
                     .read_draft(connector, collection, &lslug)
                     .map_err(|e| VfsError::IoError(e.to_string()))?
-                    .ok_or(VfsError::NotFound)
+                    .ok_or(VfsError::NotFound)?;
+                Ok(bytes::Bytes::from(data))
             }
             ResourceVariant::Live => {
-                // Check cache first.  Bytes::clone() is O(1) (refcount bump),
-                // so pulling from cache no longer deep-copies the whole buffer.
                 let cache_key = format!("{}/{}/{}", connector, collection, resource);
                 if let Some(cached) = self.cache.get_resource(&cache_key) {
-                    return Ok(cached.data.to_vec());
+                    // Bytes::clone() is O(1) — refcount bump, no deep copy.
+                    return Ok(cached.data.clone());
                 }
 
                 // Fetch from connector.
@@ -1543,13 +1743,17 @@ impl VirtualFs {
                         VfsError::IoError(e.to_string())
                     })?;
 
-                let data = result.content;
+                let data = bytes::Bytes::from(result.content);
 
-                // Cache the result, converting Vec<u8> -> Bytes for O(1) clones.
+                // Record content length for accurate getattr sizing.
+                self.content_lengths
+                    .insert(cache_key.clone(), data.len() as u64);
+
+                // Cache the result.
                 self.cache.put_resource(
                     &cache_key,
                     crate::cache::store::Resource {
-                        data: bytes::Bytes::from(data.clone()),
+                        data: data.clone(), // O(1) clone
                     },
                 );
 
@@ -1566,7 +1770,10 @@ impl VirtualFs {
     pub fn mkdir(&self, parent_id: u64, name: &str) -> Result<VfsAttr, VfsError> {
         let parent_kind = self.nodes.get(parent_id).ok_or(VfsError::NotFound)?;
         match &parent_kind {
-            NodeKind::TxDir { connector, collection } => {
+            NodeKind::TxDir {
+                connector,
+                collection,
+            } => {
                 // Creating a named transaction
                 let kind = NodeKind::Transaction {
                     connector: connector.clone(),
@@ -1607,7 +1814,10 @@ impl VirtualFs {
     ) -> Result<(), VfsError> {
         let parent_kind = self.nodes.get(parent_id).ok_or(VfsError::NotFound)?;
         match &parent_kind {
-            NodeKind::TxDir { connector, collection } => {
+            NodeKind::TxDir {
+                connector,
+                collection,
+            } => {
                 // Committing a transaction: promote all files
                 let tx_prefix = format!("__tx_{}_", name);
                 let tx_drafts = self
@@ -1634,8 +1844,7 @@ impl VirtualFs {
                             .versions
                             .save_snapshot(connector, collection, resource, &data);
                         let _ = self.drafts.delete_draft(connector, collection, slug);
-                        let cache_key =
-                            format!("{}/{}/{}", connector, collection, resource);
+                        let cache_key = format!("{}/{}/{}", connector, collection, resource);
                         self.cache.invalidate(&cache_key);
 
                         // Remove the tx resource node
@@ -1680,14 +1889,14 @@ impl VirtualFs {
     // -----------------------------------------------------------------------
 
     /// Delete a file inside a transaction, or abort an entire transaction.
-    pub fn unlink_tx(
-        &self,
-        parent_id: u64,
-        name: &str,
-    ) -> Result<(), VfsError> {
+    pub fn unlink_tx(&self, parent_id: u64, name: &str) -> Result<(), VfsError> {
         let parent_kind = self.nodes.get(parent_id).ok_or(VfsError::NotFound)?;
         match &parent_kind {
-            NodeKind::Transaction { connector, collection, tx_name } => {
+            NodeKind::Transaction {
+                connector,
+                collection,
+                tx_name,
+            } => {
                 // Deleting a single file inside a transaction
                 let resource = name.strip_suffix(".md").unwrap_or(name);
                 let tx_slug = format!("__tx_{}_{}", tx_name, resource);
@@ -1718,7 +1927,10 @@ impl VirtualFs {
                 );
                 Ok(())
             }
-            NodeKind::TxDir { connector, collection } => {
+            NodeKind::TxDir {
+                connector,
+                collection,
+            } => {
                 // Aborting (deleting) an entire transaction
                 let tx_prefix = format!("__tx_{}_", name);
                 let tx_drafts = self
@@ -1804,8 +2016,7 @@ impl VirtualFs {
             .drafts
             .list_drafts(connector, collection)
             .unwrap_or_default();
-        let mut tx_names: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut tx_names: std::collections::HashSet<String> = std::collections::HashSet::new();
         for slug in &draft_slugs {
             if let Some(rest) = slug.strip_prefix("__tx_") {
                 if let Some(underscore_pos) = rest.find('_') {
@@ -1953,12 +2164,8 @@ mod tests {
     #[test]
     fn allocate_different_kinds_get_different_ids() {
         let table = NodeTable::new();
-        let k1 = NodeKind::Connector {
-            name: "a".into(),
-        };
-        let k2 = NodeKind::Connector {
-            name: "b".into(),
-        };
+        let k1 = NodeKind::Connector { name: "a".into() };
+        let k2 = NodeKind::Connector { name: "b".into() };
         let i1 = table.allocate(k1);
         let i2 = table.allocate(k2);
         assert_ne!(i1, i2);
@@ -1967,9 +2174,7 @@ mod tests {
     #[test]
     fn remove_cleans_both_maps() {
         let table = NodeTable::new();
-        let kind = NodeKind::Connector {
-            name: "rm".into(),
-        };
+        let kind = NodeKind::Connector { name: "rm".into() };
         let id = table.allocate(kind.clone());
         assert!(table.get(id).is_some());
         assert!(table.lookup(&kind).is_some());
@@ -2020,5 +2225,48 @@ mod tests {
     #[test]
     fn parse_resource_filename_empty_base_draft() {
         assert!(parse_resource_filename(".draft.md").is_err());
+    }
+
+    #[test]
+    fn stable_id_is_deterministic() {
+        let kind = NodeKind::Resource {
+            connector: "jira".into(),
+            collection: "issues".into(),
+            resource: "PROJ-123".into(),
+            variant: ResourceVariant::Live,
+        };
+        let id1 = NodeTable::stable_id(&kind);
+        let id2 = NodeTable::stable_id(&kind);
+        assert_eq!(id1, id2);
+        assert!(id1 >= 2, "IDs must be >= 2 (0=invalid, 1=root)");
+    }
+
+    #[test]
+    fn collision_handling_gives_distinct_ids() {
+        // Pre-occupy a slot, then allocate a different kind that would
+        // hash to the same ID. The allocator must probe and return a
+        // different ID for the second kind.
+        let table = NodeTable::new();
+        let kind_a = NodeKind::Connector { name: "a".into() };
+        let id_a = table.allocate(kind_a.clone());
+
+        // Manually insert a different kind at the same ID to simulate collision.
+        let kind_b = NodeKind::Connector { name: "b".into() };
+        let real_id_b = NodeTable::stable_id(&kind_b);
+
+        // Force kind_b's slot to be occupied by kind_a (simulated collision).
+        table.entries.insert(real_id_b, kind_a.clone());
+
+        // Now allocate kind_b — it should detect the collision and probe.
+        let id_b = table.allocate(kind_b.clone());
+
+        // Both must be valid and distinct.
+        assert_ne!(id_a, id_b);
+        assert!(id_b >= 2);
+
+        // Forward and reverse lookups must be consistent.
+        assert_eq!(table.get(id_a), Some(kind_a));
+        assert_eq!(table.get(id_b), Some(kind_b.clone()));
+        assert_eq!(table.lookup(&kind_b), Some(id_b));
     }
 }
