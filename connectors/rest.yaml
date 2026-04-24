@@ -1,10 +1,26 @@
+spec_version: "1"
+description: "Generic REST API template — copy and customize for your API"
+
 name: rest
 base_url: "http://localhost:8080"
 auth:
   type: bearer
   token_env: REST_API_TOKEN
+
+capabilities:
+  read: true
+  write: true
+
+agent:
+  tips:
+    - "This is a generic REST template — edit base_url, endpoints, and field mappings for your API"
+    - "Set list_root if the API wraps arrays in an envelope (e.g. {\"data\": [...]})"
+
 collections:
   - name: items
+    description: "API resources"
+    slug_hint: "resource slug or ID"
+    operations: [read, write, draft]
     list_endpoint: "/api/items"
     get_endpoint: "/api/items/{id}"
     update_endpoint: "/api/items/{id}"

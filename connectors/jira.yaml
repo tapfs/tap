@@ -1,10 +1,33 @@
+spec_version: "1"
+description: "Jira Cloud — issues, projects, and agile boards"
+
 name: jira
 base_url: "https://your-domain.atlassian.net"
 auth:
   type: basic
   token_env: JIRA_API_TOKEN
+
+capabilities:
+  read: true
+  write: true
+  rate_limit:
+    requests_per_minute: 100
+
+agent:
+  tips:
+    - "Issue filenames use Jira keys (e.g. PROJ-123.md)"
+    - "Project filenames use project keys (e.g. PROJ.md)"
+    - "To find issues by status, grep for the status field in frontmatter"
+    - "Board filenames use the board name"
+  relationships:
+    - "Issues belong to projects and may appear on boards"
+    - "Issues can have sub-tasks and linked issues"
+
 collections:
   - name: issues
+    description: "Jira issues assigned to the current user, sorted by last update"
+    slug_hint: "issue key (e.g. PROJ-123, TEAM-42)"
+    operations: [read, write, draft]
     list_endpoint: "/rest/api/3/search/jql?jql=assignee=currentUser()+ORDER+BY+updated+DESC&maxResults=50"
     get_endpoint: "/rest/api/3/issue/{id}"
     update_endpoint: "/rest/api/3/issue/{id}"
@@ -12,13 +35,27 @@ collections:
     slug_field: "key"
     title_field: "fields.summary"
     list_root: "issues"
+    relationships:
+      - target: projects
+        type: many-to-one
+        description: "Project this issue belongs to"
   - name: projects
+    description: "Jira projects"
+    slug_hint: "project key (e.g. PROJ, TEAM)"
+    operations: [read]
     list_endpoint: "/rest/api/3/project"
     get_endpoint: "/rest/api/3/project/{id}"
     id_field: "key"
     slug_field: "key"
     title_field: "name"
+    relationships:
+      - target: issues
+        type: one-to-many
+        description: "Issues in this project"
   - name: boards
+    description: "Agile boards (Scrum and Kanban)"
+    slug_hint: "board name"
+    operations: [read]
     list_endpoint: "/rest/agile/1.0/board?maxResults=50"
     get_endpoint: "/rest/agile/1.0/board/{id}"
     id_field: "id"

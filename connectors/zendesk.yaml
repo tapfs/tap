@@ -1,10 +1,31 @@
+spec_version: "1"
+description: "Zendesk — support tickets, users, and organizations"
+
 name: zendesk
 base_url: "https://your-subdomain.zendesk.com"
 auth:
   type: bearer
   token_env: ZENDESK_API_TOKEN
+
+capabilities:
+  read: true
+  write: true
+
+agent:
+  tips:
+    - "Ticket, user, and organization filenames use numeric Zendesk IDs"
+    - "Ticket titles show the subject line"
+    - "Replace 'your-subdomain' in base_url with your Zendesk subdomain"
+    - "Tickets are sorted by last update (newest first)"
+  relationships:
+    - "Tickets belong to users (requesters) and organizations"
+    - "Users belong to organizations"
+
 collections:
   - name: tickets
+    description: "Support tickets sorted by last update"
+    slug_hint: "numeric ticket ID (e.g. 12345)"
+    operations: [read, write, draft]
     list_endpoint: "/api/v2/tickets?sort_by=updated_at&sort_order=desc&per_page=100"
     get_endpoint: "/api/v2/tickets/{id}.json"
     update_endpoint: "/api/v2/tickets/{id}.json"
@@ -12,7 +33,17 @@ collections:
     slug_field: "id"
     title_field: "subject"
     list_root: "tickets"
+    relationships:
+      - target: users
+        type: many-to-one
+        description: "Requester of this ticket"
+      - target: organizations
+        type: many-to-one
+        description: "Organization this ticket belongs to"
   - name: users
+    description: "End users, agents, and admins"
+    slug_hint: "numeric user ID"
+    operations: [read]
     list_endpoint: "/api/v2/users?per_page=100"
     get_endpoint: "/api/v2/users/{id}.json"
     id_field: "id"
@@ -20,6 +51,9 @@ collections:
     title_field: "name"
     list_root: "users"
   - name: organizations
+    description: "Customer organizations"
+    slug_hint: "numeric organization ID"
+    operations: [read]
     list_endpoint: "/api/v2/organizations?per_page=100"
     get_endpoint: "/api/v2/organizations/{id}.json"
     id_field: "id"

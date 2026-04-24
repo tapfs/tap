@@ -1,10 +1,37 @@
+spec_version: "1"
+version: "1.0.0"
+description: "GitHub repositories, issues, pull requests, and notifications"
+
 name: github
 base_url: "https://api.github.com"
 auth:
   type: bearer
   token_env: GITHUB_TOKEN
+
+capabilities:
+  read: true
+  write: true
+  create: false
+  delete: false
+  pagination: link_header
+  rate_limit:
+    requests_per_minute: 5000
+
+agent:
+  tips:
+    - "Issues and PRs are scoped to tapfs/tap by default — edit list_endpoint to change"
+    - "Comments are composed into issue and PR files automatically"
+    - "To find issues by label, grep for the Labels section"
+    - "Repo filenames use the repository name (e.g. tap.md, my-project.md)"
+  relationships:
+    - "Pull requests reference issues via body text and timeline events"
+    - "Issues and PRs share the same label and assignee sets"
+
 collections:
   - name: repos
+    description: "Git repositories accessible to the authenticated user"
+    slug_hint: "repository name (e.g. tap, my-project)"
+    operations: [read]
     list_endpoint: "/user/repos?sort=updated&per_page=100"
     get_endpoint: "/repos/{id}"
     id_field: "full_name"
@@ -23,6 +50,9 @@ collections:
       body: "description"
 
   - name: issues
+    description: "GitHub issues with labels, assignees, and comments"
+    slug_hint: "issue number (e.g. 42, 123)"
+    operations: [read, write, draft]
     list_endpoint: "/repos/tapfs/tap/issues?state=open&per_page=100"
     get_endpoint: "/repos/tapfs/tap/issues/{id}"
     id_field: "number"
@@ -50,8 +80,32 @@ collections:
       - name: Comments
         endpoint: "/repos/tapfs/tap/issues/{id}/comments"
         item_template: "**{user.login}** ({created_at}):\n> {body}\n"
+    operations_spec:
+      - name: close
+        description: "Close this issue"
+        endpoint: "/repos/tapfs/tap/issues/{id}"
+        method: PATCH
+        trigger: frontmatter
+        trigger_field: state
+        trigger_value: "closed"
+        body: '{"state": "closed"}'
+      - name: reopen
+        description: "Reopen a closed issue"
+        endpoint: "/repos/tapfs/tap/issues/{id}"
+        method: PATCH
+        trigger: frontmatter
+        trigger_field: state
+        trigger_value: "open"
+        body: '{"state": "open"}'
+    relationships:
+      - target: pulls
+        type: many-to-many
+        description: "PRs that reference this issue"
 
   - name: pulls
+    description: "Open pull requests with review status and CI checks"
+    slug_hint: "PR number (e.g. 42, 123)"
+    operations: [read, write, draft]
     list_endpoint: "/repos/tapfs/tap/pulls?state=open&per_page=100"
     get_endpoint: "/repos/tapfs/tap/pulls/{id}"
     id_field: "number"
@@ -77,8 +131,15 @@ collections:
           field: "requested_reviewers"
           format: "list"
           item_template: "{login}"
+    relationships:
+      - target: issues
+        type: many-to-many
+        description: "Issues referenced by this PR"
 
   - name: notifications
+    description: "Unread notifications across all repositories"
+    slug_hint: "notification thread ID"
+    operations: [read]
     list_endpoint: "/notifications?per_page=50"
     get_endpoint: "/notifications/threads/{id}"
     id_field: "id"
@@ -86,6 +147,9 @@ collections:
     title_field: "subject.title"
 
   - name: gists
+    description: "Code snippets and notes"
+    slug_hint: "gist ID (hash)"
+    operations: [read]
     list_endpoint: "/gists?per_page=50"
     get_endpoint: "/gists/{id}"
     id_field: "id"

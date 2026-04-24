@@ -1,10 +1,31 @@
+spec_version: "1"
+description: "PagerDuty — incidents, services, and on-call schedules"
+
 name: pagerduty
 base_url: "https://api.pagerduty.com"
 auth:
   type: bearer
   token_env: PAGERDUTY_API_TOKEN
+
+capabilities:
+  read: true
+  write: true
+
+agent:
+  tips:
+    - "Incident filenames use incident numbers (e.g. 42.md)"
+    - "Service and on-call filenames use PagerDuty IDs"
+    - "Incidents are sorted by creation date (newest first)"
+    - "On-call entries show who is currently on-call for each schedule"
+  relationships:
+    - "Incidents are triggered on services"
+    - "On-call schedules determine who gets paged for each service"
+
 collections:
   - name: incidents
+    description: "Active and recent incidents sorted by creation date"
+    slug_hint: "incident number (e.g. 42)"
+    operations: [read, write, draft]
     list_endpoint: "/incidents?sort_by=created_at:desc&limit=100"
     get_endpoint: "/incidents/{id}"
     update_endpoint: "/incidents/{id}"
@@ -12,7 +33,14 @@ collections:
     slug_field: "incident_number"
     title_field: "title"
     list_root: "incidents"
+    relationships:
+      - target: services
+        type: many-to-one
+        description: "Service this incident is associated with"
   - name: services
+    description: "Monitored services and integrations"
+    slug_hint: "PagerDuty service ID"
+    operations: [read]
     list_endpoint: "/services?limit=100"
     get_endpoint: "/services/{id}"
     id_field: "id"
@@ -20,6 +48,9 @@ collections:
     title_field: "name"
     list_root: "services"
   - name: oncalls
+    description: "Current on-call schedules and assignments"
+    slug_hint: "schedule ID"
+    operations: [read]
     list_endpoint: "/oncalls?limit=100"
     get_endpoint: "/oncalls?schedule_ids[]={id}"
     id_field: "schedule.id"

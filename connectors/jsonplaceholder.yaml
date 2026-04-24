@@ -1,7 +1,24 @@
+spec_version: "1"
+description: "JSONPlaceholder fake REST API for testing and demos"
+
 name: jsonplaceholder
 base_url: "https://jsonplaceholder.typicode.com"
+
+capabilities:
+  read: true
+  write: true
+
+agent:
+  tips:
+    - "This is a fake API for testing — writes are simulated and not persisted"
+    - "Posts, users, todos, and comments are the four available collections"
+    - "User filenames use usernames (e.g. Bret.md), post filenames use numeric IDs"
+
 collections:
   - name: posts
+    description: "Blog posts with title and body"
+    slug_hint: "numeric post ID (e.g. 1, 42)"
+    operations: [read, write]
     list_endpoint: "/posts"
     get_endpoint: "/posts/{id}"
     update_endpoint: "/posts/{id}"
@@ -9,6 +26,9 @@ collections:
     slug_field: "id"
     title_field: "title"
   - name: users
+    description: "User profiles with contact info"
+    slug_hint: "username (e.g. Bret, Antonette)"
+    operations: [read, write]
     list_endpoint: "/users"
     get_endpoint: "/users/{id}"
     update_endpoint: "/users/{id}"
@@ -16,6 +36,9 @@ collections:
     slug_field: "username"
     title_field: "name"
   - name: todos
+    description: "To-do items with completion status"
+    slug_hint: "numeric todo ID"
+    operations: [read, write]
     list_endpoint: "/todos"
     get_endpoint: "/todos/{id}"
     update_endpoint: "/todos/{id}"
@@ -23,6 +46,9 @@ collections:
     slug_field: "id"
     title_field: "title"
   - name: comments
+    description: "Comments on posts"
+    slug_hint: "numeric comment ID"
+    operations: [read]
     list_endpoint: "/comments"
     get_endpoint: "/comments/{id}"
     id_field: "id"

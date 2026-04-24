@@ -1,10 +1,31 @@
+spec_version: "1"
+description: "Stripe — customers, charges, subscriptions, and invoices"
+
 name: stripe
 base_url: "https://api.stripe.com"
 auth:
   type: bearer
   token_env: STRIPE_API_KEY
+
+capabilities:
+  read: true
+  write: true
+
+agent:
+  tips:
+    - "All filenames use Stripe IDs (e.g. cus_ABC123.md, ch_XYZ789.md)"
+    - "Customer titles show email addresses"
+    - "Invoice titles show invoice numbers"
+    - "Stripe uses cursor-based pagination via the starting_after parameter"
+  relationships:
+    - "Charges and subscriptions belong to customers"
+    - "Invoices are generated from subscriptions"
+
 collections:
   - name: customers
+    description: "Stripe customers with payment info and metadata"
+    slug_hint: "Stripe customer ID (e.g. cus_ABC123)"
+    operations: [read, write, draft]
     list_endpoint: "/v1/customers?limit=100"
     get_endpoint: "/v1/customers/{id}"
     update_endpoint: "/v1/customers/{id}"
@@ -12,7 +33,17 @@ collections:
     slug_field: "id"
     title_field: "email"
     list_root: "data"
+    relationships:
+      - target: charges
+        type: one-to-many
+        description: "Charges for this customer"
+      - target: subscriptions
+        type: one-to-many
+        description: "Active subscriptions"
   - name: charges
+    description: "Payment charges and transactions"
+    slug_hint: "Stripe charge ID (e.g. ch_XYZ789)"
+    operations: [read]
     list_endpoint: "/v1/charges?limit=100"
     get_endpoint: "/v1/charges/{id}"
     id_field: "id"
@@ -20,6 +51,9 @@ collections:
     title_field: "description"
     list_root: "data"
   - name: subscriptions
+    description: "Recurring subscriptions with billing details"
+    slug_hint: "Stripe subscription ID (e.g. sub_DEF456)"
+    operations: [read, write, draft]
     list_endpoint: "/v1/subscriptions?limit=100"
     get_endpoint: "/v1/subscriptions/{id}"
     update_endpoint: "/v1/subscriptions/{id}"
@@ -28,6 +62,9 @@ collections:
     title_field: "id"
     list_root: "data"
   - name: invoices
+    description: "Invoices generated from subscriptions"
+    slug_hint: "Stripe invoice ID (e.g. in_GHI012)"
+    operations: [read]
     list_endpoint: "/v1/invoices?limit=100"
     get_endpoint: "/v1/invoices/{id}"
     id_field: "id"

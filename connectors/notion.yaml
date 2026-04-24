@@ -1,10 +1,28 @@
+spec_version: "1"
+description: "Notion — pages, databases, and workspace content"
+
 name: notion
 base_url: "https://api.notion.com"
 auth:
   type: bearer
   token_env: NOTION_API_TOKEN
+
+capabilities:
+  read: true
+  write: true
+  pagination: cursor
+
+agent:
+  tips:
+    - "Page and database filenames use UUIDs — grep for titles to find specific content"
+    - "The search endpoint returns both pages and databases mixed together"
+    - "Page titles are nested at properties.title.title.0.plain_text"
+
 collections:
   - name: pages
+    description: "Notion pages accessible to the integration"
+    slug_hint: "page UUID"
+    operations: [read, write, draft]
     list_endpoint: "/v1/search"
     get_endpoint: "/v1/pages/{id}"
     update_endpoint: "/v1/pages/{id}"
@@ -13,6 +31,9 @@ collections:
     title_field: "properties.title.title.0.plain_text"
     list_root: "results"
   - name: databases
+    description: "Notion databases (structured collections)"
+    slug_hint: "database UUID"
+    operations: [read]
     list_endpoint: "/v1/search"
     get_endpoint: "/v1/databases/{id}"
     id_field: "id"

@@ -1,10 +1,32 @@
+spec_version: "1"
+description: "Linear — issues, projects, and team management"
+
 name: linear
 base_url: "https://api.linear.app"
 auth:
   type: bearer
   token_env: LINEAR_API_TOKEN
+
+capabilities:
+  read: true
+  write: true
+  pagination: cursor
+
+agent:
+  tips:
+    - "Issue filenames use Linear identifiers (e.g. ENG-42.md)"
+    - "Project filenames use slug IDs"
+    - "Team filenames use team keys (e.g. ENG.md)"
+    - "Issues are sorted by last update by default"
+  relationships:
+    - "Issues belong to projects and teams"
+    - "Projects contain multiple issues"
+
 collections:
   - name: issues
+    description: "Linear issues with status, priority, and assignees"
+    slug_hint: "issue identifier (e.g. ENG-42)"
+    operations: [read, write, draft]
     list_endpoint: "/rest/v2/issues?limit=50&sort=updatedAt"
     get_endpoint: "/rest/v2/issues/{id}"
     update_endpoint: "/rest/v2/issues/{id}"
@@ -12,7 +34,14 @@ collections:
     slug_field: "identifier"
     title_field: "title"
     list_root: "data"
+    relationships:
+      - target: projects
+        type: many-to-one
+        description: "Project this issue belongs to"
   - name: projects
+    description: "Linear projects grouping related issues"
+    slug_hint: "project slug (e.g. api-redesign)"
+    operations: [read]
     list_endpoint: "/rest/v2/projects?limit=50"
     get_endpoint: "/rest/v2/projects/{id}"
     id_field: "id"
@@ -20,6 +49,9 @@ collections:
     title_field: "name"
     list_root: "data"
   - name: teams
+    description: "Teams and their configuration"
+    slug_hint: "team key (e.g. ENG, DESIGN)"
+    operations: [read]
     list_endpoint: "/rest/v2/teams?limit=50"
     get_endpoint: "/rest/v2/teams/{id}"
     id_field: "id"

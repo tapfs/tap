@@ -1,10 +1,33 @@
+spec_version: "1"
+description: "ServiceNow — incidents, change requests, and user records"
+
 name: servicenow
 base_url: "https://your-instance.service-now.com"
 auth:
   type: basic
   token_env: SERVICENOW_API_TOKEN
+
+capabilities:
+  read: true
+  write: true
+  rate_limit:
+    requests_per_minute: 60
+
+agent:
+  tips:
+    - "Incident and change request filenames use ServiceNow numbers (e.g. INC0012345.md, CHG0001234.md)"
+    - "User filenames use usernames"
+    - "Replace 'your-instance' in base_url with your ServiceNow instance name"
+    - "sysparm_display_value=true returns human-readable field values instead of IDs"
+  relationships:
+    - "Incidents may have associated change requests"
+    - "Users are assigned to incidents and change requests"
+
 collections:
   - name: incidents
+    description: "IT incidents sorted by last update"
+    slug_hint: "incident number (e.g. INC0012345)"
+    operations: [read, write, draft]
     list_endpoint: "/api/now/table/incident?sysparm_limit=100&sysparm_display_value=true&sysparm_order_by=sys_updated_on"
     get_endpoint: "/api/now/table/incident/{id}"
     update_endpoint: "/api/now/table/incident/{id}"
@@ -12,7 +35,14 @@ collections:
     slug_field: "number"
     title_field: "short_description"
     list_root: "result"
+    relationships:
+      - target: changes
+        type: many-to-many
+        description: "Change requests related to this incident"
   - name: changes
+    description: "Change requests for infrastructure and service changes"
+    slug_hint: "change number (e.g. CHG0001234)"
+    operations: [read, write, draft]
     list_endpoint: "/api/now/table/change_request?sysparm_limit=100&sysparm_display_value=true"
     get_endpoint: "/api/now/table/change_request/{id}"
     update_endpoint: "/api/now/table/change_request/{id}"
@@ -21,6 +51,9 @@ collections:
     title_field: "short_description"
     list_root: "result"
   - name: users
+    description: "ServiceNow user records"
+    slug_hint: "username (e.g. admin, jsmith)"
+    operations: [read]
     list_endpoint: "/api/now/table/sys_user?sysparm_limit=100"
     get_endpoint: "/api/now/table/sys_user/{id}"
     id_field: "sys_id"

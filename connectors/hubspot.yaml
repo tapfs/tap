@@ -1,10 +1,32 @@
+spec_version: "1"
+description: "HubSpot CRM — contacts, companies, deals, and tickets"
+
 name: hubspot
 base_url: "https://api.hubapi.com"
 auth:
   type: bearer
   token_env: HUBSPOT_API_TOKEN
+
+capabilities:
+  read: true
+  write: true
+  pagination: cursor
+
+agent:
+  tips:
+    - "Contact, company, deal, and ticket filenames use numeric HubSpot IDs"
+    - "Contact titles show email addresses; company titles show company names"
+    - "To find contacts by company, grep for the company property"
+    - "Deal stages follow the HubSpot pipeline (e.g. appointmentscheduled, closedwon)"
+  relationships:
+    - "Contacts are associated with companies"
+    - "Deals are linked to contacts and companies"
+
 collections:
   - name: contacts
+    description: "CRM contacts with email, company, and lifecycle stage"
+    slug_hint: "numeric contact ID"
+    operations: [read, write, draft]
     list_endpoint: "/crm/v3/objects/contacts?limit=100&properties=firstname,lastname,email,company,phone"
     get_endpoint: "/crm/v3/objects/contacts/{id}?properties=firstname,lastname,email,company,phone,lifecyclestage"
     update_endpoint: "/crm/v3/objects/contacts/{id}"
@@ -12,7 +34,14 @@ collections:
     slug_field: "id"
     title_field: "properties.email"
     list_root: "results"
+    relationships:
+      - target: companies
+        type: many-to-one
+        description: "Company this contact belongs to"
   - name: companies
+    description: "Companies with industry, revenue, and employee count"
+    slug_hint: "numeric company ID"
+    operations: [read, write, draft]
     list_endpoint: "/crm/v3/objects/companies?limit=100&properties=name,domain,industry,annualrevenue"
     get_endpoint: "/crm/v3/objects/companies/{id}?properties=name,domain,industry,annualrevenue,numberofemployees"
     update_endpoint: "/crm/v3/objects/companies/{id}"
@@ -21,6 +50,9 @@ collections:
     title_field: "properties.name"
     list_root: "results"
   - name: deals
+    description: "Sales deals with stage, amount, and close date"
+    slug_hint: "numeric deal ID"
+    operations: [read, write, draft]
     list_endpoint: "/crm/v3/objects/deals?limit=100&properties=dealname,amount,dealstage,closedate"
     get_endpoint: "/crm/v3/objects/deals/{id}?properties=dealname,amount,dealstage,closedate,pipeline"
     update_endpoint: "/crm/v3/objects/deals/{id}"
@@ -28,7 +60,17 @@ collections:
     slug_field: "id"
     title_field: "properties.dealname"
     list_root: "results"
+    relationships:
+      - target: contacts
+        type: many-to-many
+        description: "Contacts associated with this deal"
+      - target: companies
+        type: many-to-one
+        description: "Company associated with this deal"
   - name: tickets
+    description: "Support tickets with subject and pipeline stage"
+    slug_hint: "numeric ticket ID"
+    operations: [read]
     list_endpoint: "/crm/v3/objects/tickets?limit=100&properties=subject,content,hs_pipeline_stage"
     get_endpoint: "/crm/v3/objects/tickets/{id}"
     id_field: "id"

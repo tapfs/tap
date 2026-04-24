@@ -1,10 +1,28 @@
+spec_version: "1"
+description: "Slack — channels, messages, and team members"
+
 name: slack
 base_url: "https://slack.com/api"
 auth:
   type: bearer
   token_env: SLACK_BOT_TOKEN
+
+capabilities:
+  read: true
+  write: false
+
+agent:
+  tips:
+    - "Channel filenames use the channel name (e.g. general.md, engineering.md)"
+    - "Messages use timestamps as filenames — grep for message content to find specific messages"
+    - "User filenames use Slack usernames"
+    - "Messages collection defaults to #general — edit list_endpoint to change the channel"
+
 collections:
   - name: channels
+    description: "Public and private Slack channels"
+    slug_hint: "channel name (e.g. general, engineering)"
+    operations: [read]
     list_endpoint: "/conversations.list?types=public_channel,private_channel&limit=200"
     get_endpoint: "/conversations.info?channel={id}"
     id_field: "id"
@@ -12,6 +30,9 @@ collections:
     title_field: "name"
     list_root: "channels"
   - name: messages
+    description: "Recent messages from a channel"
+    slug_hint: "message timestamp (e.g. 1234567890.123456)"
+    operations: [read]
     list_endpoint: "/conversations.history?channel=general&limit=50"
     get_endpoint: "/conversations.history?channel={id}&limit=1"
     id_field: "ts"
@@ -19,6 +40,9 @@ collections:
     title_field: "text"
     list_root: "messages"
   - name: users
+    description: "Team members and their profiles"
+    slug_hint: "username (e.g. jsmith)"
+    operations: [read]
     list_endpoint: "/users.list?limit=200"
     get_endpoint: "/users.info?user={id}"
     id_field: "id"
