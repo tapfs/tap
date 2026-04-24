@@ -1,11 +1,9 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use anyhow::Result;
+use async_trait::async_trait;
 
-use crate::connector::traits::{
-    CollectionInfo, Connector, Resource, ResourceMeta, VersionInfo,
-};
+use crate::connector::traits::{CollectionInfo, Connector, Resource, ResourceMeta, VersionInfo};
 use crate::governance::audit::AuditLogger;
 
 /// A wrapper around any [`Connector`] that logs every operation to an [`AuditLogger`].
@@ -110,12 +108,7 @@ impl Connector for AuditedConnector {
         }
     }
 
-    async fn write_resource(
-        &self,
-        collection: &str,
-        id: &str,
-        content: &[u8],
-    ) -> Result<()> {
+    async fn write_resource(&self, collection: &str, id: &str, content: &[u8]) -> Result<()> {
         let connector_name = self.inner.name().to_string();
         match self.inner.write_resource(collection, id, content).await {
             Ok(()) => {

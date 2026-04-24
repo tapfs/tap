@@ -5,5 +5,5 @@
   "main": "src/index.ts",
   "keywords": ["openclaw", "plugin", "tapfs", "api", "filesystem"],
   "repository": "https://github.com/tapfs/tap",
-  "license": "MIT"
+  "license": "Apache-2.0"
 }

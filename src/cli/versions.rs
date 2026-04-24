@@ -65,10 +65,7 @@ pub fn run_versions(path: &Path, data_dir: &Path) -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "Versions of {}/{}/{}:",
-        connector, collection, resource
-    );
+    println!("Versions of {}/{}/{}:", connector, collection, resource);
     for v in &versions {
         let file = data_dir
             .join("versions")
@@ -81,13 +78,11 @@ pub fn run_versions(path: &Path, data_dir: &Path) -> Result<()> {
             .and_then(|m| m.modified())
             .ok()
             .and_then(|t| {
-                t.duration_since(std::time::UNIX_EPOCH)
-                    .ok()
-                    .map(|d| {
-                        chrono::DateTime::from_timestamp(d.as_secs() as i64, 0)
-                            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
-                            .unwrap_or_default()
-                    })
+                t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| {
+                    chrono::DateTime::from_timestamp(d.as_secs() as i64, 0)
+                        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                        .unwrap_or_default()
+                })
             })
             .unwrap_or_default();
 
@@ -97,8 +92,19 @@ pub fn run_versions(path: &Path, data_dir: &Path) -> Result<()> {
     // Show how to read or rollback
     let latest = versions.last().unwrap();
     println!();
-    println!("Read a version:    cat {}", path.display().to_string().replace(".md", &format!("@v{}.md", latest)));
-    println!("Rollback to v{}:   tap rollback {}", latest, path.display().to_string().replace(".md", &format!("@v{}.md", latest)));
+    println!(
+        "Read a version:    cat {}",
+        path.display()
+            .to_string()
+            .replace(".md", &format!("@v{}.md", latest))
+    );
+    println!(
+        "Rollback to v{}:   tap rollback {}",
+        latest,
+        path.display()
+            .to_string()
+            .replace(".md", &format!("@v{}.md", latest))
+    );
 
     Ok(())
 }
@@ -136,10 +142,7 @@ pub fn run_rollback(path: &Path, data_dir: &Path) -> Result<()> {
         // The rollback target isn't the latest — save current as new version first
         if let Some(current) = store.read_version(&connector, &collection, &resource, latest)? {
             let saved = store.save_snapshot(&connector, &collection, &resource, &current)?;
-            println!(
-                "Saved current (v{}) as v{} before rollback",
-                latest, saved
-            );
+            println!("Saved current (v{}) as v{} before rollback", latest, saved);
         }
     }
 
@@ -159,8 +162,14 @@ pub fn run_rollback(path: &Path, data_dir: &Path) -> Result<()> {
     println!("Draft created. To push to API:");
     println!(
         "  mv {}.draft.md {}.md",
-        path.display().to_string().replace(".md", "").replace(&format!("@v{}", version), ""),
-        path.display().to_string().replace(".md", "").replace(&format!("@v{}", version), ""),
+        path.display()
+            .to_string()
+            .replace(".md", "")
+            .replace(&format!("@v{}", version), ""),
+        path.display()
+            .to_string()
+            .replace(".md", "")
+            .replace(&format!("@v{}", version), ""),
     );
     println!("Or if auto-promote is enabled, the content will push on next write/close.");
 

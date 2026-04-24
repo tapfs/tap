@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 /// Install a connector from a Git repository or GitHub shorthand.
 ///
 /// Examples:
-///   tap install tapfs/salesforce           -> git clone https://github.com/tapfs/salesforce
-///   tap install https://github.com/foo/bar -> git clone as-is
+///   tap install tapfs/salesforce           -> git clone <https://github.com/tapfs/salesforce>
+///   tap install <https://github.com/foo/bar> -> git clone as-is
 ///   tap install ./local-connector          -> copy from local path
 pub fn run_install(source: &str, data_dir: &Path) -> Result<()> {
     let connectors_dir = data_dir.join("connectors");
@@ -14,15 +14,20 @@ pub fn run_install(source: &str, data_dir: &Path) -> Result<()> {
     if source.starts_with("./") || source.starts_with('/') {
         // Local path
         let src_path = PathBuf::from(source);
-        let name = src_path.file_name()
+        let name = src_path
+            .file_name()
             .and_then(|n| n.to_str())
             .ok_or_else(|| anyhow!("invalid path: {}", source))?;
         let dest = connectors_dir.join(name);
         copy_dir(&src_path, &dest)?;
         println!("Installed {} from local path", name);
-    } else if source.starts_with("http://") || source.starts_with("https://") || source.starts_with("git@") {
+    } else if source.starts_with("http://")
+        || source.starts_with("https://")
+        || source.starts_with("git@")
+    {
         // Full Git URL
-        let name = source.rsplit('/')
+        let name = source
+            .rsplit('/')
             .next()
             .unwrap_or("connector")
             .trim_end_matches(".git");

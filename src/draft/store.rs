@@ -58,8 +58,8 @@ impl DraftStore {
         if !path.exists() {
             return Ok(None);
         }
-        let data = fs::read(&path)
-            .with_context(|| format!("failed to read draft: {}", path.display()))?;
+        let data =
+            fs::read(&path).with_context(|| format!("failed to read draft: {}", path.display()))?;
         Ok(Some(data))
     }
 
@@ -77,12 +77,7 @@ impl DraftStore {
 
     /// Delete a draft.  Returns `Ok(true)` if a draft was removed, or
     /// `Ok(false)` if there was nothing to delete.
-    pub fn delete_draft(
-        &self,
-        connector: &str,
-        collection: &str,
-        slug: &str,
-    ) -> Result<bool> {
+    pub fn delete_draft(&self, connector: &str, collection: &str, slug: &str) -> Result<bool> {
         let path = self.draft_path(connector, collection, slug);
         if !path.exists() {
             return Ok(false);
@@ -106,11 +101,7 @@ impl DraftStore {
     /// List all draft slugs for a given connector/collection pair.
     ///
     /// Returns an empty `Vec` if the collection directory does not exist.
-    pub fn list_drafts(
-        &self,
-        connector: &str,
-        collection: &str,
-    ) -> Result<Vec<String>> {
+    pub fn list_drafts(&self, connector: &str, collection: &str) -> Result<Vec<String>> {
         let dir = self.base_dir.join(connector).join(collection);
         if !dir.exists() {
             return Ok(Vec::new());
@@ -178,9 +169,7 @@ mod tests {
         store
             .create_draft("rest", "items", "item-1", b"v1")
             .unwrap();
-        store
-            .write_draft("rest", "items", "item-1", b"v2")
-            .unwrap();
+        store.write_draft("rest", "items", "item-1", b"v2").unwrap();
         let data = store.read_draft("rest", "items", "item-1").unwrap();
         assert_eq!(data, Some(b"v2".to_vec()));
     }
@@ -212,15 +201,9 @@ mod tests {
     #[test]
     fn list_drafts_returns_sorted_slugs() {
         let (store, _tmp) = make_store();
-        store
-            .create_draft("rest", "items", "charlie", b"")
-            .unwrap();
-        store
-            .create_draft("rest", "items", "alpha", b"")
-            .unwrap();
-        store
-            .create_draft("rest", "items", "bravo", b"")
-            .unwrap();
+        store.create_draft("rest", "items", "charlie", b"").unwrap();
+        store.create_draft("rest", "items", "alpha", b"").unwrap();
+        store.create_draft("rest", "items", "bravo", b"").unwrap();
         let slugs = store.list_drafts("rest", "items").unwrap();
         assert_eq!(slugs, vec!["alpha", "bravo", "charlie"]);
     }

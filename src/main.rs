@@ -5,7 +5,10 @@ use tapfs::cli;
 use tapfs::config::TapConfig;
 
 #[derive(Parser)]
-#[command(name = "tap", about = "Mount enterprise REST APIs as agent-readable files")]
+#[command(
+    name = "tap",
+    about = "Mount enterprise REST APIs as agent-readable files"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -109,6 +112,16 @@ enum Commands {
         data_dir: Option<PathBuf>,
     },
 
+    /// Show raw API response for a mounted resource
+    Inspect {
+        /// Path to resource (e.g., /tmp/tap/github/issues/18.md)
+        path: PathBuf,
+
+        /// Data directory
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
+
     /// Install a connector from Git/GitHub
     Install {
         /// Source: GitHub shorthand (org/repo), Git URL, or local path
@@ -188,11 +201,7 @@ async fn main() -> anyhow::Result<()> {
             limit,
             connector,
             data_dir,
-        } => cli::log::run(
-            data_dir.unwrap_or_else(default_data_dir),
-            limit,
-            connector,
-        ),
+        } => cli::log::run(data_dir.unwrap_or_else(default_data_dir), limit, connector),
         Commands::Status { data_dir } => {
             cli::status::run(data_dir.unwrap_or_else(default_data_dir))
         }
@@ -207,6 +216,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Approve { path, data_dir } => {
             cli::approve::run_approve(&path, &data_dir.unwrap_or_else(default_data_dir))
+        }
+        Commands::Inspect { path, data_dir } => {
+            cli::inspect::run(&path, &data_dir.unwrap_or_else(default_data_dir)).await
         }
         Commands::Install { source, data_dir } => {
             cli::registry::run_install(&source, &data_dir.unwrap_or_else(default_data_dir))

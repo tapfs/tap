@@ -50,7 +50,11 @@ impl TapNfs {
         fattr3 {
             ftype,
             mode: attr.perm as u32,
-            nlink: if attr.file_type == VfsFileType::Directory { 2 } else { 1 },
+            nlink: if attr.file_type == VfsFileType::Directory {
+                2
+            } else {
+                1
+            },
             uid: self.uid,
             gid: self.gid,
             size: attr.size,
@@ -106,12 +110,10 @@ impl NFSFileSystem for TapNfs {
         let name = name.to_string();
         let vfs = Arc::clone(&self.vfs);
         let rt = self.rt.clone();
-        let attr = tokio::task::spawn_blocking(move || {
-            vfs.lookup(&rt, dirid, &name)
-        })
-        .await
-        .map_err(|_| nfsstat3::NFS3ERR_IO)?
-        .map_err(Self::vfs_err_to_nfs)?;
+        let attr = tokio::task::spawn_blocking(move || vfs.lookup(&rt, dirid, &name))
+            .await
+            .map_err(|_| nfsstat3::NFS3ERR_IO)?
+            .map_err(Self::vfs_err_to_nfs)?;
         Ok(attr.id)
     }
 
@@ -138,12 +140,10 @@ impl NFSFileSystem for TapNfs {
     ) -> Result<(Vec<u8>, bool), nfsstat3> {
         let vfs = Arc::clone(&self.vfs);
         let rt = self.rt.clone();
-        let data = tokio::task::spawn_blocking(move || {
-            vfs.read(&rt, id, offset, count)
-        })
-        .await
-        .map_err(|_| nfsstat3::NFS3ERR_IO)?
-        .map_err(Self::vfs_err_to_nfs)?;
+        let data = tokio::task::spawn_blocking(move || vfs.read(&rt, id, offset, count))
+            .await
+            .map_err(|_| nfsstat3::NFS3ERR_IO)?
+            .map_err(Self::vfs_err_to_nfs)?;
         let eof = data.len() < count as usize;
         Ok((data, eof))
     }
@@ -162,10 +162,7 @@ impl NFSFileSystem for TapNfs {
         _attr: sattr3,
     ) -> Result<(fileid3, fattr3), nfsstat3> {
         let name = std::str::from_utf8(filename).map_err(|_| nfsstat3::NFS3ERR_INVAL)?;
-        let attr = self
-            .vfs
-            .create(dirid, name)
-            .map_err(Self::vfs_err_to_nfs)?;
+        let attr = self.vfs.create(dirid, name).map_err(Self::vfs_err_to_nfs)?;
         let fattr = self.vfs_attr_to_fattr(&attr);
         Ok((attr.id, fattr))
     }
@@ -176,10 +173,7 @@ impl NFSFileSystem for TapNfs {
         filename: &filename3,
     ) -> Result<fileid3, nfsstat3> {
         let name = std::str::from_utf8(filename).map_err(|_| nfsstat3::NFS3ERR_INVAL)?;
-        let attr = self
-            .vfs
-            .create(dirid, name)
-            .map_err(Self::vfs_err_to_nfs)?;
+        let attr = self.vfs.create(dirid, name).map_err(Self::vfs_err_to_nfs)?;
         Ok(attr.id)
     }
 
@@ -189,23 +183,14 @@ impl NFSFileSystem for TapNfs {
         dirname: &filename3,
     ) -> Result<(fileid3, fattr3), nfsstat3> {
         let name = std::str::from_utf8(dirname).map_err(|_| nfsstat3::NFS3ERR_INVAL)?;
-        let attr = self
-            .vfs
-            .mkdir(dirid, name)
-            .map_err(Self::vfs_err_to_nfs)?;
+        let attr = self.vfs.mkdir(dirid, name).map_err(Self::vfs_err_to_nfs)?;
         let fattr = self.vfs_attr_to_fattr(&attr);
         Ok((attr.id, fattr))
     }
 
-    async fn remove(
-        &self,
-        dirid: fileid3,
-        filename: &filename3,
-    ) -> Result<(), nfsstat3> {
+    async fn remove(&self, dirid: fileid3, filename: &filename3) -> Result<(), nfsstat3> {
         let name = std::str::from_utf8(filename).map_err(|_| nfsstat3::NFS3ERR_INVAL)?;
-        self.vfs
-            .unlink(dirid, name)
-            .map_err(Self::vfs_err_to_nfs)
+        self.vfs.unlink(dirid, name).map_err(Self::vfs_err_to_nfs)
     }
 
     async fn rename(
@@ -215,8 +200,12 @@ impl NFSFileSystem for TapNfs {
         to_dirid: fileid3,
         to_filename: &filename3,
     ) -> Result<(), nfsstat3> {
-        let old_name = std::str::from_utf8(from_filename).map_err(|_| nfsstat3::NFS3ERR_INVAL)?.to_string();
-        let new_name = std::str::from_utf8(to_filename).map_err(|_| nfsstat3::NFS3ERR_INVAL)?.to_string();
+        let old_name = std::str::from_utf8(from_filename)
+            .map_err(|_| nfsstat3::NFS3ERR_INVAL)?
+            .to_string();
+        let new_name = std::str::from_utf8(to_filename)
+            .map_err(|_| nfsstat3::NFS3ERR_INVAL)?
+            .to_string();
         let vfs = Arc::clone(&self.vfs);
         let rt = self.rt.clone();
         tokio::task::spawn_blocking(move || {
@@ -235,12 +224,10 @@ impl NFSFileSystem for TapNfs {
     ) -> Result<ReadDirResult, nfsstat3> {
         let vfs = Arc::clone(&self.vfs);
         let rt = self.rt.clone();
-        let entries = tokio::task::spawn_blocking(move || {
-            vfs.readdir(&rt, dirid)
-        })
-        .await
-        .map_err(|_| nfsstat3::NFS3ERR_IO)?
-        .map_err(Self::vfs_err_to_nfs)?;
+        let entries = tokio::task::spawn_blocking(move || vfs.readdir(&rt, dirid))
+            .await
+            .map_err(|_| nfsstat3::NFS3ERR_IO)?
+            .map_err(Self::vfs_err_to_nfs)?;
 
         // Filter out . and .., convert to NFS DirEntry, handle pagination
         let mut nfs_entries: Vec<DirEntry> = Vec::new();

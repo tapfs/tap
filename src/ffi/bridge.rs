@@ -130,6 +130,10 @@ unsafe fn cstr_to_str<'a>(ptr: *const c_char) -> Option<&'a str> {
 /// subsequent FFI call, and eventually freed with [`tapfs_free`].
 ///
 /// Returns a null pointer on failure.
+///
+/// # Safety
+///
+/// `spec_yaml` and `data_dir` must be valid, null-terminated C strings.
 #[no_mangle]
 pub unsafe extern "C" fn tapfs_init(
     spec_yaml: *const c_char,
@@ -166,7 +170,13 @@ pub unsafe extern "C" fn tapfs_init(
     let _ = std::fs::create_dir_all(&versions_dir);
 
     // Build subsystems.
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .pool_max_idle_per_host(10)
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(30))
+        .tcp_keepalive(std::time::Duration::from_secs(60))
+        .build()
+        .unwrap_or_default();
     let rest = RestConnector::new(spec, client);
 
     let audit = match AuditLogger::new(audit_log) {
@@ -203,6 +213,11 @@ pub unsafe extern "C" fn tapfs_init(
 /// Free a [`TapFsHandle`] previously returned by [`tapfs_init`].
 ///
 /// After this call the pointer is invalid and must not be reused.
+///
+/// # Safety
+///
+/// `handle` must be a pointer returned by [`tapfs_init`], or null.
+/// Must not be called more than once for the same handle.
 #[no_mangle]
 pub unsafe extern "C" fn tapfs_free(handle: *mut TapFsHandle) {
     if !handle.is_null() {
@@ -213,6 +228,11 @@ pub unsafe extern "C" fn tapfs_free(handle: *mut TapFsHandle) {
 /// Look up a child node by parent ID and name.
 ///
 /// Returns an [`FfiAttr`] with `id = 0` on error or not-found.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer from [`tapfs_init`].
+/// `name` must be a valid, null-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn tapfs_lookup(
     handle: *const TapFsHandle,
@@ -237,6 +257,10 @@ pub unsafe extern "C" fn tapfs_lookup(
 /// Get attributes of a node by its ID.
 ///
 /// Returns an [`FfiAttr`] with `id = 0` on error.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer from [`tapfs_init`].
 #[no_mangle]
 pub unsafe extern "C" fn tapfs_getattr(handle: *const TapFsHandle, id: u64) -> FfiAttr {
     let handle = match handle.as_ref() {
@@ -255,6 +279,10 @@ pub unsafe extern "C" fn tapfs_getattr(handle: *const TapFsHandle, id: u64) -> F
 /// Returns an [`FfiDirList`].  The caller **must** free the returned value
 /// with [`tapfs_free_dir_list`].  On error, `count` is 0 and `entries` is
 /// null.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer from [`tapfs_init`].
 #[no_mangle]
 pub unsafe extern "C" fn tapfs_readdir(handle: *const TapFsHandle, id: u64) -> FfiDirList {
     let handle = match handle.as_ref() {
@@ -300,6 +328,11 @@ pub unsafe extern "C" fn tapfs_readdir(handle: *const TapFsHandle, id: u64) -> F
 }
 
 /// Free an [`FfiDirList`] previously returned by [`tapfs_readdir`].
+///
+/// # Safety
+///
+/// `list` must be a value returned by [`tapfs_readdir`].
+/// Must not be called more than once for the same list.
 #[no_mangle]
 pub unsafe extern "C" fn tapfs_free_dir_list(list: FfiDirList) {
     if list.entries.is_null() || list.count == 0 {
@@ -318,6 +351,10 @@ pub unsafe extern "C" fn tapfs_free_dir_list(list: FfiDirList) {
 ///
 /// Returns an [`FfiData`].  The caller **must** free it with
 /// [`tapfs_free_data`].  On error, `len` is 0 and `ptr` is null.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer from [`tapfs_init`].
 #[no_mangle]
 pub unsafe extern "C" fn tapfs_read(
     handle: *const TapFsHandle,
@@ -354,6 +391,11 @@ pub unsafe extern "C" fn tapfs_read(
 }
 
 /// Free an [`FfiData`] buffer previously returned by [`tapfs_read`].
+///
+/// # Safety
+///
+/// `data` must be a value returned by [`tapfs_read`].
+/// Must not be called more than once for the same data.
 #[no_mangle]
 pub unsafe extern "C" fn tapfs_free_data(data: FfiData) {
     if !data.ptr.is_null() && data.len > 0 {
@@ -368,6 +410,11 @@ pub unsafe extern "C" fn tapfs_free_data(data: FfiData) {
 /// Write data to a file at the given offset.
 ///
 /// Returns the number of bytes written, or -1 on error.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer from [`tapfs_init`].
+/// `data` must point to at least `len` readable bytes, or be null if `len` is 0.
 #[no_mangle]
 pub unsafe extern "C" fn tapfs_write(
     handle: *const TapFsHandle,
@@ -401,6 +448,11 @@ pub unsafe extern "C" fn tapfs_write(
 ///
 /// Returns an [`FfiAttr`] for the newly created node, or an [`FfiAttr`] with
 /// `id = 0` on error.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer from [`tapfs_init`].
+/// `name` must be a valid, null-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn tapfs_create(
     handle: *const TapFsHandle,
@@ -425,6 +477,11 @@ pub unsafe extern "C" fn tapfs_create(
 /// Rename a file (e.g. promote a draft to live).
 ///
 /// Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer from [`tapfs_init`].
+/// `old_name` and `new_name` must be valid, null-terminated C strings.
 #[no_mangle]
 pub unsafe extern "C" fn tapfs_rename(
     handle: *const TapFsHandle,
@@ -446,10 +503,13 @@ pub unsafe extern "C" fn tapfs_rename(
         None => return -1,
     };
 
-    match handle
-        .vfs
-        .rename(handle.rt.handle(), parent_id, old_name, new_parent_id, new_name)
-    {
+    match handle.vfs.rename(
+        handle.rt.handle(),
+        parent_id,
+        old_name,
+        new_parent_id,
+        new_name,
+    ) {
         Ok(()) => 0,
         Err(_) => -1,
     }
@@ -458,6 +518,11 @@ pub unsafe extern "C" fn tapfs_rename(
 /// Delete a file (draft or lock).
 ///
 /// Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer from [`tapfs_init`].
+/// `name` must be a valid, null-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn tapfs_unlink(
     handle: *const TapFsHandle,

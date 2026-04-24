@@ -3,3 +3,24 @@
 /.pkgconfig/
 /.lib/
 libparser.rlib
+
+# Environment and credentials
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor temps
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Dependencies
+node_modules/

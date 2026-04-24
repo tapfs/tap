@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use fuser::{
-    FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
-    ReplyEmpty, ReplyEntry, ReplyStatfs, ReplyWrite, ReplyXattr, Request,
+    FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,
+    ReplyEntry, ReplyStatfs, ReplyWrite, ReplyXattr, Request,
 };
 
 use crate::vfs::core::VirtualFs;
@@ -34,7 +34,8 @@ pub struct TapFs {
 
 /// Convert a [`VfsAttr`] to a [`fuser::FileAttr`].
 fn to_fuse_attr(attr: &VfsAttr) -> fuser::FileAttr {
-    let ts = attr.mtime
+    let ts = attr
+        .mtime
         .as_deref()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .map(|dt| std::time::UNIX_EPOCH + std::time::Duration::from_secs(dt.timestamp() as u64))
@@ -93,16 +94,13 @@ impl Filesystem for TapFs {
     // lookup
     // -----------------------------------------------------------------------
 
-    fn lookup(
-        &mut self,
-        _req: &Request<'_>,
-        parent: u64,
-        name: &OsStr,
-        reply: ReplyEntry,
-    ) {
+    fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
         let name_str = match name.to_str() {
             Some(s) => s,
-            None => { reply.error(libc::ENOENT); return; }
+            None => {
+                reply.error(libc::ENOENT);
+                return;
+            }
         };
         match self.vfs.lookup(&self.rt, parent, name_str) {
             Ok(attr) => reply.entry(&TTL, &to_fuse_attr(&attr), 0),
@@ -114,12 +112,7 @@ impl Filesystem for TapFs {
     // getattr
     // -----------------------------------------------------------------------
 
-    fn getattr(
-        &mut self,
-        _req: &Request<'_>,
-        ino: u64,
-        reply: ReplyAttr,
-    ) {
+    fn getattr(&mut self, _req: &Request<'_>, ino: u64, reply: ReplyAttr) {
         match self.vfs.getattr(ino) {
             Ok(attr) => reply.attr(&TTL, &to_fuse_attr(&attr)),
             Err(e) => reply.error(to_errno(e)),
@@ -215,7 +208,10 @@ impl Filesystem for TapFs {
     ) {
         let name_str = match name.to_str() {
             Some(s) => s,
-            None => { reply.error(libc::EINVAL); return; }
+            None => {
+                reply.error(libc::EINVAL);
+                return;
+            }
         };
         match self.vfs.create(parent, name_str) {
             Ok(attr) => {
@@ -242,13 +238,22 @@ impl Filesystem for TapFs {
     ) {
         let old_name_str = match name.to_str() {
             Some(s) => s,
-            None => { reply.error(libc::EINVAL); return; }
+            None => {
+                reply.error(libc::EINVAL);
+                return;
+            }
         };
         let new_name_str = match new_name.to_str() {
             Some(s) => s,
-            None => { reply.error(libc::EINVAL); return; }
+            None => {
+                reply.error(libc::EINVAL);
+                return;
+            }
         };
-        match self.vfs.rename(&self.rt, parent, old_name_str, new_parent, new_name_str) {
+        match self
+            .vfs
+            .rename(&self.rt, parent, old_name_str, new_parent, new_name_str)
+        {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(to_errno(e)),
         }
@@ -258,16 +263,13 @@ impl Filesystem for TapFs {
     // unlink
     // -----------------------------------------------------------------------
 
-    fn unlink(
-        &mut self,
-        _req: &Request<'_>,
-        parent: u64,
-        name: &OsStr,
-        reply: ReplyEmpty,
-    ) {
+    fn unlink(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         let name_str = match name.to_str() {
             Some(s) => s,
-            None => { reply.error(libc::EINVAL); return; }
+            None => {
+                reply.error(libc::EINVAL);
+                return;
+            }
         };
         match self.vfs.unlink(parent, name_str) {
             Ok(()) => reply.ok(),
@@ -290,7 +292,10 @@ impl Filesystem for TapFs {
     ) {
         let name_str = match name.to_str() {
             Some(s) => s,
-            None => { reply.error(libc::EINVAL); return; }
+            None => {
+                reply.error(libc::EINVAL);
+                return;
+            }
         };
         match self.vfs.mkdir(parent, name_str) {
             Ok(attr) => reply.entry(&TTL, &to_fuse_attr(&attr), 0),
@@ -302,16 +307,13 @@ impl Filesystem for TapFs {
     // rmdir
     // -----------------------------------------------------------------------
 
-    fn rmdir(
-        &mut self,
-        _req: &Request<'_>,
-        parent: u64,
-        name: &OsStr,
-        reply: ReplyEmpty,
-    ) {
+    fn rmdir(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         let name_str = match name.to_str() {
             Some(s) => s,
-            None => { reply.error(libc::EINVAL); return; }
+            None => {
+                reply.error(libc::EINVAL);
+                return;
+            }
         };
         match self.vfs.rmdir(&self.rt, parent, name_str) {
             Ok(()) => reply.ok(),
@@ -325,14 +327,14 @@ impl Filesystem for TapFs {
 
     fn statfs(&mut self, _req: &Request<'_>, _ino: u64, reply: ReplyStatfs) {
         reply.statfs(
-            1_000_000,   // blocks
-            500_000,     // bfree
-            500_000,     // bavail
-            1_000_000,   // files
-            500_000,     // ffree
-            4096,        // bsize
-            255,         // namelen
-            4096,        // frsize
+            1_000_000, // blocks
+            500_000,   // bfree
+            500_000,   // bavail
+            1_000_000, // files
+            500_000,   // ffree
+            4096,      // bsize
+            255,       // namelen
+            4096,      // frsize
         );
     }
 
@@ -364,13 +366,7 @@ impl Filesystem for TapFs {
         reply.error(libc::ENOTSUP);
     }
 
-    fn listxattr(
-        &mut self,
-        _req: &Request<'_>,
-        _ino: u64,
-        _size: u32,
-        reply: ReplyXattr,
-    ) {
+    fn listxattr(&mut self, _req: &Request<'_>, _ino: u64, _size: u32, reply: ReplyXattr) {
         reply.error(libc::ENOTSUP);
     }
 
@@ -378,13 +374,7 @@ impl Filesystem for TapFs {
     // open -- allow only the mounting user and root
     // -----------------------------------------------------------------------
 
-    fn open(
-        &mut self,
-        req: &Request<'_>,
-        _ino: u64,
-        _flags: i32,
-        reply: fuser::ReplyOpen,
-    ) {
+    fn open(&mut self, req: &Request<'_>, _ino: u64, _flags: i32, reply: fuser::ReplyOpen) {
         if req.uid() == self.uid || req.uid() == 0 {
             reply.opened(0, 0);
         } else {
@@ -396,13 +386,7 @@ impl Filesystem for TapFs {
     // opendir -- allow only the mounting user and root
     // -----------------------------------------------------------------------
 
-    fn opendir(
-        &mut self,
-        req: &Request<'_>,
-        _ino: u64,
-        _flags: i32,
-        reply: fuser::ReplyOpen,
-    ) {
+    fn opendir(&mut self, req: &Request<'_>, _ino: u64, _flags: i32, reply: fuser::ReplyOpen) {
         if req.uid() == self.uid || req.uid() == 0 {
             reply.opened(0, 0);
         } else {
@@ -499,13 +483,7 @@ impl Filesystem for TapFs {
     // access -- only allow the mounting user and root
     // -----------------------------------------------------------------------
 
-    fn access(
-        &mut self,
-        req: &Request<'_>,
-        _ino: u64,
-        _mask: i32,
-        reply: ReplyEmpty,
-    ) {
+    fn access(&mut self, req: &Request<'_>, _ino: u64, _mask: i32, reply: ReplyEmpty) {
         if req.uid() == self.uid || req.uid() == 0 {
             reply.ok();
         } else {

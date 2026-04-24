@@ -24,10 +24,7 @@ impl VersionStore {
     /// already exist.
     pub fn new(base_dir: PathBuf) -> Result<Self> {
         fs::create_dir_all(&base_dir).with_context(|| {
-            format!(
-                "failed to create version directory: {}",
-                base_dir.display()
-            )
+            format!("failed to create version directory: {}", base_dir.display())
         })?;
         Ok(Self { base_dir })
     }
@@ -76,12 +73,7 @@ impl VersionStore {
     }
 
     /// List all version numbers for a resource, sorted ascending.
-    pub fn list_versions(
-        &self,
-        connector: &str,
-        collection: &str,
-        slug: &str,
-    ) -> Result<Vec<u32>> {
+    pub fn list_versions(&self, connector: &str, collection: &str, slug: &str) -> Result<Vec<u32>> {
         let dir = self.version_dir(connector, collection, slug);
         if !dir.exists() {
             return Ok(Vec::new());
@@ -107,12 +99,7 @@ impl VersionStore {
 
     /// Determine the next version number by finding the current maximum
     /// and adding one.  Returns 1 if no versions exist yet.
-    fn next_version(
-        &self,
-        connector: &str,
-        collection: &str,
-        slug: &str,
-    ) -> Result<u32> {
+    fn next_version(&self, connector: &str, collection: &str, slug: &str) -> Result<u32> {
         let existing = self.list_versions(connector, collection, slug)?;
         Ok(existing.last().copied().unwrap_or(0) + 1)
     }
@@ -185,10 +172,7 @@ mod tests {
     #[test]
     fn read_missing_version_returns_none() {
         let (store, _tmp) = make_store();
-        assert_eq!(
-            store.read_version("rest", "items", "a", 99).unwrap(),
-            None
-        );
+        assert_eq!(store.read_version("rest", "items", "a", 99).unwrap(), None);
     }
 
     #[test]

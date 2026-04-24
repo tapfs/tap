@@ -24,12 +24,11 @@ pub struct AtlassianAuth {
 impl AtlassianAuth {
     /// Build an `AtlassianAuth` from environment variables.
     pub fn from_env() -> Result<Self> {
-        let domain = std::env::var("ATLASSIAN_DOMAIN")
-            .context("ATLASSIAN_DOMAIN env var required")?;
-        let email = std::env::var("ATLASSIAN_EMAIL")
-            .context("ATLASSIAN_EMAIL env var required")?;
-        let token = std::env::var("ATLASSIAN_API_TOKEN")
-            .context("ATLASSIAN_API_TOKEN env var required")?;
+        let domain =
+            std::env::var("ATLASSIAN_DOMAIN").context("ATLASSIAN_DOMAIN env var required")?;
+        let email = std::env::var("ATLASSIAN_EMAIL").context("ATLASSIAN_EMAIL env var required")?;
+        let token =
+            std::env::var("ATLASSIAN_API_TOKEN").context("ATLASSIAN_API_TOKEN env var required")?;
 
         let base_url = format!("https://{}.atlassian.net", domain);
         let auth = base64_encode(format!("{}:{}", email, token).as_bytes());
@@ -67,14 +66,18 @@ impl AtlassianAuth {
                 tokio::time::sleep(delay).await;
             }
 
-            let resp = self
-                .client
-                .get(url)
-                .header("Authorization", &self.auth_header)
-                .header("Accept", "application/json")
-                .send()
-                .await
-                .with_context(|| format!("GET {}", url))?;
+            let resp = Self::send_request_with_network_retry(
+                || {
+                    self.client
+                        .get(url)
+                        .header("Authorization", &self.auth_header)
+                        .header("Accept", "application/json")
+                        .send()
+                },
+                url,
+                "GET",
+            )
+            .await?;
 
             match resp.status() {
                 s if s == reqwest::StatusCode::UNAUTHORIZED => {
@@ -83,9 +86,7 @@ impl AtlassianAuth {
                 }
                 s if s == reqwest::StatusCode::TOO_MANY_REQUESTS => {
                     if let Some(retry_after) = resp.headers().get("retry-after") {
-                        if let Ok(secs) =
-                            retry_after.to_str().unwrap_or("5").parse::<u64>()
-                        {
+                        if let Ok(secs) = retry_after.to_str().unwrap_or("5").parse::<u64>() {
                             tokio::time::sleep(Duration::from_secs(secs)).await;
                         }
                     }
@@ -104,11 +105,48 @@ impl AtlassianAuth {
             }
         }
 
-        Err(last_err
-            .unwrap_or_else(|| anyhow!("GET {} failed after {} retries", url, max_retries)))
+        Err(last_err.unwrap_or_else(|| anyhow!("GET {} failed after {} retries", url, max_retries)))
     }
 
-    /// Send a PUT request with JSON body.
+    /// Retry a `.send()` call up to 2 times on network / connection errors,
+    /// with a 1-second delay between attempts.
+    async fn send_request_with_network_retry<F, Fut>(
+        mut make_request: F,
+        url: &str,
+        method: &str,
+    ) -> Result<reqwest::Response>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = std::result::Result<reqwest::Response, reqwest::Error>>,
+    {
+        let network_retries = 2u32;
+        let mut last_network_err = None;
+
+        for net_attempt in 0..=network_retries {
+            if net_attempt > 0 {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            match make_request().await {
+                Ok(resp) => return Ok(resp),
+                Err(e) if e.is_connect() || e.is_timeout() => {
+                    last_network_err = Some(e);
+                    continue;
+                }
+                Err(e) => {
+                    return Err(anyhow::Error::new(e).context(format!("{} {}", method, url)));
+                }
+            }
+        }
+
+        Err(
+            anyhow::Error::new(last_network_err.unwrap()).context(format!(
+                "{} {} failed after {} network retries",
+                method, url, network_retries
+            )),
+        )
+    }
+
+    /// Send a PUT request with JSON body, with retry on 401, 429, 503.
     pub async fn put_json(&self, url: &str, body: &Value) -> Result<Value> {
         let max_retries = 3u32;
         let mut last_err = None;
@@ -119,23 +157,30 @@ impl AtlassianAuth {
                 tokio::time::sleep(delay).await;
             }
 
-            let resp = self
-                .client
-                .put(url)
-                .header("Authorization", &self.auth_header)
-                .header("Content-Type", "application/json")
-                .header("Accept", "application/json")
-                .json(body)
-                .send()
-                .await
-                .with_context(|| format!("PUT {}", url))?;
+            let body_clone = body.clone();
+            let resp = Self::send_request_with_network_retry(
+                || {
+                    self.client
+                        .put(url)
+                        .header("Authorization", &self.auth_header)
+                        .header("Content-Type", "application/json")
+                        .header("Accept", "application/json")
+                        .json(&body_clone)
+                        .send()
+                },
+                url,
+                "PUT",
+            )
+            .await?;
 
             match resp.status() {
+                s if s == reqwest::StatusCode::UNAUTHORIZED => {
+                    last_err = Some(anyhow!("PUT {} unauthorized (401)", url));
+                    continue;
+                }
                 s if s == reqwest::StatusCode::TOO_MANY_REQUESTS => {
                     if let Some(retry_after) = resp.headers().get("retry-after") {
-                        if let Ok(secs) =
-                            retry_after.to_str().unwrap_or("5").parse::<u64>()
-                        {
+                        if let Ok(secs) = retry_after.to_str().unwrap_or("5").parse::<u64>() {
                             tokio::time::sleep(Duration::from_secs(secs)).await;
                         }
                     }
@@ -157,30 +202,66 @@ impl AtlassianAuth {
             }
         }
 
-        Err(last_err
-            .unwrap_or_else(|| anyhow!("PUT {} failed after {} retries", url, max_retries)))
+        Err(last_err.unwrap_or_else(|| anyhow!("PUT {} failed after {} retries", url, max_retries)))
     }
 
-    /// Send a POST request with JSON body.
+    /// Send a POST request with JSON body, with retry on 401, 429, 503.
     pub async fn post_json(&self, url: &str, body: &Value) -> Result<Value> {
-        let resp = self
-            .client
-            .post(url)
-            .header("Authorization", &self.auth_header)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .json(body)
-            .send()
-            .await
-            .with_context(|| format!("POST {}", url))?;
+        let max_retries = 3u32;
+        let mut last_err = None;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body_text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("POST {} failed: HTTP {} - {}", url, status, body_text));
+        for attempt in 0..=max_retries {
+            if attempt > 0 {
+                let delay = Duration::from_millis(500 * 2u64.pow(attempt - 1));
+                tokio::time::sleep(delay).await;
+            }
+
+            let body_clone = body.clone();
+            let resp = Self::send_request_with_network_retry(
+                || {
+                    self.client
+                        .post(url)
+                        .header("Authorization", &self.auth_header)
+                        .header("Content-Type", "application/json")
+                        .header("Accept", "application/json")
+                        .json(&body_clone)
+                        .send()
+                },
+                url,
+                "POST",
+            )
+            .await?;
+
+            match resp.status() {
+                s if s == reqwest::StatusCode::UNAUTHORIZED => {
+                    last_err = Some(anyhow!("POST {} unauthorized (401)", url));
+                    continue;
+                }
+                s if s == reqwest::StatusCode::TOO_MANY_REQUESTS => {
+                    if let Some(retry_after) = resp.headers().get("retry-after") {
+                        if let Ok(secs) = retry_after.to_str().unwrap_or("5").parse::<u64>() {
+                            tokio::time::sleep(Duration::from_secs(secs)).await;
+                        }
+                    }
+                    last_err = Some(anyhow!("POST {} rate limited (429)", url));
+                    continue;
+                }
+                s if s == reqwest::StatusCode::SERVICE_UNAVAILABLE => {
+                    last_err = Some(anyhow!("POST {} service unavailable (503)", url));
+                    continue;
+                }
+                s if s.is_success() => {
+                    return resp.json().await.context("parsing JSON response");
+                }
+                s => {
+                    let body_text = resp.text().await.unwrap_or_default();
+                    return Err(anyhow!("POST {} failed: HTTP {} - {}", url, s, body_text));
+                }
+            }
         }
 
-        resp.json().await.context("parsing JSON response")
+        Err(last_err
+            .unwrap_or_else(|| anyhow!("POST {} failed after {} retries", url, max_retries)))
     }
 }
 
@@ -301,7 +382,10 @@ mod tests {
     #[test]
     fn test_base64_encode() {
         assert_eq!(base64_encode(b"hello:world"), "aGVsbG86d29ybGQ=");
-        assert_eq!(base64_encode(b"user@example.com:token123"), "dXNlckBleGFtcGxlLmNvbTp0b2tlbjEyMw==");
+        assert_eq!(
+            base64_encode(b"user@example.com:token123"),
+            "dXNlckBleGFtcGxlLmNvbTp0b2tlbjEyMw=="
+        );
     }
 
     #[test]

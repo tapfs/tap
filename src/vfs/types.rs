@@ -20,7 +20,7 @@ pub struct VfsAttr {
     pub size: u64,
     pub file_type: VfsFileType,
     pub perm: u16,
-    pub mtime: Option<String>,  // RFC3339 timestamp
+    pub mtime: Option<String>, // RFC3339 timestamp
 }
 
 /// What a node in the filesystem represents.
@@ -28,20 +28,52 @@ pub struct VfsAttr {
 pub enum NodeKind {
     Root,
     AgentMd,
-    Connector { name: String },
-    Collection { connector: String, collection: String },
-    Resource { connector: String, collection: String, resource: String, variant: ResourceVariant },
-    Version { connector: String, collection: String, resource: String, version_id: Option<u64> },
-    /// Connector-level agent.md: /<connector>/agent.md
-    ConnectorAgentMd { connector: String },
-    /// Collection-level agent.md: /<connector>/<collection>/agent.md
-    CollectionAgentMd { connector: String, collection: String },
-    /// Transaction directory: /<connector>/<collection>/.tx/
-    TxDir { connector: String, collection: String },
-    /// Named transaction: /<connector>/<collection>/.tx/<name>/
-    Transaction { connector: String, collection: String, tx_name: String },
+    Connector {
+        name: String,
+    },
+    Collection {
+        connector: String,
+        collection: String,
+    },
+    Resource {
+        connector: String,
+        collection: String,
+        resource: String,
+        variant: ResourceVariant,
+    },
+    Version {
+        connector: String,
+        collection: String,
+        resource: String,
+        version_id: Option<u64>,
+    },
+    /// Connector-level agent.md: `/CONNECTOR/agent.md`
+    ConnectorAgentMd {
+        connector: String,
+    },
+    /// Collection-level agent.md: `/CONNECTOR/COLLECTION/agent.md`
+    CollectionAgentMd {
+        connector: String,
+        collection: String,
+    },
+    /// Transaction directory: `/CONNECTOR/COLLECTION/.tx/`
+    TxDir {
+        connector: String,
+        collection: String,
+    },
+    /// Named transaction: `/CONNECTOR/COLLECTION/.tx/NAME/`
+    Transaction {
+        connector: String,
+        collection: String,
+        tx_name: String,
+    },
     /// File inside a transaction
-    TxResource { connector: String, collection: String, tx_name: String, resource: String },
+    TxResource {
+        connector: String,
+        collection: String,
+        tx_name: String,
+        resource: String,
+    },
 }
 
 /// Resource variant.
@@ -63,4 +95,21 @@ pub enum VfsError {
     CrossDevice,
     NotSupported,
     IoError(String),
+}
+
+impl From<anyhow::Error> for VfsError {
+    fn from(err: anyhow::Error) -> Self {
+        // Try to downcast to ConnectorError for structured mapping.
+        if let Some(ce) = err.downcast_ref::<crate::connector::traits::ConnectorError>() {
+            return match ce {
+                crate::connector::traits::ConnectorError::NotFound(_) => VfsError::NotFound,
+                crate::connector::traits::ConnectorError::PermissionDenied(_) => {
+                    VfsError::PermissionDenied
+                }
+                crate::connector::traits::ConnectorError::NotSupported(_) => VfsError::NotSupported,
+                _ => VfsError::IoError(err.to_string()),
+            };
+        }
+        VfsError::IoError(err.to_string())
+    }
 }

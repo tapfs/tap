@@ -36,11 +36,11 @@ pub async fn run(config: TapConfig) -> Result<()> {
     std::fs::create_dir_all(config.versions_dir())?;
 
     // 3. Create the connector based on connector_name
-    let audit = Arc::new(
-        AuditLogger::new(config.audit_log_path()).context("creating audit logger")?,
-    );
+    let audit =
+        Arc::new(AuditLogger::new(config.audit_log_path()).context("creating audit logger")?);
 
-    let audited: Arc<dyn crate::connector::traits::Connector> = if config.connector_name == "google" {
+    let audited: Arc<dyn crate::connector::traits::Connector> = if config.connector_name == "google"
+    {
         tracing::info!("initializing Google Workspace connector");
         let inner: Arc<dyn crate::connector::traits::Connector> =
             Arc::new(GoogleWorkspaceConnector::new().context("creating Google connector")?);
@@ -126,6 +126,7 @@ pub async fn run(config: TapConfig) -> Result<()> {
     let mount_info = serde_json::json!({
         "connector": config.connector_name,
         "mount_point": config.mount_point.display().to_string(),
+        "spec": config.connector_spec.as_ref().map(|p| p.display().to_string()),
         "pid": std::process::id(),
         "started_at": chrono::Utc::now().to_rfc3339(),
     });
@@ -135,13 +136,7 @@ pub async fn run(config: TapConfig) -> Result<()> {
     )?;
 
     // 11. Build VirtualFs
-    let vfs = Arc::new(VirtualFs::new(
-        registry,
-        cache,
-        drafts,
-        versions,
-        audit,
-    ));
+    let vfs = Arc::new(VirtualFs::new(registry, cache, drafts, versions, audit));
 
     // 12. Choose transport
     #[cfg(all(feature = "nfs", feature = "fuse"))]
@@ -155,7 +150,7 @@ pub async fn run(config: TapConfig) -> Result<()> {
 
     #[cfg(all(feature = "nfs", not(feature = "fuse")))]
     {
-        return mount_nfs(vfs, &config).await;
+        mount_nfs(vfs, &config).await
     }
 
     #[cfg(all(feature = "fuse", not(feature = "nfs")))]
@@ -185,6 +180,7 @@ async fn mount_nfs(vfs: Arc<VirtualFs>, config: &TapConfig) -> Result<()> {
         "starting NFS server"
     );
 
+    let vfs_for_shutdown = vfs.clone();
     let nfs = TapNfs::new(vfs, tokio::runtime::Handle::current());
 
     let listener = NFSTcpListener::bind(&bind_addr, nfs)
@@ -208,7 +204,12 @@ async fn mount_nfs(vfs: Arc<VirtualFs>, config: &TapConfig) -> Result<()> {
         tracing::info!(mount_point = %mount_point.display(), "running mount_nfs");
 
         let result = tokio::process::Command::new("mount_nfs")
-            .args(["-o", &mount_opts, "localhost:/", &mount_point.display().to_string()])
+            .args([
+                "-o",
+                &mount_opts,
+                "localhost:/",
+                &mount_point.display().to_string(),
+            ])
             .status()
             .await;
 
@@ -224,9 +225,11 @@ async fn mount_nfs(vfs: Arc<VirtualFs>, config: &TapConfig) -> Result<()> {
             }
         }
 
-        // Signal handler
+        // Signal handler — flush pending writes before exit
         tokio::signal::ctrl_c().await.ok();
-        tracing::info!("received signal, unmounting");
+        tracing::info!("received signal, flushing pending writes");
+        vfs_for_shutdown.flush_all();
+        tracing::info!("unmounting");
         let _ = tokio::process::Command::new("umount")
             .arg(&mount_point)
             .status()
@@ -236,7 +239,10 @@ async fn mount_nfs(vfs: Arc<VirtualFs>, config: &TapConfig) -> Result<()> {
     });
 
     // Serve forever (this is the main loop)
-    listener.handle_forever().await.context("NFS server error")?;
+    listener
+        .handle_forever()
+        .await
+        .context("NFS server error")?;
 
     Ok(())
 }
@@ -258,9 +264,12 @@ async fn mount_fuse(vfs: Arc<VirtualFs>, config: &TapConfig) -> Result<()> {
     }
 
     let mount_point = config.mount_point.clone();
+    let vfs_for_shutdown = vfs.clone();
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
-        tracing::info!("received signal, unmounting");
+        tracing::info!("received signal, flushing pending writes");
+        vfs_for_shutdown.flush_all();
+        tracing::info!("unmounting");
         #[cfg(target_os = "macos")]
         {
             let _ = std::process::Command::new("umount")

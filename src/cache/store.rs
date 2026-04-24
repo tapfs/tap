@@ -136,7 +136,12 @@ mod tests {
     #[test]
     fn put_and_get_resource() {
         let cache = Cache::new(Duration::from_secs(60));
-        cache.put_resource("k", Resource { data: vec![1u8, 2, 3].into() });
+        cache.put_resource(
+            "k",
+            Resource {
+                data: vec![1u8, 2, 3].into(),
+            },
+        );
         let r = cache.get_resource("k").unwrap();
         assert_eq!(&r.data[..], &[1, 2, 3]);
     }
@@ -144,7 +149,12 @@ mod tests {
     #[test]
     fn expired_resource_returns_none() {
         let cache = Cache::new(Duration::from_millis(10));
-        cache.put_resource("k", Resource { data: vec![1u8].into() });
+        cache.put_resource(
+            "k",
+            Resource {
+                data: vec![1u8].into(),
+            },
+        );
         thread::sleep(Duration::from_millis(30));
         assert!(cache.get_resource("k").is_none());
     }
@@ -185,7 +195,12 @@ mod tests {
     #[test]
     fn invalidate_removes_both() {
         let cache = Cache::new(Duration::from_secs(60));
-        cache.put_resource("k", Resource { data: vec![1u8].into() });
+        cache.put_resource(
+            "k",
+            Resource {
+                data: vec![1u8].into(),
+            },
+        );
         cache.put_metadata("k", vec![]);
         cache.invalidate("k");
         assert!(cache.get_resource("k").is_none());
@@ -195,11 +210,21 @@ mod tests {
     #[test]
     fn evict_expired_cleans_up() {
         let cache = Cache::new(Duration::from_millis(10));
-        cache.put_resource("a", Resource { data: vec![1u8].into() });
+        cache.put_resource(
+            "a",
+            Resource {
+                data: vec![1u8].into(),
+            },
+        );
         cache.put_metadata("b", vec![]);
         thread::sleep(Duration::from_millis(30));
         // Add a fresh entry that should survive eviction.
-        cache.put_resource("c", Resource { data: vec![2u8].into() });
+        cache.put_resource(
+            "c",
+            Resource {
+                data: vec![2u8].into(),
+            },
+        );
 
         cache.evict_expired();
 

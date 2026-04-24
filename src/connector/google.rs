@@ -11,23 +11,21 @@
 
 use std::time::Duration;
 
-use async_trait::async_trait;
 use anyhow::{anyhow, Context, Result};
+use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
-use crate::connector::traits::{
-    CollectionInfo, Connector, Resource, ResourceMeta, VersionInfo,
-};
+use crate::connector::traits::{CollectionInfo, Connector, Resource, ResourceMeta, VersionInfo};
 
 // ---------------------------------------------------------------------------
 // Token provider
 // ---------------------------------------------------------------------------
 
 /// Credentials file format (supports authorized_user from gcloud / gws CLI).
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct CredentialsFile {
     #[serde(default)]
     #[allow(dead_code)]
@@ -38,6 +36,20 @@ struct CredentialsFile {
     // For service accounts (not used yet, but parsed so we don't fail)
     #[allow(dead_code)]
     token_uri: Option<String>,
+}
+
+impl std::fmt::Debug for CredentialsFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CredentialsFile")
+            .field("type", &self.r#type)
+            .field(
+                "client_id",
+                &self.client_id.as_deref().map(|_| "[REDACTED]"),
+            )
+            .field("client_secret", &"[REDACTED]")
+            .field("refresh_token", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// Parsed credentials ready for token refresh (parsed once at init).
@@ -179,11 +191,7 @@ impl TokenProvider {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "token refresh failed: HTTP {} - {}",
-                status,
-                body
-            ));
+            return Err(anyhow!("token refresh failed: HTTP {} - {}", status, body));
         }
 
         let token_resp: TokenResponse = resp
@@ -273,7 +281,9 @@ impl GoogleWorkspaceConnector {
             }
 
             let request = self.auth_get(url).await?;
-            let resp = request.send().await
+            let resp = request
+                .send()
+                .await
                 .with_context(|| format!("GET {}", url))?;
 
             match resp.status() {
@@ -316,7 +326,10 @@ impl GoogleWorkspaceConnector {
     /// Send a GET request and return raw bytes (for file downloads).
     async fn get_bytes(&self, url: &str) -> Result<Vec<u8>> {
         let resp = self.send_with_retry(url).await?;
-        resp.bytes().await.map(|b| b.to_vec()).context("reading response bytes")
+        resp.bytes()
+            .await
+            .map(|b| b.to_vec())
+            .context("reading response bytes")
     }
 
     // -----------------------------------------------------------------------
@@ -327,7 +340,8 @@ impl GoogleWorkspaceConnector {
     fn cache_slug(&self, collection: &str, slug: &str, id: &str) {
         let key = format!("{}/{}", collection, slug);
         self.slug_to_id.insert(key, id.to_string());
-        self.id_to_slug.insert(id.to_string(), format!("{}/{}", collection, slug));
+        self.id_to_slug
+            .insert(id.to_string(), format!("{}/{}", collection, slug));
     }
 
     /// Resolve a slug to its API ID. Falls back to using the slug as-is
@@ -385,7 +399,10 @@ impl GoogleWorkspaceConnector {
             if let Some(files) = json.get("files").and_then(|v| v.as_array()) {
                 for file in files {
                     let id = file.get("id").and_then(|v| v.as_str()).unwrap_or_default();
-                    let name = file.get("name").and_then(|v| v.as_str()).unwrap_or("untitled");
+                    let name = file
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("untitled");
                     let mime = file.get("mimeType").and_then(|v| v.as_str()).unwrap_or("");
                     let modified = file.get("modifiedTime").and_then(|v| v.as_str());
 
@@ -427,9 +444,18 @@ impl GoogleWorkspaceConnector {
         );
         let meta_json = self.get_json(&meta_url).await?;
 
-        let name = meta_json.get("name").and_then(|v| v.as_str()).unwrap_or("untitled");
-        let mime = meta_json.get("mimeType").and_then(|v| v.as_str()).unwrap_or("");
-        let modified = meta_json.get("modifiedTime").and_then(|v| v.as_str()).unwrap_or("");
+        let name = meta_json
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("untitled");
+        let mime = meta_json
+            .get("mimeType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let modified = meta_json
+            .get("modifiedTime")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let slug = sanitize_slug(name);
 
         let meta = ResourceMeta {
@@ -468,7 +494,11 @@ impl GoogleWorkspaceConnector {
                     let mut lines = Vec::new();
                     for child in &children {
                         let kind = child.content_type.as_deref().unwrap_or("file");
-                        let label = if kind == "inode/directory" { "dir" } else { "file" };
+                        let label = if kind == "inode/directory" {
+                            "dir"
+                        } else {
+                            "file"
+                        };
                         lines.push(format!(
                             "- [{}] {} ({})",
                             label,
@@ -486,10 +516,8 @@ impl GoogleWorkspaceConnector {
             }
         } else {
             // Binary / regular files -> download
-            let download_url = format!(
-                "https://www.googleapis.com/drive/v3/files/{}?alt=media",
-                id
-            );
+            let download_url =
+                format!("https://www.googleapis.com/drive/v3/files/{}?alt=media", id);
             match self.get_bytes(&download_url).await {
                 Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
                 Err(e) => format!("[Download failed: {}]", e),
@@ -542,7 +570,11 @@ impl GoogleWorkspaceConnector {
             let status = resp.status();
             if !status.is_success() {
                 let err_body = resp.text().await.unwrap_or_default();
-                return Err(anyhow!("drive write (update) failed: HTTP {} - {}", status, err_body));
+                return Err(anyhow!(
+                    "drive write (update) failed: HTTP {} - {}",
+                    status,
+                    err_body
+                ));
             }
         } else {
             // Create new file via POST
@@ -581,7 +613,11 @@ impl GoogleWorkspaceConnector {
             let status = resp.status();
             if !status.is_success() {
                 let err_body = resp.text().await.unwrap_or_default();
-                return Err(anyhow!("drive write (create) failed: HTTP {} - {}", status, err_body));
+                return Err(anyhow!(
+                    "drive write (create) failed: HTTP {} - {}",
+                    status,
+                    err_body
+                ));
             }
 
             tracing::info!(name = %id, "created new file in Google Drive");
@@ -826,10 +862,7 @@ impl GoogleWorkspaceConnector {
             .unwrap_or("(no title)");
         let start = extract_calendar_time(&json, "start");
         let end = extract_calendar_time(&json, "end");
-        let location = json
-            .get("location")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let location = json.get("location").and_then(|v| v.as_str()).unwrap_or("");
         let description = json
             .get("description")
             .and_then(|v| v.as_str())
@@ -929,7 +962,10 @@ impl GoogleWorkspaceConnector {
         );
 
         let request = self.auth_patch(&url).await?.json(&patch_body);
-        let resp = request.send().await.context("calendar write request failed")?;
+        let resp = request
+            .send()
+            .await
+            .context("calendar write request failed")?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -1007,11 +1043,7 @@ impl Connector for GoogleWorkspaceConnector {
         }
     }
 
-    async fn resource_versions(
-        &self,
-        collection: &str,
-        id: &str,
-    ) -> Result<Vec<VersionInfo>> {
+    async fn resource_versions(&self, collection: &str, id: &str) -> Result<Vec<VersionInfo>> {
         let (service, _) = Self::parse_collection(collection);
         match service {
             "drive" => {
@@ -1056,12 +1088,7 @@ impl Connector for GoogleWorkspaceConnector {
         }
     }
 
-    async fn read_version(
-        &self,
-        collection: &str,
-        id: &str,
-        version: u32,
-    ) -> Result<Resource> {
+    async fn read_version(&self, collection: &str, id: &str, version: u32) -> Result<Resource> {
         if version == 0 {
             return self.read_resource(collection, id).await;
         }
@@ -1081,12 +1108,12 @@ impl Connector for GoogleWorkspaceConnector {
                     .and_then(|v| v.as_array())
                     .ok_or_else(|| anyhow!("no revisions found for file {}", id))?;
 
-                let idx = (version as usize).checked_sub(1).ok_or_else(|| {
-                    anyhow!("version must be >= 1")
+                let idx = (version as usize)
+                    .checked_sub(1)
+                    .ok_or_else(|| anyhow!("version must be >= 1"))?;
+                let rev = revisions.get(idx).ok_or_else(|| {
+                    anyhow!("version {} not found (have {})", version, revisions.len())
                 })?;
-                let rev = revisions
-                    .get(idx)
-                    .ok_or_else(|| anyhow!("version {} not found (have {})", version, revisions.len()))?;
                 let rev_id = rev
                     .get("id")
                     .and_then(|v| v.as_str())
@@ -1370,7 +1397,10 @@ fn base64_decode_bytes(input: &str) -> Result<Vec<u8>> {
     }
     static DECODE_TABLE: [u8; 128] = build_decode_table();
 
-    let input_bytes: Vec<u8> = input.bytes().filter(|&b| b != b'\n' && b != b'\r' && b != b' ').collect();
+    let input_bytes: Vec<u8> = input
+        .bytes()
+        .filter(|&b| b != b'\n' && b != b'\r' && b != b' ')
+        .collect();
     let mut output = Vec::with_capacity(input_bytes.len() * 3 / 4);
 
     for chunk in input_bytes.chunks(4) {
@@ -1508,10 +1538,7 @@ mod tests {
 
     #[test]
     fn test_date_to_slug_prefix() {
-        assert_eq!(
-            date_to_slug_prefix("2026-03-20T10:00:00Z"),
-            "2026-03-20"
-        );
+        assert_eq!(date_to_slug_prefix("2026-03-20T10:00:00Z"), "2026-03-20");
     }
 
     #[test]
@@ -1520,18 +1547,12 @@ mod tests {
             calendar_time_to_slug("2026-03-20T14:00:00-07:00"),
             "2026-03-20-14-00"
         );
-        assert_eq!(
-            calendar_time_to_slug("2026-03-20"),
-            "2026-03-20"
-        );
+        assert_eq!(calendar_time_to_slug("2026-03-20"), "2026-03-20");
     }
 
     #[test]
     fn test_strip_html_tags() {
-        assert_eq!(
-            strip_html_tags("<p>Hello <b>world</b></p>"),
-            "Hello world"
-        );
+        assert_eq!(strip_html_tags("<p>Hello <b>world</b></p>"), "Hello world");
     }
 
     #[test]

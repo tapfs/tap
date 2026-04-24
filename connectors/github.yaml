@@ -10,18 +10,81 @@ collections:
     id_field: "full_name"
     slug_field: "name"
     title_field: "full_name"
+    render:
+      frontmatter:
+        - "full_name as name"
+        - "owner.login as owner"
+        - visibility
+        - language
+        - "stargazers_count as stars"
+        - "forks_count as forks"
+        - "open_issues_count as open_issues"
+        - updated_at
+      body: "description"
+
   - name: issues
-    list_endpoint: "/issues?filter=assigned&state=open&per_page=100"
-    get_endpoint: "/repos/{id}"
+    list_endpoint: "/repos/tapfs/tap/issues?state=open&per_page=100"
+    get_endpoint: "/repos/tapfs/tap/issues/{id}"
     id_field: "number"
     slug_field: "number"
     title_field: "title"
+    render:
+      frontmatter:
+        - title
+        - state
+        - "user.login as author"
+        - "assignee.login as assignee"
+        - created_at
+        - updated_at
+      body: "body"
+      sections:
+        - name: Labels
+          field: "labels"
+          format: "list"
+          item_template: "{name}"
+        - name: Assignees
+          field: "assignees"
+          format: "list"
+          item_template: "{login}"
+    compose:
+      - name: Comments
+        endpoint: "/repos/tapfs/tap/issues/{id}/comments"
+        item_template: "**{user.login}** ({created_at}):\n> {body}\n"
+
+  - name: pulls
+    list_endpoint: "/repos/tapfs/tap/pulls?state=open&per_page=100"
+    get_endpoint: "/repos/tapfs/tap/pulls/{id}"
+    id_field: "number"
+    slug_field: "number"
+    title_field: "title"
+    render:
+      frontmatter:
+        - title
+        - state
+        - "user.login as author"
+        - "head.ref as branch"
+        - "base.ref as target"
+        - "mergeable_state as status"
+        - created_at
+        - updated_at
+      body: "body"
+      sections:
+        - name: Labels
+          field: "labels"
+          format: "list"
+          item_template: "{name}"
+        - name: Reviewers
+          field: "requested_reviewers"
+          format: "list"
+          item_template: "{login}"
+
   - name: notifications
     list_endpoint: "/notifications?per_page=50"
     get_endpoint: "/notifications/threads/{id}"
     id_field: "id"
     slug_field: "id"
     title_field: "subject.title"
+
   - name: gists
     list_endpoint: "/gists?per_page=50"
     get_endpoint: "/gists/{id}"

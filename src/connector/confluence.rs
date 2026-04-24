@@ -3,15 +3,14 @@
 //! Exposes Confluence spaces and pages as filesystem collections.
 //! Uses shared Atlassian auth (same as Jira).
 
-use async_trait::async_trait;
 use anyhow::{anyhow, Context, Result};
+use async_trait::async_trait;
 use dashmap::DashMap;
-use serde_json::Value;
 
-use crate::connector::atlassian_auth::{AtlassianAuth, escape_yaml, sanitize_slug, strip_frontmatter_str};
-use crate::connector::traits::{
-    CollectionInfo, Connector, Resource, ResourceMeta, VersionInfo,
+use crate::connector::atlassian_auth::{
+    escape_yaml, sanitize_slug, strip_frontmatter_str, AtlassianAuth,
 };
+use crate::connector::traits::{CollectionInfo, Connector, Resource, ResourceMeta, VersionInfo};
 
 pub struct ConfluenceConnector {
     auth: AtlassianAuth,
@@ -20,8 +19,8 @@ pub struct ConfluenceConnector {
 
 impl ConfluenceConnector {
     pub fn new() -> Result<Self> {
-        let auth = AtlassianAuth::from_env()
-            .context("initializing Atlassian auth for Confluence")?;
+        let auth =
+            AtlassianAuth::from_env().context("initializing Atlassian auth for Confluence")?;
         tracing::info!(base_url = %auth.base_url, "Confluence connector initialized");
         Ok(Self {
             auth,
@@ -65,7 +64,10 @@ impl ConfluenceConnector {
             if let Some(results) = json.get("results").and_then(|v| v.as_array()) {
                 for space in results {
                     let id = space.get("id").and_then(|v| v.as_str()).unwrap_or_default();
-                    let key = space.get("key").and_then(|v| v.as_str()).unwrap_or_default();
+                    let key = space
+                        .get("key")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
                     let name = space.get("name").and_then(|v| v.as_str()).unwrap_or(key);
 
                     all.push(ResourceMeta {
@@ -84,9 +86,9 @@ impl ConfluenceConnector {
                 .and_then(|v| v.as_str())
                 .and_then(|next| {
                     // Extract cursor from next URL
-                    next.split("cursor=").nth(1).map(|c| {
-                        c.split('&').next().unwrap_or(c).to_string()
-                    })
+                    next.split("cursor=")
+                        .nth(1)
+                        .map(|c| c.split('&').next().unwrap_or(c).to_string())
                 });
 
             if cursor.is_none() {
@@ -110,7 +112,10 @@ impl ConfluenceConnector {
             .and_then(|a| a.first())
             .ok_or_else(|| anyhow!("space '{}' not found", space_key))?;
 
-        let name = space.get("name").and_then(|v| v.as_str()).unwrap_or(space_key);
+        let name = space
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(space_key);
         let description = space
             .pointer("/description/plain/value")
             .and_then(|v| v.as_str())
@@ -120,7 +125,10 @@ impl ConfluenceConnector {
         let pages_url = format!(
             "{}/wiki/api/v2/spaces/{}/pages?limit=25&sort=-modified-date",
             self.auth.base_url,
-            space.get("id").and_then(|v| v.as_str()).unwrap_or(space_key)
+            space
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or(space_key)
         );
         let pages_json = self.auth.get_json(&pages_url).await.ok();
 
@@ -142,8 +150,14 @@ impl ConfluenceConnector {
             if let Some(pages) = pj.get("results").and_then(|v| v.as_array()) {
                 out.push_str("## Pages\n\n");
                 for page in pages {
-                    let title = page.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled");
-                    let status = page.get("status").and_then(|v| v.as_str()).unwrap_or("current");
+                    let title = page
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Untitled");
+                    let status = page
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("current");
                     out.push_str(&format!("- **{}** ({})\n", title, status));
                 }
             }
@@ -186,7 +200,10 @@ impl ConfluenceConnector {
             if let Some(results) = json.get("results").and_then(|v| v.as_array()) {
                 for page in results {
                     let id = page.get("id").and_then(|v| v.as_str()).unwrap_or_default();
-                    let title = page.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled");
+                    let title = page
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Untitled");
                     let space_id = page.get("spaceId").and_then(|v| v.as_str());
                     let status = page.get("status").and_then(|v| v.as_str());
                     let version = page.pointer("/version/number");
@@ -201,7 +218,9 @@ impl ConfluenceConnector {
                         updated_at: modified.map(|s| s.to_string()),
                         content_type: Some(format!(
                             "confluence/page{}{}",
-                            space_id.map(|s| format!(";space={}", s)).unwrap_or_default(),
+                            space_id
+                                .map(|s| format!(";space={}", s))
+                                .unwrap_or_default(),
                             status.map(|s| format!(";status={}", s)).unwrap_or_default(),
                         )),
                     });
@@ -215,9 +234,9 @@ impl ConfluenceConnector {
                 .pointer("/_links/next")
                 .and_then(|v| v.as_str())
                 .and_then(|next| {
-                    next.split("cursor=").nth(1).map(|c| {
-                        c.split('&').next().unwrap_or(c).to_string()
-                    })
+                    next.split("cursor=")
+                        .nth(1)
+                        .map(|c| c.split('&').next().unwrap_or(c).to_string())
                 });
 
             if cursor.is_none() {
@@ -236,18 +255,21 @@ impl ConfluenceConnector {
         tracing::debug!(url = %url, "confluence: reading page");
         let json = self.auth.get_json(&url).await?;
 
-        let title = json.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled");
-        let status = json.get("status").and_then(|v| v.as_str()).unwrap_or("current");
+        let title = json
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Untitled");
+        let status = json
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("current");
         let space_id = json.get("spaceId").and_then(|v| v.as_str()).unwrap_or("");
         let version_num = json.pointer("/version/number").and_then(|v| v.as_u64());
         let author = json
             .pointer("/version/authorId")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let created = json
-            .get("createdAt")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let created = json.get("createdAt").and_then(|v| v.as_str()).unwrap_or("");
         let modified = json
             .pointer("/version/createdAt")
             .and_then(|v| v.as_str())
@@ -301,10 +323,7 @@ impl ConfluenceConnector {
         let storage = markdown_to_storage(body_text);
 
         // Get current page to find version number
-        let get_url = format!(
-            "{}/wiki/api/v2/pages/{}",
-            self.auth.base_url, id
-        );
+        let get_url = format!("{}/wiki/api/v2/pages/{}", self.auth.base_url, id);
         let current = self.auth.get_json(&get_url).await?;
         let current_version = current
             .pointer("/version/number")
@@ -379,7 +398,10 @@ impl ConfluenceConnector {
         );
         let json = self.auth.get_json(&url).await?;
 
-        let title = json.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled");
+        let title = json
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Untitled");
         let body_storage = json
             .pointer("/body/storage/value")
             .and_then(|v| v.as_str())
@@ -461,15 +483,14 @@ impl Connector for ConfluenceConnector {
         let resolved = self.resolve_id(collection, id);
         match collection {
             "pages" => self.write_page(&resolved, content).await,
-            _ => Err(anyhow!("write not supported for collection '{}'", collection)),
+            _ => Err(anyhow!(
+                "write not supported for collection '{}'",
+                collection
+            )),
         }
     }
 
-    async fn resource_versions(
-        &self,
-        collection: &str,
-        id: &str,
-    ) -> Result<Vec<VersionInfo>> {
+    async fn resource_versions(&self, collection: &str, id: &str) -> Result<Vec<VersionInfo>> {
         let resolved = self.resolve_id(collection, id);
         match collection {
             "pages" => self.list_page_versions(&resolved).await,
@@ -477,16 +498,14 @@ impl Connector for ConfluenceConnector {
         }
     }
 
-    async fn read_version(
-        &self,
-        collection: &str,
-        id: &str,
-        version: u32,
-    ) -> Result<Resource> {
+    async fn read_version(&self, collection: &str, id: &str, version: u32) -> Result<Resource> {
         let resolved = self.resolve_id(collection, id);
         match collection {
             "pages" => self.read_page_version(&resolved, version).await,
-            _ => Err(anyhow!("versions not supported for collection '{}'", collection)),
+            _ => Err(anyhow!(
+                "versions not supported for collection '{}'",
+                collection
+            )),
         }
     }
 }
@@ -685,10 +704,13 @@ fn markdown_to_storage(markdown: &str) -> String {
             out.push_str(&format!("<h2>{}</h2>", escape_html(line[3..].trim())));
         } else if line.starts_with('#') {
             out.push_str(&format!("<h1>{}</h1>", escape_html(line[2..].trim())));
-        } else if line.starts_with("- ") {
-            out.push_str(&format!("<ul><li>{}</li></ul>", escape_html(&line[2..])));
-        } else if line.starts_with("> ") {
-            out.push_str(&format!("<blockquote><p>{}</p></blockquote>", escape_html(&line[2..])));
+        } else if let Some(rest) = line.strip_prefix("- ") {
+            out.push_str(&format!("<ul><li>{}</li></ul>", escape_html(rest)));
+        } else if let Some(rest) = line.strip_prefix("> ") {
+            out.push_str(&format!(
+                "<blockquote><p>{}</p></blockquote>",
+                escape_html(rest)
+            ));
         } else if line.starts_with("---") {
             out.push_str("<hr />");
         } else if line.is_empty() {
@@ -696,7 +718,7 @@ fn markdown_to_storage(markdown: &str) -> String {
         } else {
             // Inline formatting
             let formatted = line
-                .replace("**", "<strong>")  // simplified — doesn't pair open/close
+                .replace("**", "<strong>") // simplified — doesn't pair open/close
                 .replace('*', "<em>");
             out.push_str(&format!("<p>{}</p>", formatted));
         }

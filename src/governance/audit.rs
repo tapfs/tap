@@ -19,7 +19,15 @@ pub struct AuditEntry {
     pub detail: Option<String>,
 }
 
-/// NDJSON audit logger. Appends JSON lines to a log file.
+/// Maximum audit log size before rotation (10 MB).
+const MAX_LOG_SIZE: u64 = 10 * 1024 * 1024;
+/// Number of rotated log files to keep.
+const MAX_ROTATED_FILES: u32 = 3;
+
+/// NDJSON audit logger with size-based rotation.
+///
+/// When the log file exceeds 10 MB, the current file is rotated to
+/// `audit.log.1` (older rotated files shift to `.2`, `.3`, up to 3 files).
 pub struct AuditLogger {
     log_path: PathBuf,
     writer: Mutex<BufWriter<std::fs::File>>,
@@ -41,11 +49,59 @@ impl AuditLogger {
     }
 
     /// Serialize entry to a JSON line and append it to the log file.
+    ///
+    /// Automatically rotates the log file if it exceeds 10 MB.
     pub fn log(&self, entry: AuditEntry) -> Result<()> {
         let line = serde_json::to_string(&entry)?;
-        let mut w = self.writer.lock().map_err(|e| anyhow::anyhow!("lock poisoned: {}", e))?;
-        writeln!(w, "{}", line)?;
+        let needs_rotation;
+        {
+            let mut w = self
+                .writer
+                .lock()
+                .map_err(|e| anyhow::anyhow!("lock poisoned: {}", e))?;
+            writeln!(w, "{}", line)?;
+            w.flush()?;
+            needs_rotation = std::fs::metadata(&self.log_path)
+                .map(|m| m.len() > MAX_LOG_SIZE)
+                .unwrap_or(false);
+        }
+        if needs_rotation {
+            self.rotate()?;
+        }
+        Ok(())
+    }
+
+    /// Rotate the audit log: shift .1->.2->.3, rename current->.1, open fresh file.
+    fn rotate(&self) -> Result<()> {
+        let mut w = self
+            .writer
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock poisoned: {}", e))?;
+
+        // Flush before rotating.
         w.flush()?;
+
+        // Shift existing rotated files.
+        for i in (1..MAX_ROTATED_FILES).rev() {
+            let from = self.log_path.with_extension(format!("log.{}", i));
+            let to = self.log_path.with_extension(format!("log.{}", i + 1));
+            if from.exists() {
+                let _ = std::fs::rename(&from, &to);
+            }
+        }
+
+        // Rename current log to .1
+        let rotated = self.log_path.with_extension("log.1");
+        let _ = std::fs::rename(&self.log_path, &rotated);
+
+        // Open fresh log file and replace writer.
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.log_path)?;
+        *w = BufWriter::new(file);
+
+        tracing::info!("rotated audit log");
         Ok(())
     }
 
@@ -156,9 +212,7 @@ mod tests {
         assert_eq!(entries[1].operation, "read");
 
         // Filter by connector
-        let filtered = logger
-            .read_entries(None, Some("nonexistent"))
-            .unwrap();
+        let filtered = logger.read_entries(None, Some("nonexistent")).unwrap();
         assert!(filtered.is_empty());
 
         // Limit

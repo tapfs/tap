@@ -69,6 +69,9 @@ Every mount point contains an `agent.md` — a natural language file that teache
 ### 7. Transparent governance
 Every operation is audited, versioned, sandboxed — without the agent doing anything. Compliance is structural, not instructed.
 
+### 8. Resources are documents, not API responses
+A file is not a JSON dump of an API endpoint. It's a readable document — with a title, narrative body, and structured metadata — that an agent (or human) can understand without knowing the underlying API schema. Connectors define how raw API data is rendered into meaningful files. Multiple API calls may be composed into a single resource when that's what makes the document coherent (e.g., an issue file includes its comments).
+
 ---
 
 ## Transactional Semantics

@@ -17,36 +17,6 @@ use crate::version::store::VersionStore;
 use super::types::*;
 
 /// Static help text returned when reading `agent.md`.
-pub const AGENT_MD_CONTENT: &str = r#"---
-title: tapfs -- agent help
----
-
-# tapfs
-
-This is a FUSE filesystem that mounts REST APIs as readable/writable files.
-
-## Directory layout
-
-```
-/                          Root directory
-/agent.md                  This help file
-/<connector>/              One directory per configured API connector
-/<connector>/<collection>/ One directory per collection (endpoint group)
-/<connector>/<collection>/<slug>.md          Live resource (read from API)
-/<connector>/<collection>/<slug>.draft.md    Draft (local edits, not yet pushed)
-/<connector>/<collection>/<slug>.lock        Lock file (prevents concurrent edits)
-```
-
-## Workflow
-
-1. **Read** a resource by opening `<slug>.md`.
-2. **Edit** by creating `<slug>.draft.md` and writing your changes.
-3. **Promote** by renaming `<slug>.draft.md` to `<slug>.md` (pushes to API).
-4. **Lock** by creating `<slug>.lock` before editing to prevent conflicts.
-5. **Unlock** by deleting `<slug>.lock` when done.
-
-All operations are audit-logged.
-"#;
 
 // ---------------------------------------------------------------------------
 // Node table
@@ -93,10 +63,7 @@ impl NodeTable {
 
         // Fixed keys — MUST NEVER CHANGE or all cached File Provider
         // identifiers and NFS file handles become invalid.
-        let mut hasher = SipHasher13::new_with_keys(
-            0x_7a31_6f62_6573_7461,
-            0x_6964_656e_7469_6669,
-        );
+        let mut hasher = SipHasher13::new_with_keys(0x_7a31_6f62_6573_7461, 0x_6964_656e_7469_6669);
         kind.hash(&mut hasher);
         let hash = hasher.finish();
 
@@ -358,7 +325,7 @@ impl VirtualFs {
         // Other node types produce small content that doesn't benefit from
         // refcounted buffers.
         let data: bytes::Bytes = match &kind {
-            NodeKind::AgentMd => bytes::Bytes::from_static(AGENT_MD_CONTENT.as_bytes()),
+            NodeKind::AgentMd => bytes::Bytes::from(self.generate_root_agent_md().into_bytes()),
             NodeKind::ConnectorAgentMd { connector } => {
                 bytes::Bytes::from(self.generate_connector_agent_md(rt, connector).into_bytes())
             }
@@ -508,15 +475,13 @@ impl VirtualFs {
             let resource = name.strip_suffix(".md").unwrap_or(name);
             let tx_slug = format!("__tx_{}_{}", tx_name, resource);
             if !self.drafts.has_draft(connector, collection, &tx_slug) {
-                // Try to pre-populate from live content (copy-on-write)
+                // Pre-populate from live cache (copy-on-write). Bytes deref
+                // avoids a full .to_vec() allocation.
                 let cache_key = format!("{}/{}/{}", connector, collection, resource);
-                let initial_content = if let Some(cached) = self.cache.get_resource(&cache_key) {
-                    cached.data.to_vec()
-                } else {
-                    vec![]
-                };
+                let cached = self.cache.get_resource(&cache_key);
+                let initial: &[u8] = cached.as_ref().map(|c| c.data.as_ref()).unwrap_or(&[]);
                 self.drafts
-                    .create_draft(connector, collection, &tx_slug, &initial_content)
+                    .create_draft(connector, collection, &tx_slug, initial)
                     .map_err(|e| VfsError::IoError(e.to_string()))?;
             }
             let _ = self.audit.record(
@@ -556,16 +521,12 @@ impl VirtualFs {
         match variant {
             ResourceVariant::Draft => {
                 if !self.drafts.has_draft(&connector, &collection, &slug) {
-                    // Try to pre-populate from live content (copy-on-write)
+                    // Pre-populate from live cache (copy-on-write).
                     let cache_key = format!("{}/{}/{}", connector, collection, slug);
-                    let initial_content = if let Some(cached) = self.cache.get_resource(&cache_key)
-                    {
-                        cached.data.to_vec()
-                    } else {
-                        vec![]
-                    };
+                    let cached = self.cache.get_resource(&cache_key);
+                    let initial: &[u8] = cached.as_ref().map(|c| c.data.as_ref()).unwrap_or(&[]);
                     self.drafts
-                        .create_draft(&connector, &collection, &slug, &initial_content)
+                        .create_draft(&connector, &collection, &slug, initial)
                         .map_err(|e| VfsError::IoError(e.to_string()))?;
                 }
                 let _ = self.audit.record(
@@ -1064,7 +1025,7 @@ impl VirtualFs {
             },
             NodeKind::AgentMd => VfsAttr {
                 id,
-                size: AGENT_MD_CONTENT.len() as u64,
+                size: 4096, // dynamic content, actual size known on read
                 file_type: VfsFileType::RegularFile,
                 perm: 0o644,
                 mtime: None,
@@ -1357,13 +1318,13 @@ impl VirtualFs {
                 if let Some(cached) = self.cache.get_resource(&cache_key) {
                     return cached.data.len() as u64;
                 }
-                // Use previously recorded content length if available,
-                // otherwise fall back to 0 (unknown) instead of a misleading
-                // hardcoded value.
+                // Use previously recorded content length if available.
+                // Fall back to 4096 for resources that haven't been read yet —
+                // returning 0 would cause tools like `cat` to skip the file.
                 self.content_lengths
                     .get(&cache_key)
                     .map(|v| *v)
-                    .unwrap_or(0)
+                    .unwrap_or(4096)
             }
         }
     }
@@ -1612,6 +1573,46 @@ impl VirtualFs {
         Ok(entries)
     }
 
+    fn generate_root_agent_md(&self) -> String {
+        let connectors = self.registry.list();
+        let mut out = String::new();
+        out.push_str("---\ntitle: tapfs\n---\n\n");
+
+        // Connected services
+        out.push_str("# Connected services\n\n");
+        if connectors.is_empty() {
+            out.push_str("No services connected.\n");
+        } else {
+            for name in &connectors {
+                out.push_str(&format!("- **{}/**\n", name));
+            }
+        }
+
+        // How to use — this is the skill definition for any agent
+        out.push_str("\n# How to use this filesystem\n\n");
+        out.push_str("Enterprise data is mounted here as plain files. ");
+        out.push_str("Use standard commands to explore and modify it.\n\n");
+
+        out.push_str("## Reading data\n\n");
+        out.push_str("- `ls <service>/` — list collections (issues, repos, etc.)\n");
+        out.push_str("- `ls <service>/<collection>/` — list resources\n");
+        out.push_str("- `cat <resource>.md` — read a resource\n");
+        out.push_str("- `grep -r \"keyword\" <service>/` — search across resources\n");
+
+        out.push_str("\n## Making changes\n\n");
+        out.push_str("- Write to `<name>.draft.md` to stage changes safely\n");
+        out.push_str("- Rename `.draft.md` to `.md` to publish changes\n");
+        out.push_str("- Create `<name>.lock` before editing to prevent conflicts\n");
+
+        out.push_str("\n## Tips\n\n");
+        out.push_str("- Each service directory has its own `agent.md` with details\n");
+        out.push_str("- Each collection directory has an `agent.md` listing available resources\n");
+        out.push_str("- `.md` files are live data — reading fetches the latest from the API\n");
+        out.push_str("- `.draft.md` files are local only until promoted\n");
+
+        out
+    }
+
     fn generate_connector_agent_md(&self, rt: &tokio::runtime::Handle, connector: &str) -> String {
         let mut out = String::new();
         out.push_str("---\n");
@@ -1631,21 +1632,16 @@ impl VirtualFs {
             }
         }
 
-        out.push_str("\n## Workflow\n\n");
-        out.push_str("```bash\n");
+        out.push_str("\n## Usage\n\n");
+        out.push_str(&format!("- `ls {}/` — list collections\n", connector));
         out.push_str(&format!(
-            "ls /mnt/tap/{}/           # list collections\n",
+            "- `ls {}/<collection>/` — list resources\n",
             connector
         ));
         out.push_str(&format!(
-            "ls /mnt/tap/{}/drive/     # list resources\n",
+            "- `cat {}/<collection>/<resource>.md` — read a resource\n",
             connector
         ));
-        out.push_str(&format!(
-            "cat /mnt/tap/{}/drive/file.md  # read a resource\n",
-            connector
-        ));
-        out.push_str("```\n");
 
         out
     }
@@ -1681,17 +1677,6 @@ impl VirtualFs {
                 ));
             }
         }
-
-        out.push_str("\n## Operations\n\n");
-        out.push_str("```bash\n");
-        out.push_str(&format!("cat {}.md         # read resource\n", "resource"));
-        out.push_str(&format!(
-            "echo 'x' > {}.md  # write (auto-promotes)\n",
-            "resource"
-        ));
-        out.push_str(&format!("touch {}.draft.md  # create draft\n", "resource"));
-        out.push_str(&format!("touch {}.lock      # lock resource\n", "resource"));
-        out.push_str("```\n");
 
         out
     }

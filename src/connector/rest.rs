@@ -1,23 +1,41 @@
-use async_trait::async_trait;
 use anyhow::{anyhow, Context, Result};
+use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::Value;
 
-use crate::connector::spec::{ConnectorSpec, CollectionSpec};
-use crate::connector::traits::{
-    CollectionInfo, Connector, Resource, ResourceMeta, VersionInfo,
-};
+use crate::connector::spec::{CollectionSpec, ConnectorSpec};
+use crate::connector::traits::{CollectionInfo, Connector, Resource, ResourceMeta, VersionInfo};
+
+const MAX_ERROR_BODY_LEN: usize = 512;
+
+fn truncate_error_body(body: &str) -> &str {
+    if body.len() <= MAX_ERROR_BODY_LEN {
+        body
+    } else {
+        // Find a char boundary to avoid panics on multi-byte UTF-8.
+        let mut end = MAX_ERROR_BODY_LEN;
+        while !body.is_char_boundary(end) {
+            end -= 1;
+        }
+        &body[..end]
+    }
+}
 
 /// Generic REST connector driven by a ConnectorSpec.
 ///
 /// Translates the spec's endpoint templates into HTTP calls using reqwest,
 /// and renders JSON responses as Markdown (YAML frontmatter + body).
+/// Maximum concurrent HTTP requests per connector.
+const MAX_CONCURRENT_REQUESTS: usize = 10;
+
 pub struct RestConnector {
     spec: ConnectorSpec,
     client: Client,
     token: Option<String>,
     /// Maps "collection/slug" → API resource ID for endpoint substitution.
     slug_to_id: dashmap::DashMap<String, String>,
+    /// Limits concurrent HTTP requests to prevent overwhelming APIs.
+    request_semaphore: tokio::sync::Semaphore,
 }
 
 impl RestConnector {
@@ -37,6 +55,7 @@ impl RestConnector {
             client,
             token,
             slug_to_id: dashmap::DashMap::new(),
+            request_semaphore: tokio::sync::Semaphore::new(MAX_CONCURRENT_REQUESTS),
         }
     }
 
@@ -62,7 +81,83 @@ impl RestConnector {
             .collections
             .iter()
             .find(|c| c.name == name)
-            .ok_or_else(|| anyhow!("collection '{}' not found in spec '{}'", name, self.spec.name))
+            .ok_or_else(|| {
+                anyhow!(
+                    "collection '{}' not found in spec '{}'",
+                    name,
+                    self.spec.name
+                )
+            })
+    }
+
+    /// Send a request with retry + exponential backoff for transient errors.
+    ///
+    /// Retries on:
+    /// - HTTP status codes 429 (Too Many Requests), 502, 503 (server errors)
+    /// - Network errors: timeouts, connection refused, DNS failures
+    ///
+    /// Non-retryable errors (e.g. invalid URL) are returned immediately.
+    ///
+    /// Acquires a permit from the concurrency semaphore before each attempt
+    /// to prevent overwhelming the API with unlimited parallel requests.
+    async fn send_with_retry(
+        &self,
+        build_request: impl Fn() -> reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response> {
+        const MAX_RETRIES: u32 = 3;
+        let mut delay = std::time::Duration::from_millis(500);
+
+        for attempt in 0..=MAX_RETRIES {
+            let _permit = self
+                .request_semaphore
+                .acquire()
+                .await
+                .map_err(|_| anyhow!("request semaphore closed"))?;
+            let request = self.authenticate(build_request());
+            let response = request.send().await;
+
+            match response {
+                Ok(resp)
+                    if resp.status() == 429 || resp.status() == 502 || resp.status() == 503 =>
+                {
+                    if attempt == MAX_RETRIES {
+                        return Ok(resp);
+                    }
+                    // Use Retry-After header if present, otherwise exponential backoff.
+                    let wait = resp
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .map(std::time::Duration::from_secs)
+                        .unwrap_or(delay);
+                    tracing::warn!(
+                        status = resp.status().as_u16(),
+                        attempt,
+                        wait_ms = wait.as_millis() as u64,
+                        "retrying after transient error"
+                    );
+                    tokio::time::sleep(wait).await;
+                    delay *= 2;
+                }
+                Ok(resp) => return Ok(resp),
+                Err(e)
+                    if attempt < MAX_RETRIES
+                        && (e.is_timeout() || e.is_connect() || e.is_request()) =>
+                {
+                    tracing::warn!(
+                        error = %e,
+                        attempt,
+                        wait_ms = delay.as_millis() as u64,
+                        "retrying after transient network error"
+                    );
+                    tokio::time::sleep(delay).await;
+                    delay *= 2;
+                }
+                Err(e) => return Err(e).context("HTTP request failed"),
+            }
+        }
+        unreachable!()
     }
 
     /// Add authentication and standard headers to a request builder.
@@ -91,9 +186,9 @@ impl RestConnector {
                 // Support dotted paths like "data.items"
                 let mut current = json;
                 for segment in root.split('.') {
-                    current = current
-                        .get(segment)
-                        .ok_or_else(|| anyhow!("list_root segment '{}' not found in response", segment))?;
+                    current = current.get(segment).ok_or_else(|| {
+                        anyhow!("list_root segment '{}' not found in response", segment)
+                    })?;
                 }
                 current
             }
@@ -113,21 +208,21 @@ impl RestConnector {
         let title_field = coll.title_field.as_deref();
 
         let id = get_nested(item, id_field)
-            .map(|v| json_value_to_string(v))
+            .map(json_value_to_string)
             .unwrap_or_default();
 
         let slug = get_nested(item, slug_field)
             .map(|v| sanitize_slug(&json_value_to_string(v)))
             .unwrap_or_else(|| sanitize_slug(&id));
 
-        let title = title_field.and_then(|f| get_nested(item, f).map(|v| json_value_to_string(v)));
+        let title = title_field.and_then(|f| get_nested(item, f).map(json_value_to_string));
 
         let updated_at = item
             .get("updated_at")
             .or_else(|| item.get("updatedAt"))
             .or_else(|| item.get("SystemModstamp"))
             .or_else(|| item.get("LastModifiedDate"))
-            .map(|v| json_value_to_string(v));
+            .map(json_value_to_string);
 
         ResourceMeta {
             id,
@@ -138,25 +233,131 @@ impl RestConnector {
         }
     }
 
-    /// Render a JSON value as Markdown with YAML frontmatter.
-    ///
-    /// Layout:
-    /// ```text
-    /// ---
-    /// id: "123"
-    /// title: "My Resource"
-    /// ---
-    ///
-    /// | Field | Value |
-    /// |-------|-------|
-    /// | key   | val   |
-    /// ```
-    ///
-    /// For nested or complex values, a JSON code block is appended instead.
-    fn render_markdown(meta: &ResourceMeta, json: &Value) -> Vec<u8> {
+    /// Render a JSON resource as Markdown, using RenderSpec if available.
+    fn render_markdown(
+        meta: &ResourceMeta,
+        json: &Value,
+        render: Option<&crate::connector::spec::RenderSpec>,
+    ) -> Vec<u8> {
+        match render {
+            Some(spec) => Self::render_with_spec(meta, json, spec),
+            None => Self::render_default(meta, json),
+        }
+    }
+
+    /// Spec-driven rendering: frontmatter from selected fields, body from
+    /// a named field, sections from nested data.
+    fn render_with_spec(
+        meta: &ResourceMeta,
+        json: &Value,
+        spec: &crate::connector::spec::RenderSpec,
+    ) -> Vec<u8> {
         let mut out = String::new();
 
-        // YAML frontmatter
+        // --- Frontmatter ---
+        out.push_str("---\n");
+        if let Some(ref fields) = spec.frontmatter {
+            for field_expr in fields {
+                let (path, alias) = parse_field_alias(field_expr);
+                if let Some(val) = extract_dotpath(json, path) {
+                    let display = format_frontmatter_value(val);
+                    out.push_str(&format!("{}: {}\n", alias, display));
+                }
+            }
+        } else {
+            // Fallback: id + title
+            out.push_str(&format!("id: \"{}\"\n", meta.id));
+            if let Some(title) = &meta.title {
+                out.push_str(&format!("title: \"{}\"\n", title));
+            }
+        }
+        out.push_str("---\n\n");
+
+        // --- Title heading ---
+        if let Some(title) = &meta.title {
+            out.push_str(&format!("# {}\n\n", title));
+        }
+
+        // --- Body ---
+        if let Some(ref body_field) = spec.body {
+            if let Some(val) = extract_dotpath(json, body_field) {
+                let text = json_value_to_string(val);
+                if !text.is_empty() {
+                    out.push_str(&text);
+                    out.push_str("\n\n");
+                }
+            }
+        }
+
+        // --- Sections ---
+        if let Some(ref sections) = spec.sections {
+            for section in sections {
+                if let Some(val) = extract_dotpath(json, &section.field) {
+                    out.push_str(&format!("## {}\n\n", section.name));
+                    let fmt = section.format.as_deref().unwrap_or("text");
+                    match (fmt, val) {
+                        ("list", Value::Array(items)) => {
+                            if items.is_empty() {
+                                out.push_str("None.\n\n");
+                            } else {
+                                for item in items {
+                                    let text = match &section.item_template {
+                                        Some(tpl) => expand_template(tpl, item),
+                                        None => json_value_to_string(item),
+                                    };
+                                    out.push_str(&format!("- {}\n", text));
+                                }
+                                out.push('\n');
+                            }
+                        }
+                        ("table", Value::Array(items)) => {
+                            if let Some(first) = items.first().and_then(|v| v.as_object()) {
+                                let keys: Vec<&String> = first.keys().take(5).collect();
+                                out.push_str("| ");
+                                out.push_str(
+                                    &keys
+                                        .iter()
+                                        .map(|k| k.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(" | "),
+                                );
+                                out.push_str(" |\n|");
+                                for _ in &keys {
+                                    out.push_str("---|");
+                                }
+                                out.push('\n');
+                                for item in items {
+                                    out.push_str("| ");
+                                    let vals: Vec<String> = keys
+                                        .iter()
+                                        .map(|k| {
+                                            item.get(*k)
+                                                .map(json_value_to_string)
+                                                .unwrap_or_default()
+                                        })
+                                        .collect();
+                                    out.push_str(&vals.join(" | "));
+                                    out.push_str(" |\n");
+                                }
+                                out.push('\n');
+                            }
+                        }
+                        _ => {
+                            out.push_str(&json_value_to_string(val));
+                            out.push_str("\n\n");
+                        }
+                    }
+                }
+            }
+        }
+
+        out.into_bytes()
+    }
+
+    /// Default rendering (no RenderSpec): table + JSON code blocks.
+    fn render_default(meta: &ResourceMeta, json: &Value) -> Vec<u8> {
+        let mut out = String::new();
+
         out.push_str("---\n");
         out.push_str(&format!("id: \"{}\"\n", meta.id));
         out.push_str(&format!("slug: \"{}\"\n", meta.slug));
@@ -168,12 +369,14 @@ impl RestConnector {
         }
         out.push_str("---\n\n");
 
-        // Body: render as table for flat objects, code block otherwise
         match json {
             Value::Object(map) => {
-                let (simple, complex): (Vec<_>, Vec<_>) = map
-                    .iter()
-                    .partition(|(_, v)| matches!(v, Value::String(_) | Value::Number(_) | Value::Bool(_) | Value::Null));
+                let (simple, complex): (Vec<_>, Vec<_>) = map.iter().partition(|(_, v)| {
+                    matches!(
+                        v,
+                        Value::String(_) | Value::Number(_) | Value::Bool(_) | Value::Null
+                    )
+                });
 
                 if !simple.is_empty() {
                     out.push_str("| Field | Value |\n");
@@ -209,10 +412,89 @@ impl RestConnector {
     }
 }
 
+/// Parse "user.login as author" into ("user.login", "author").
+/// Plain "title" returns ("title", "title").
+fn parse_field_alias(expr: &str) -> (&str, &str) {
+    if let Some(pos) = expr.find(" as ") {
+        (&expr[..pos], &expr[pos + 4..])
+    } else {
+        (expr, expr.rsplit('.').next().unwrap_or(expr))
+    }
+}
+
+/// Extract a value from JSON using a dot-path like "user.login" or
+/// "labels[].name" (array map).
+fn extract_dotpath<'a>(json: &'a Value, path: &str) -> Option<&'a Value> {
+    // Handle array mapping: "labels[].name" → collect names from array
+    // This returns a reference, so we can't construct new values here.
+    // For array mapping, the caller should use expand_template instead.
+    let mut current = json;
+    for segment in path.split('.') {
+        match current {
+            Value::Object(map) => {
+                current = map.get(segment)?;
+            }
+            _ => return None,
+        }
+    }
+    Some(current)
+}
+
+/// Format a JSON value for YAML frontmatter output.
+fn format_frontmatter_value(val: &Value) -> String {
+    match val {
+        Value::String(s) => format!("\"{}\"", s),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "null".to_string(),
+        Value::Array(arr) => {
+            let items: Vec<String> = arr
+                .iter()
+                .map(|v| match v {
+                    Value::String(s) => s.clone(),
+                    Value::Object(map) => {
+                        // For objects in arrays, try "name" or "login" as display
+                        map.get("name")
+                            .or_else(|| map.get("login"))
+                            .or_else(|| map.get("label"))
+                            .map(json_value_to_string)
+                            .unwrap_or_else(|| json_value_to_string(&Value::Object(map.clone())))
+                    }
+                    other => json_value_to_string(other),
+                })
+                .collect();
+            format!("[{}]", items.join(", "))
+        }
+        Value::Object(_) => json_value_to_string(val),
+    }
+}
+
+/// Expand a template string like "{user.login} ({created_at})" against a JSON object.
+fn expand_template(template: &str, json: &Value) -> String {
+    let mut result = template.to_string();
+    // Find all {field.path} placeholders and replace them.
+    while let Some(start) = result.find('{') {
+        if let Some(end) = result[start..].find('}') {
+            let path = &result[start + 1..start + end];
+            let replacement = extract_dotpath(json, path)
+                .map(json_value_to_string)
+                .unwrap_or_default();
+            result = format!(
+                "{}{}{}",
+                &result[..start],
+                replacement,
+                &result[start + end + 1..]
+            );
+        } else {
+            break;
+        }
+    }
+    result
+}
+
 /// Sanitize a string for use as a filesystem slug.
 fn sanitize_slug(s: &str) -> String {
-    s.replace('/', "-")
-        .replace('\\', "-")
+    s.replace(['/', '\\'], "-")
         .replace('\0', "")
         .trim()
         .to_string()
@@ -258,13 +540,7 @@ impl Connector for RestConnector {
         let coll = self.find_collection(collection)?;
         let url = self.url(&coll.list_endpoint);
 
-        let request = self.client.get(&url);
-        let request = self.authenticate(request);
-
-        let response = request
-            .send()
-            .await
-            .context("failed to fetch resource list")?;
+        let response = self.send_with_retry(|| self.client.get(&url)).await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -272,7 +548,7 @@ impl Connector for RestConnector {
             return Err(anyhow!(
                 "list_resources failed: HTTP {} — {}",
                 status,
-                body
+                truncate_error_body(&body)
             ));
         }
 
@@ -301,20 +577,15 @@ impl Connector for RestConnector {
 
     async fn read_resource(&self, collection: &str, id: &str) -> Result<Resource> {
         let coll = self.find_collection(collection)?;
-        let resolved_id = self.slug_to_id
+        let resolved_id = self
+            .slug_to_id
             .get(&format!("{}/{}", collection, id))
             .map(|v| v.clone())
             .unwrap_or_else(|| id.to_string());
         let path = Self::substitute_id(&coll.get_endpoint, &resolved_id);
         let url = self.url(&path);
 
-        let request = self.client.get(&url);
-        let request = self.authenticate(request);
-
-        let response = request
-            .send()
-            .await
-            .context("failed to fetch resource")?;
+        let response = self.send_with_retry(|| self.client.get(&url)).await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -322,7 +593,7 @@ impl Connector for RestConnector {
             return Err(anyhow!(
                 "read_resource failed: HTTP {} — {}",
                 status,
-                body
+                truncate_error_body(&body)
             ));
         }
 
@@ -332,14 +603,51 @@ impl Connector for RestConnector {
             .context("failed to parse resource response as JSON")?;
 
         let meta = Self::extract_meta(&json, coll);
-        let content = Self::render_markdown(&meta, &json);
+        let mut content = Self::render_markdown(&meta, &json, coll.render.as_ref());
+
+        // Compose: fetch sub-resources and append as sections.
+        if let Some(ref compose_specs) = coll.compose {
+            for comp in compose_specs {
+                let comp_path = Self::substitute_id(&comp.endpoint, &resolved_id);
+                let comp_url = self.url(&comp_path);
+                if let Ok(resp) = self.send_with_retry(|| self.client.get(&comp_url)).await {
+                    if resp.status().is_success() {
+                        if let Ok(comp_json) = resp.json::<Value>().await {
+                            let items = match &comp.list_root {
+                                Some(root) => comp_json
+                                    .get(root)
+                                    .and_then(|v| v.as_array())
+                                    .cloned()
+                                    .unwrap_or_default(),
+                                None => comp_json.as_array().cloned().unwrap_or_default(),
+                            };
+                            let mut section = format!("\n## {}\n\n", comp.name);
+                            if items.is_empty() {
+                                section.push_str("None yet.\n");
+                            } else {
+                                for item in &items {
+                                    let text = match &comp.item_template {
+                                        Some(tpl) => expand_template(tpl, item),
+                                        None => json_value_to_string(item),
+                                    };
+                                    section.push_str(&text);
+                                    section.push('\n');
+                                }
+                            }
+                            content.extend_from_slice(section.as_bytes());
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(Resource { meta, content })
     }
 
     async fn write_resource(&self, collection: &str, id: &str, content: &[u8]) -> Result<()> {
         let coll = self.find_collection(collection)?;
-        let resolved_id = self.slug_to_id
+        let resolved_id = self
+            .slug_to_id
             .get(&format!("{}/{}", collection, id))
             .map(|v| v.clone())
             .unwrap_or_else(|| id.to_string());
@@ -367,13 +675,9 @@ impl Connector for RestConnector {
             serde_json::from_slice(content).context("failed to parse content as JSON")?
         };
 
-        let request = self.client.patch(&url).json(&body_json);
-        let request = self.authenticate(request);
-
-        let response = request
-            .send()
-            .await
-            .context("failed to send write request")?;
+        let response = self
+            .send_with_retry(|| self.client.patch(&url).json(&body_json))
+            .await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -381,7 +685,7 @@ impl Connector for RestConnector {
             return Err(anyhow!(
                 "write_resource failed: HTTP {} — {}",
                 status,
-                body
+                truncate_error_body(&body)
             ));
         }
 

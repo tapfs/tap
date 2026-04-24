@@ -3,59 +3,16 @@ name: tapfs
 description: Browse and modify enterprise API resources mounted as local files. Use when the user asks about Jira issues, GitHub repos, Salesforce accounts, or any REST API data.
 ---
 
-## How it works
+## When to use this skill
 
-Enterprise API resources are mounted as a local filesystem at `/tmp/tap`. You can browse them with standard file tools — no API calls needed.
+When the user asks about issues, tickets, pull requests, documents, accounts, contacts, or any enterprise data — check the tapfs mount first.
 
-## Quick start
+**You do NOT need the user to mention tapfs, paths, or filenames.** Questions like "what bugs do we have?", "summarize open PRs", or "find overdue tickets" should trigger you to explore the mount.
 
-1. Read the help file first:
-   ```
-   cat /tmp/tap/agent.md
-   ```
+## How to start
 
-2. List available connectors:
-   ```
-   ls /tmp/tap/
-   ```
-
-3. Browse a connector's collections:
-   ```
-   ls /tmp/tap/<connector>/
-   ```
-
-4. List resources in a collection:
-   ```
-   ls /tmp/tap/<connector>/<collection>/
-   ```
-
-5. Read a resource:
-   ```
-   cat /tmp/tap/<connector>/<collection>/<slug>.md
-   ```
-
-## Directory layout
+tapfs is already running. Read the help file for what's available:
 
 ```
-/tmp/tap/
-  agent.md                              Help file
-  <connector>/                          One dir per API connector
-    agent.md                            Connector-specific help
-    <collection>/                       One dir per resource type
-      <slug>.md                         Live resource (read from API)
-      <slug>.draft.md                   Local draft (not yet pushed)
-      <slug>.lock                       Lock file (prevents conflicts)
-```
-
-## Writing changes
-
-1. Create a draft: write to `<slug>.draft.md`
-2. Promote to API: `mv <slug>.draft.md <slug>.md`
-3. Lock before editing: `touch <slug>.lock`
-4. Unlock when done: `rm <slug>.lock`
-
-## Search across resources
-
-```
-grep -r "keyword" /tmp/tap/<connector>/<collection>/
+cat ${user_config.mountPoint}/agent.md
 ```

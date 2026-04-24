@@ -3,17 +3,15 @@
 //! Exposes Jira projects, issues, and boards as filesystem collections.
 //! Authentication uses Atlassian Cloud Basic auth (shared with Confluence).
 
-use async_trait::async_trait;
 use anyhow::{anyhow, Context, Result};
+use async_trait::async_trait;
 use dashmap::DashMap;
 use serde_json::Value;
 
 use crate::connector::atlassian_auth::{
-    AtlassianAuth, escape_yaml, sanitize_slug, strip_frontmatter_str, extract_frontmatter,
+    escape_yaml, extract_frontmatter, sanitize_slug, strip_frontmatter_str, AtlassianAuth,
 };
-use crate::connector::traits::{
-    CollectionInfo, Connector, Resource, ResourceMeta, VersionInfo,
-};
+use crate::connector::traits::{CollectionInfo, Connector, Resource, ResourceMeta, VersionInfo};
 
 // ---------------------------------------------------------------------------
 // Jira connector
@@ -27,8 +25,7 @@ pub struct JiraConnector {
 
 impl JiraConnector {
     pub fn new() -> Result<Self> {
-        let auth = AtlassianAuth::from_env()
-            .context("initializing Atlassian auth for Jira")?;
+        let auth = AtlassianAuth::from_env().context("initializing Atlassian auth for Jira")?;
         tracing::info!(base_url = %auth.base_url, "Jira connector initialized");
         Ok(Self {
             auth,
@@ -72,7 +69,10 @@ impl JiraConnector {
 
         let mut resources = Vec::new();
         for issue in &issues {
-            let key = issue.get("key").and_then(|v| v.as_str()).unwrap_or_default();
+            let key = issue
+                .get("key")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
             let fields = issue.get("fields").unwrap_or(&Value::Null);
             let summary = fields
                 .get("summary")
@@ -141,19 +141,13 @@ impl JiraConnector {
             .and_then(|v| v.get("key"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let created = fields
-            .get("created")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let updated = fields
-            .get("updated")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let created = fields.get("created").and_then(|v| v.as_str()).unwrap_or("");
+        let updated = fields.get("updated").and_then(|v| v.as_str()).unwrap_or("");
 
         // Convert ADF description to Markdown
         let description = fields
             .get("description")
-            .map(|v| adf_to_markdown(v))
+            .map(adf_to_markdown)
             .unwrap_or_default();
 
         // Fetch comments
@@ -246,10 +240,7 @@ impl JiraConnector {
                 created.to_string()
             };
 
-            let body = comment
-                .get("body")
-                .map(|v| adf_to_markdown(v))
-                .unwrap_or_default();
+            let body = comment.get("body").map(adf_to_markdown).unwrap_or_default();
 
             out.push_str(&format!("**{}** ({}):\n", author, date_display));
             // Indent comment body as blockquote
@@ -274,19 +265,13 @@ impl JiraConnector {
 
             // Update summary if changed
             if let Some(summary) = frontmatter.get("summary").and_then(|v| v.as_str()) {
-                update_fields.insert(
-                    "summary".to_string(),
-                    Value::String(summary.to_string()),
-                );
+                update_fields.insert("summary".to_string(), Value::String(summary.to_string()));
             }
 
             // Extract description from body text
             let description = extract_description_from_body(body_text);
             if !description.is_empty() {
-                update_fields.insert(
-                    "description".to_string(),
-                    markdown_to_adf(&description),
-                );
+                update_fields.insert("description".to_string(), markdown_to_adf(&description));
             }
 
             if !update_fields.is_empty() {
@@ -339,9 +324,7 @@ impl JiraConnector {
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
-            if name.to_lowercase() == target_lower
-                || to_name.to_lowercase() == target_lower
-            {
+            if name.to_lowercase() == target_lower || to_name.to_lowercase() == target_lower {
                 let transition_id = transition
                     .get("id")
                     .and_then(|v| v.as_str())
@@ -372,10 +355,7 @@ impl JiraConnector {
         let body = serde_json::json!({
             "body": markdown_to_adf(text)
         });
-        let url = format!(
-            "{}/rest/api/3/issue/{}/comment",
-            self.auth.base_url, key
-        );
+        let url = format!("{}/rest/api/3/issue/{}/comment", self.auth.base_url, key);
         self.auth.post_json(&url, &body).await?;
         tracing::info!(key = %key, "added comment");
         Ok(())
@@ -430,10 +410,7 @@ impl JiraConnector {
             .get("name")
             .and_then(|v| v.as_str())
             .unwrap_or("(no name)");
-        let project_key = json
-            .get("key")
-            .and_then(|v| v.as_str())
-            .unwrap_or(key);
+        let project_key = json.get("key").and_then(|v| v.as_str()).unwrap_or(key);
         let description_text = json
             .get("description")
             .and_then(|v| v.as_str())
@@ -477,7 +454,10 @@ impl JiraConnector {
         out.push_str("---\n\n");
 
         out.push_str(&format!("# {} ({})\n\n", name, project_key));
-        out.push_str(&format!("**Lead:** {} | **Type:** {}\n\n", lead, project_type));
+        out.push_str(&format!(
+            "**Lead:** {} | **Type:** {}\n\n",
+            lead, project_type
+        ));
 
         if !description_text.is_empty() {
             out.push_str("## Description\n\n");
@@ -492,19 +472,13 @@ impl JiraConnector {
             for issue in &issues {
                 let ikey = issue.get("key").and_then(|v| v.as_str()).unwrap_or("");
                 let fields = issue.get("fields").unwrap_or(&Value::Null);
-                let summary = fields
-                    .get("summary")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let summary = fields.get("summary").and_then(|v| v.as_str()).unwrap_or("");
                 let status = fields
                     .get("status")
                     .and_then(|v| v.get("name"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let updated = fields
-                    .get("updated")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let updated = fields.get("updated").and_then(|v| v.as_str()).unwrap_or("");
                 let date_display = if updated.len() >= 10 {
                     &updated[..10]
                 } else {
@@ -517,10 +491,7 @@ impl JiraConnector {
             }
         }
 
-        let id = json
-            .get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or(key);
+        let id = json.get("id").and_then(|v| v.as_str()).unwrap_or(key);
 
         let meta = ResourceMeta {
             id: id.to_string(),
@@ -541,10 +512,7 @@ impl JiraConnector {
     // -----------------------------------------------------------------------
 
     async fn list_boards(&self) -> Result<Vec<ResourceMeta>> {
-        let url = format!(
-            "{}/rest/agile/1.0/board?maxResults=50",
-            self.auth.base_url
-        );
+        let url = format!("{}/rest/agile/1.0/board?maxResults=50", self.auth.base_url);
         let json = self.auth.get_json(&url).await?;
 
         let boards = json
@@ -585,10 +553,7 @@ impl JiraConnector {
     }
 
     async fn read_board(&self, id: &str) -> Result<Resource> {
-        let url = format!(
-            "{}/rest/agile/1.0/board/{}",
-            self.auth.base_url, id
-        );
+        let url = format!("{}/rest/agile/1.0/board/{}", self.auth.base_url, id);
         let json = self.auth.get_json(&url).await?;
 
         let name = json
@@ -605,7 +570,11 @@ impl JiraConnector {
             "{}/rest/agile/1.0/board/{}/sprint?state=active&maxResults=5",
             self.auth.base_url, id
         );
-        let sprints_json = self.auth.get_json(&sprints_url).await.unwrap_or(Value::Null);
+        let sprints_json = self
+            .auth
+            .get_json(&sprints_url)
+            .await
+            .unwrap_or(Value::Null);
         let sprints = sprints_json
             .get("values")
             .and_then(|v| v.as_array())
@@ -630,29 +599,28 @@ impl JiraConnector {
                     .get("name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("(unnamed)");
-                let sprint_state = sprint
-                    .get("state")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let sprint_state = sprint.get("state").and_then(|v| v.as_str()).unwrap_or("");
                 let start_date = sprint
                     .get("startDate")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let end_date = sprint
-                    .get("endDate")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let goal = sprint
-                    .get("goal")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let end_date = sprint.get("endDate").and_then(|v| v.as_str()).unwrap_or("");
+                let goal = sprint.get("goal").and_then(|v| v.as_str()).unwrap_or("");
 
                 out.push_str(&format!("### {}\n\n", sprint_name));
                 out.push_str(&format!(
                     "**State:** {} | **Start:** {} | **End:** {}\n",
                     sprint_state,
-                    if start_date.len() >= 10 { &start_date[..10] } else { start_date },
-                    if end_date.len() >= 10 { &end_date[..10] } else { end_date }
+                    if start_date.len() >= 10 {
+                        &start_date[..10]
+                    } else {
+                        start_date
+                    },
+                    if end_date.len() >= 10 {
+                        &end_date[..10]
+                    } else {
+                        end_date
+                    }
                 ));
                 if !goal.is_empty() {
                     out.push_str(&format!("**Goal:** {}\n", goal));
@@ -683,10 +651,8 @@ impl JiraConnector {
                             for issue in &issues {
                                 let ikey = issue.get("key").and_then(|v| v.as_str()).unwrap_or("");
                                 let fields = issue.get("fields").unwrap_or(&Value::Null);
-                                let summary = fields
-                                    .get("summary")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
+                                let summary =
+                                    fields.get("summary").and_then(|v| v.as_str()).unwrap_or("");
                                 let status = fields
                                     .get("status")
                                     .and_then(|v| v.get("name"))
@@ -782,27 +748,16 @@ impl Connector for JiraConnector {
         }
     }
 
-    async fn resource_versions(
-        &self,
-        _collection: &str,
-        _id: &str,
-    ) -> Result<Vec<VersionInfo>> {
+    async fn resource_versions(&self, _collection: &str, _id: &str) -> Result<Vec<VersionInfo>> {
         // Jira doesn't have a simple version history API for issues
         Ok(vec![])
     }
 
-    async fn read_version(
-        &self,
-        collection: &str,
-        id: &str,
-        version: u32,
-    ) -> Result<Resource> {
+    async fn read_version(&self, collection: &str, id: &str, version: u32) -> Result<Resource> {
         if version == 0 {
             return self.read_resource(collection, id).await;
         }
-        Err(anyhow!(
-            "versioned reads are not supported for Jira"
-        ))
+        Err(anyhow!("versioned reads are not supported for Jira"))
     }
 }
 
@@ -915,9 +870,7 @@ fn adf_node_to_markdown(node: &Value, out: &mut String, list_depth: usize) {
                     // Temporarily store the index for ordered items
                     let indent = "  ".repeat(list_depth);
                     out.push_str(&format!("{}{}. ", indent, i + 1));
-                    if let Some(item_content) =
-                        child.get("content").and_then(|v| v.as_array())
-                    {
+                    if let Some(item_content) = child.get("content").and_then(|v| v.as_array()) {
                         for sub in item_content {
                             adf_node_to_markdown(sub, out, list_depth + 1);
                         }
@@ -931,11 +884,9 @@ fn adf_node_to_markdown(node: &Value, out: &mut String, list_depth: usize) {
             if let Some(content) = node.get("content").and_then(|v| v.as_array()) {
                 for child in content {
                     // For paragraphs inside list items, don't add extra newlines
-                    let child_type =
-                        child.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    let child_type = child.get("type").and_then(|v| v.as_str()).unwrap_or("");
                     if child_type == "paragraph" {
-                        if let Some(para_content) =
-                            child.get("content").and_then(|v| v.as_array())
+                        if let Some(para_content) = child.get("content").and_then(|v| v.as_array())
                         {
                             for sub in para_content {
                                 adf_node_to_markdown(sub, out, list_depth + 1);
@@ -990,9 +941,7 @@ fn adf_node_to_markdown(node: &Value, out: &mut String, list_depth: usize) {
                     for cell in &cells {
                         out.push(' ');
                         let mut cell_text = String::new();
-                        if let Some(cell_content) =
-                            cell.get("content").and_then(|v| v.as_array())
-                        {
+                        if let Some(cell_content) = cell.get("content").and_then(|v| v.as_array()) {
                             for child in cell_content {
                                 adf_node_to_markdown(child, &mut cell_text, list_depth);
                             }
@@ -1104,7 +1053,7 @@ fn markdown_to_adf(markdown: &str) -> Value {
         if line.starts_with('#') {
             let level = line.chars().take_while(|c| *c == '#').count();
             let text = line[level..].trim();
-            if level >= 1 && level <= 6 && !text.is_empty() {
+            if (1..=6).contains(&level) && !text.is_empty() {
                 content.push(serde_json::json!({
                     "type": "heading",
                     "attrs": { "level": level },
@@ -1118,9 +1067,7 @@ fn markdown_to_adf(markdown: &str) -> Value {
         // Bullet lists
         if line.starts_with("- ") || line.starts_with("* ") {
             let mut items = Vec::new();
-            while i < lines.len()
-                && (lines[i].starts_with("- ") || lines[i].starts_with("* "))
-            {
+            while i < lines.len() && (lines[i].starts_with("- ") || lines[i].starts_with("* ")) {
                 let item_text = &lines[i][2..];
                 items.push(serde_json::json!({
                     "type": "listItem",
@@ -1258,9 +1205,7 @@ fn inline_markdown_to_adf(text: &str) -> Vec<Value> {
         }
 
         // Plain text: consume until the next special character
-        let next_special = remaining
-            .find(|c: char| c == '*' || c == '`' || c == '[')
-            .unwrap_or(remaining.len());
+        let next_special = remaining.find(['*', '`', '[']).unwrap_or(remaining.len());
         if next_special == 0 {
             // The special char itself didn't match a pattern, consume one char
             nodes.push(serde_json::json!({

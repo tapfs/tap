@@ -1,6 +1,6 @@
+use crate::connector::traits::Connector;
 use std::collections::HashMap;
 use std::sync::Arc;
-use crate::connector::traits::Connector;
 
 pub struct ConnectorRegistry {
     connectors: HashMap<String, Arc<dyn Connector>>,

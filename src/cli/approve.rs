@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
-use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PendingChange {
@@ -25,8 +25,8 @@ pub fn run_pending(data_dir: &Path) -> Result<()> {
         if entry.extension().map(|e| e == "json").unwrap_or(false) {
             let content = std::fs::read_to_string(&entry)?;
             let change: PendingChange = serde_json::from_str(&content)?;
-            println!("  {} {}/{}/{} ({} bytes, {})",
-                "PENDING",
+            println!(
+                "  PENDING {}/{}/{} ({} bytes, {})",
                 change.connector,
                 change.collection,
                 change.resource,
@@ -71,13 +71,24 @@ pub fn run_approve(path: &Path, data_dir: &Path) -> Result<()> {
         .join(format!("{}.json", resource));
 
     if !pending_json.exists() {
-        return Err(anyhow!("no pending change for {}/{}/{}", connector, collection, resource));
+        return Err(anyhow!(
+            "no pending change for {}/{}/{}",
+            connector,
+            collection,
+            resource
+        ));
     }
 
     let meta: PendingChange = serde_json::from_str(&std::fs::read_to_string(&pending_json)?)?;
     let content = std::fs::read(&meta.content_path)?;
 
-    println!("Approving: {}/{}/{} ({} bytes)", connector, collection, resource, content.len());
+    println!(
+        "Approving: {}/{}/{} ({} bytes)",
+        connector,
+        collection,
+        resource,
+        content.len()
+    );
     println!("Content will be pushed to API.");
 
     // The actual push happens here - but we need a runtime and connector.

@@ -7,7 +7,7 @@
     "url": "https://github.com/tapfs/tap"
   },
   "repository": "https://github.com/tapfs/tap",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "keywords": ["api", "filesystem", "jira", "github", "salesforce", "rest"],
   "skills": "./skills/",
   "userConfig": {
