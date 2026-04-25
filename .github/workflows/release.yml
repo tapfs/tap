@@ -19,11 +19,6 @@ jobs:
             os: ubuntu-latest
             binary: tap-linux-x64
             features: ""
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            binary: tap-linux-arm64
-            features: "--no-default-features --features nfs"
-            cross: true
           - target: x86_64-apple-darwin
             os: macos-latest
             binary: tap-darwin-x64
@@ -41,22 +36,15 @@ jobs:
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
-      - name: Install FUSE (Linux x64)
-        if: runner.os == 'Linux' && !matrix.cross
+      - name: Install FUSE (Linux)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libfuse3-dev fuse3
 
-      - name: Install cross
-        if: matrix.cross
-        run: cargo install cross
-
-      - name: Build (native)
-        if: "!matrix.cross"
+      - name: Build
         run: cargo build --release --target ${{ matrix.target }} ${{ matrix.features }}
-
-      - name: Build (cross)
-        if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }} ${{ matrix.features }}
 
       - name: Rename binary
         run: cp target/${{ matrix.target }}/release/tap ${{ matrix.binary }}
