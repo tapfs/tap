@@ -24,28 +24,50 @@ BINARY="tap-${OS}-${ARCH}"
 URL="https://github.com/${REPO}/releases/latest/download/${BINARY}"
 
 echo "Installing tapfs (${OS}/${ARCH})..."
-
-# Download
 mkdir -p "$INSTALL_DIR"
+
+# Try GitHub Release download first
+DOWNLOAD_OK=false
 if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$URL" -o "${INSTALL_DIR}/tap"
+    if curl -fsSL "$URL" -o "${INSTALL_DIR}/tap" 2>/dev/null; then
+        DOWNLOAD_OK=true
+    fi
 elif command -v wget >/dev/null 2>&1; then
-    wget -q "$URL" -O "${INSTALL_DIR}/tap"
-else
-    echo "Error: curl or wget required"; exit 1
+    if wget -q "$URL" -O "${INSTALL_DIR}/tap" 2>/dev/null; then
+        DOWNLOAD_OK=true
+    fi
 fi
 
-chmod +x "${INSTALL_DIR}/tap"
+if [ "$DOWNLOAD_OK" = true ]; then
+    chmod +x "${INSTALL_DIR}/tap"
+    echo "tapfs installed to ${INSTALL_DIR}/tap"
+else
+    # Fallback: build from source
+    echo "Binary not available for ${OS}/${ARCH}. Building from source..."
+    if ! command -v cargo >/dev/null 2>&1; then
+        echo "Error: cargo not found. Install Rust first: https://rustup.rs"
+        exit 1
+    fi
+    TMPDIR=$(mktemp -d)
+    git clone --depth 1 "https://github.com/${REPO}.git" "$TMPDIR/tap" 2>/dev/null || \
+        git clone --depth 1 "git@github.com:${REPO}.git" "$TMPDIR/tap"
+    cd "$TMPDIR/tap"
+    if [ "$OS" = "darwin" ]; then
+        cargo build --release --no-default-features --features nfs
+    else
+        cargo build --release
+    fi
+    cp target/release/tap "${INSTALL_DIR}/tap"
+    rm -rf "$TMPDIR"
+    echo "tapfs built and installed to ${INSTALL_DIR}/tap"
+fi
 
 echo ""
-echo "tapfs installed to ${INSTALL_DIR}/tap"
 
 # Check if already in PATH
-if command -v tap >/dev/null 2>&1; then
-    echo ""
-    tap connectors 2>/dev/null || true
+if echo "$PATH" | grep -q "$INSTALL_DIR"; then
+    "${INSTALL_DIR}/tap" connectors 2>/dev/null || true
 else
-    echo ""
     echo "Add to your shell profile:"
     echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
     echo ""
