@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Terms of Service — tapfs</title>
+  <meta name="robots" content="noindex">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0a0a0b;
+      --text: #e4e4e7;
+      --text-muted: #8b8b94;
+      --text-dim: #52525b;
+      --accent: #06b6d4;
+      --border: #27272a;
+      --max-width: 720px;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.7;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    nav {
+      border-bottom: 1px solid var(--border);
+      padding: 16px 24px;
+    }
+    nav a {
+      font-weight: 800;
+      font-size: 20px;
+      color: var(--text);
+    }
+    nav a span { color: var(--accent); }
+    main {
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 60px 24px 80px;
+    }
+    h1 {
+      font-size: 32px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    .last-updated {
+      color: var(--text-dim);
+      font-size: 14px;
+      margin-bottom: 40px;
+    }
+    h2 {
+      font-size: 20px;
+      font-weight: 600;
+      margin-top: 36px;
+      margin-bottom: 12px;
+    }
+    p, li {
+      color: var(--text-muted);
+      font-size: 15px;
+      margin-bottom: 12px;
+    }
+    ul { padding-left: 20px; }
+    li { margin-bottom: 6px; }
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 24px;
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+
+<nav><a href="/">tap<span>fs</span></a></nav>
+
+<main>
+  <h1>Terms of Service</h1>
+  <p class="last-updated">Last updated: April 25, 2026</p>
+
+  <h2>1. Acceptance</h2>
+  <p>By using the tapfs website (tapfs.dev) or the tapfs software, you agree to these terms. If you do not agree, do not use tapfs.</p>
+
+  <h2>2. The Software</h2>
+  <p>tapfs is open-source software licensed under the Apache License 2.0. You may use, modify, and distribute the software in accordance with that license. The full license text is available in the <a href="https://github.com/tapfs/tap/blob/main/LICENSE">project repository</a>.</p>
+
+  <h2>3. No Warranty</h2>
+  <p>tapfs is provided "as is" without warranty of any kind, express or implied. We do not guarantee that the software will be error-free, uninterrupted, or fit for any particular purpose. Use at your own risk.</p>
+
+  <h2>4. Your Responsibilities</h2>
+  <p>You are responsible for:</p>
+  <ul>
+    <li>Securing your API credentials and access tokens</li>
+    <li>Complying with the terms of service of any third-party APIs you access through tapfs</li>
+    <li>Ensuring your use of tapfs complies with applicable laws and regulations</li>
+    <li>Any data you read, write, or modify through mounted filesystems</li>
+  </ul>
+
+  <h2>5. Third-Party APIs</h2>
+  <p>tapfs connects to third-party APIs on your behalf using credentials you provide. We are not responsible for the availability, accuracy, or security of those APIs. Your use of third-party services is governed by their respective terms.</p>
+
+  <h2>6. Limitation of Liability</h2>
+  <p>To the maximum extent permitted by law, the tapfs authors and contributors shall not be liable for any indirect, incidental, special, consequential, or punitive damages arising from your use of the software, including but not limited to data loss, service disruption, or unauthorized access resulting from misconfiguration.</p>
+
+  <h2>7. Community Connectors</h2>
+  <p>Third-party connector specs are provided by the community. We do not review, endorse, or guarantee community connectors. Use them at your own discretion and review the YAML spec before mounting.</p>
+
+  <h2>8. Changes</h2>
+  <p>We may update these terms. Changes take effect when posted to this page. Continued use of tapfs after changes constitutes acceptance.</p>
+
+  <h2>9. Contact</h2>
+  <p>For questions about these terms, email <a href="mailto:security@tapfs.dev">security@tapfs.dev</a>.</p>
+</main>
+
+<footer>tapfs is open source under Apache 2.0</footer>
+
+</body>
+</html>

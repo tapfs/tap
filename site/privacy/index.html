@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Privacy Policy — tapfs</title>
+  <meta name="robots" content="noindex">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0a0a0b;
+      --text: #e4e4e7;
+      --text-muted: #8b8b94;
+      --text-dim: #52525b;
+      --accent: #06b6d4;
+      --border: #27272a;
+      --max-width: 720px;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.7;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    nav {
+      border-bottom: 1px solid var(--border);
+      padding: 16px 24px;
+    }
+    nav a {
+      font-weight: 800;
+      font-size: 20px;
+      color: var(--text);
+    }
+    nav a span { color: var(--accent); }
+    main {
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 60px 24px 80px;
+    }
+    h1 {
+      font-size: 32px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    .last-updated {
+      color: var(--text-dim);
+      font-size: 14px;
+      margin-bottom: 40px;
+    }
+    h2 {
+      font-size: 20px;
+      font-weight: 600;
+      margin-top: 36px;
+      margin-bottom: 12px;
+    }
+    p, li {
+      color: var(--text-muted);
+      font-size: 15px;
+      margin-bottom: 12px;
+    }
+    ul { padding-left: 20px; }
+    li { margin-bottom: 6px; }
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 24px;
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+
+<nav><a href="/">tap<span>fs</span></a></nav>
+
+<main>
+  <h1>Privacy Policy</h1>
+  <p class="last-updated">Last updated: April 25, 2026</p>
+
+  <h2>Overview</h2>
+  <p>tapfs is open-source software that runs locally on your machine. This privacy policy covers the tapfs website (tapfs.dev) and the tapfs CLI tool.</p>
+
+  <h2>Website (tapfs.dev)</h2>
+  <p>The tapfs website is a static site hosted on Cloudflare Pages. We do not use cookies, analytics, or tracking scripts. Cloudflare may collect standard web server logs (IP address, user agent, timestamps) as part of their hosting infrastructure.</p>
+
+  <h2>CLI Tool</h2>
+  <p>The tapfs CLI runs entirely on your local machine. It does not phone home, collect telemetry, or transmit usage data to us or any third party.</p>
+  <p>When you mount a connector, tapfs communicates directly with the configured API (e.g., Google Workspace, GitHub) using credentials you provide. tapfs does not proxy, store, or relay your API credentials or data through our servers.</p>
+
+  <h2>Data Storage</h2>
+  <p>tapfs stores the following data locally on your machine:</p>
+  <ul>
+    <li>Connector configuration and credentials (in <code>~/.tapfs/</code>)</li>
+    <li>Cached API responses (temporary, on-disk)</li>
+    <li>Audit logs of filesystem operations</li>
+    <li>Draft and version snapshots</li>
+  </ul>
+  <p>All data remains on your machine. Nothing is sent to tapfs servers.</p>
+
+  <h2>Third-Party APIs</h2>
+  <p>When you use a connector, tapfs makes authenticated requests to third-party APIs on your behalf. Your use of those APIs is governed by their respective privacy policies. tapfs does not modify, intercept, or log your API credentials beyond what is needed to authenticate requests.</p>
+
+  <h2>Open Source</h2>
+  <p>tapfs is open source under the Apache 2.0 license. You can audit exactly what the software does by reading the <a href="https://github.com/tapfs/tap">source code</a>.</p>
+
+  <h2>Contact</h2>
+  <p>For privacy questions, email <a href="mailto:security@tapfs.dev">security@tapfs.dev</a>.</p>
+</main>
+
+<footer>tapfs is open source under Apache 2.0</footer>
+
+</body>
+</html>
