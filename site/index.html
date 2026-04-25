@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>tapfs — Mount enterprise APIs as files</title>
-  <meta name="description" content="An open-source filesystem that mounts enterprise REST APIs as agent-readable files. No SDKs. No wrappers. Just ls, cat, and grep.">
+  <meta name="description" content="An open-source virtual filesystem that mounts enterprise REST APIs as agent-readable files. No SDKs. No wrappers. Just ls, cat, and grep.">
   <meta property="og:title" content="tapfs — Mount enterprise APIs as files">
-  <meta property="og:description" content="FUSE filesystem that turns enterprise APIs into files. Your agent already knows how.">
+  <meta property="og:description" content="Open-source virtual filesystem that mounts enterprise REST APIs as agent-readable files.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://tapfs.dev">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -473,8 +473,8 @@
 <!-- ─── Hero ─────────────────────────────────────────── -->
 <div class="hero">
   <div class="hero-badge"><span>v0.1</span> &mdash; Now with Google Workspace connector</div>
-  <h1>Tap into enterprise APIs.<br>Your agent already knows how.</h1>
-  <p>An open-source filesystem that mounts enterprise REST APIs as files. No SDKs, no new abstractions. Agents use <code>ls</code>, <code>cat</code>, <code>grep</code>, and <code>diff</code> &mdash; the tools they were trained on.</p>
+  <h1>Enterprise APIs as files.</h1>
+  <p>An open-source virtual filesystem that turns REST APIs into a local directory tree. Agents and scripts interact with enterprise data using standard POSIX operations &mdash; no SDKs, no wrappers.</p>
   <div class="hero-ctas">
     <a href="#install" class="btn btn-primary">Get Started</a>
     <a href="https://github.com/tapfs/tap" class="btn btn-secondary">
@@ -523,22 +523,33 @@
   </div>
 </div>
 
+<!-- ─── Built With ───────────────────────────────────── -->
+<section style="text-align: center; padding: 40px 24px;">
+  <p style="font-size: 14px; color: var(--text-dim); margin-bottom: 16px;">Built with</p>
+  <div style="display: flex; justify-content: center; gap: 24px; flex-wrap: wrap; opacity: 0.7;">
+    <span style="color: var(--text-muted); font-size: 14px;">Rust</span>
+    <span style="color: var(--text-muted); font-size: 14px;">NFS</span>
+    <span style="color: var(--text-muted); font-size: 14px;">FUSE</span>
+    <span style="color: var(--text-muted); font-size: 14px;">Apache 2.0</span>
+  </div>
+</section>
+
 <!-- ─── Features ─────────────────────────────────────── -->
 <section id="features">
   <div class="section-label">Why tapfs</div>
-  <div class="section-title">The filesystem is the universal agent protocol</div>
-  <div class="section-desc">If Finder can see it, every application can. If every application can, every agent can. Deepest OS integration means widest tool compatibility.</div>
+  <div class="section-title">A filesystem interface for enterprise APIs</div>
+  <div class="section-desc">Filesystem operations work with every tool, editor, and agent out of the box. No integration code required.</div>
 
   <div class="features-grid">
     <div class="feature-card">
       <div class="feature-icon">$_</div>
       <h3>POSIX is the API</h3>
-      <p>No SDKs. No new abstractions. Every LLM was trained on Unix. <code>ls</code>, <code>cat</code>, <code>grep</code>, <code>diff</code> work out of the box.</p>
+      <p>No SDKs. No new abstractions. LLMs handle filesystem operations reliably. <code>ls</code>, <code>cat</code>, <code>grep</code>, <code>diff</code> work out of the box.</p>
     </div>
     <div class="feature-card">
       <div class="feature-icon">&darr;</div>
       <h3>Sparse hydration</h3>
-      <p>The entire enterprise is mounted. <code>ls</code> returns instantly from cached metadata. Bytes only move on <code>cat</code> &mdash; pay-per-access.</p>
+      <p>Mount an entire API namespace. <code>ls</code> returns instantly from cached metadata. Bytes only move on <code>cat</code> &mdash; pay-per-access.</p>
     </div>
     <div class="feature-card">
       <div class="feature-icon">&olarr;</div>
@@ -558,7 +569,7 @@
     <div class="feature-card">
       <div class="feature-icon">&equiv;</div>
       <h3>Multi-platform</h3>
-      <p>FUSE on Linux/Docker. File Provider Extension on macOS (Finder integration). Works in E2B sandboxes, Cloudflare Workers, anywhere.</p>
+      <p>NFS on macOS. FUSE on Linux/Docker. Works in E2B sandboxes, Cloudflare Workers, and more.</p>
     </div>
   </div>
 </section>
@@ -595,13 +606,13 @@
 <section id="connectors">
   <div class="section-label">Connectors</div>
   <div class="section-title">Any API becomes a filesystem in YAML</div>
-  <div class="section-desc">A connector is a YAML file that maps a REST API to filesystem paths. No code required for most APIs — describe your endpoints and tapfs handles auth, caching, rate limiting, and rendering JSON as agent-readable Markdown.</div>
+  <div class="section-desc">A connector is a YAML file that maps a REST API to filesystem paths. Describe your endpoints and tapfs handles auth, caching, rate limiting, and rendering JSON as agent-readable Markdown.</div>
 
   <div class="tree-section">
     <div class="tree-text">
       <h2>Write YAML, get a filesystem</h2>
       <p>Define endpoints, describe your collections, and add agent tips. tapfs resolves slugs, paginates, caches, and auto-generates an <code>agent.md</code> that teaches agents how to navigate your API.</p>
-      <p>14 connectors ship today — GitHub, Jira, Slack, Salesforce, Linear, Notion, Stripe, and more. Install from the registry or drop a YAML file in your connectors directory.</p>
+      <p>Google Workspace ships built-in. Community connector specs available for GitHub, Jira, Slack, and more. Install from GitHub or drop a YAML file in your connectors directory.</p>
       <div style="margin-top: 24px; display: flex; gap: 10px; flex-wrap: wrap;">
         <span style="padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; color: var(--text-muted);">github</span>
         <span style="padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; color: var(--text-muted);">jira</span>
@@ -610,7 +621,7 @@
         <span style="padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; color: var(--text-muted);">linear</span>
         <span style="padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; color: var(--text-muted);">notion</span>
         <span style="padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; color: var(--text-muted);">stripe</span>
-        <span style="padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; color: var(--accent); border-color: var(--accent-dim);">+ 7 more</span>
+        <a href="https://github.com/tapfs/tap/tree/main/connectors" style="padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; color: var(--accent); border-color: var(--accent-dim); text-decoration: none;">+ more on GitHub</a>
       </div>
     </div>
     <div class="file-tree" style="font-size: 12.5px; line-height: 1.9;">
@@ -707,8 +718,8 @@ Rate limit: 5000 requests/min
 <!-- ─── Build a Connector ────────────────────────────── -->
 <section id="build">
   <div class="section-label">Community</div>
-  <div class="section-title">Build a connector in 15 minutes</div>
-  <div class="section-desc">One YAML file. No SDK. No code. Describe your API endpoints, add descriptions for agents, and tapfs handles the rest &mdash; auth, caching, rate limiting, rendering, and agent.md generation.</div>
+  <div class="section-title">Build a connector in pure YAML</div>
+  <div class="section-desc">One YAML file. Describe your API endpoints, add descriptions for agents, and tapfs handles auth, caching, rate limiting, rendering, and agent.md generation.</div>
 
   <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px;">
     <div class="feature-card">
@@ -819,14 +830,21 @@ Rate limit: 5000 requests/min
         <td><span class="cross">No</span></td>
         <td><span class="cross">No</span></td>
       </tr>
+      <tr>
+        <td>Ecosystem maturity</td>
+        <td class="highlight-col"><span class="cross">Alpha</span></td>
+        <td>Established</td>
+        <td>Established</td>
+        <td>Established</td>
+      </tr>
     </tbody>
   </table>
 </section>
 
 <!-- ─── Install ──────────────────────────────────────── -->
 <section id="install">
-  <div class="section-label">Get started</div>
-  <div class="section-title">Up and running in 60 seconds</div>
+  <div class="section-label">Install</div>
+  <div class="section-title">Get started</div>
   <div class="section-desc"></div>
 
   <div>
@@ -893,7 +911,7 @@ Rate limit: 5000 requests/min
     <a href="https://github.com/tapfs/tap/issues">Issues</a> &middot;
     <a href="https://github.com/tapfs/tap/blob/main/spec.md">Spec</a>
   </p>
-  <p style="margin-top: 8px; color: var(--text-dim);">tapfs doesn't teach agents new tricks. It reveals enterprise reality in the language they already speak.</p>
+  <p style="margin-top: 8px; color: var(--text-dim);">Standard filesystem operations. Enterprise data. Open source.</p>
 </footer>
 
 <script>
