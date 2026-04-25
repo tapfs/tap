@@ -2,7 +2,6 @@
 ///
 /// These YAML specs are compiled into the binary so that `tap mount github`
 /// works without requiring `--spec connectors/github.yaml` or a repo clone.
-
 pub fn builtin_spec(name: &str) -> Option<&'static str> {
     match name {
         "github" => Some(include_str!("../../connectors/github.yaml")),
@@ -32,8 +31,8 @@ pub fn builtin_spec(name: &str) -> Option<&'static str> {
 pub fn builtin_names() -> &'static [&'static str] {
     &[
         "github",
-        "google",    // native connector, no YAML spec
-        "jira",      // native connector, no YAML spec
+        "google",     // native connector, no YAML spec
+        "jira",       // native connector, no YAML spec
         "confluence", // native connector, no YAML spec
         "slack",
         "salesforce",

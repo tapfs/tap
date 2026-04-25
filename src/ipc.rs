@@ -150,9 +150,7 @@ fn handle_request(state: &IpcState, request: &str) -> serde_json::Value {
                     }
                     serde_json::json!({ "ok": true, "message": format!("mounted {}", name) })
                 }
-                Err(e) => {
-                    error_response(&format!("failed to create connector {}: {}", name, e))
-                }
+                Err(e) => error_response(&format!("failed to create connector {}: {}", name, e)),
             }
         }
         "remove_connector" => {
