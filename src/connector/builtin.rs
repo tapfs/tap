@@ -6,8 +6,6 @@
 pub fn builtin_spec(name: &str) -> Option<&'static str> {
     match name {
         "github" => Some(include_str!("../../connectors/github.yaml")),
-        "google" => Some(include_str!("../../connectors/google.yaml")),
-        "jira" => Some(include_str!("../../connectors/jira.yaml")),
         "slack" => Some(include_str!("../../connectors/slack.yaml")),
         "salesforce" => Some(include_str!("../../connectors/salesforce.yaml")),
         "stripe" => Some(include_str!("../../connectors/stripe.yaml")),
@@ -34,8 +32,9 @@ pub fn builtin_spec(name: &str) -> Option<&'static str> {
 pub fn builtin_names() -> &'static [&'static str] {
     &[
         "github",
-        "google",
-        "jira",
+        "google",    // native connector, no YAML spec
+        "jira",      // native connector, no YAML spec
+        "confluence", // native connector, no YAML spec
         "slack",
         "salesforce",
         "stripe",
