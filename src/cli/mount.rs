@@ -223,6 +223,7 @@ pub async fn run(config: TapConfig) -> Result<()> {
     // 13. Choose transport
     #[cfg(all(feature = "nfs", feature = "fuse"))]
     {
+        #[allow(clippy::needless_return)]
         if cfg!(target_os = "macos") || std::env::var("TAPFS_NFS").is_ok() {
             return mount_nfs(vfs, &config).await;
         } else {
@@ -237,6 +238,7 @@ pub async fn run(config: TapConfig) -> Result<()> {
 
     #[cfg(all(feature = "fuse", not(feature = "nfs")))]
     {
+        #[allow(clippy::needless_return)]
         return mount_fuse(vfs, &config).await;
     }
 
@@ -338,6 +340,7 @@ async fn mount_fuse(vfs: Arc<VirtualFs>, config: &TapConfig) -> Result<()> {
         "mounting FUSE filesystem"
     );
 
+    #[allow(unused_mut)]
     let mut options = vec![fuser::MountOption::FSName("tapfs".into())];
     #[cfg(target_os = "macos")]
     {
