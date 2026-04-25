@@ -193,7 +193,9 @@ mod tests {
     #[test]
     fn all_builtin_specs_parse() {
         for name in builtin_names() {
-            let Some(yaml) = builtin_spec(name) else { continue }; // skip native connectors
+            let Some(yaml) = builtin_spec(name) else {
+                continue;
+            }; // skip native connectors
             ConnectorSpec::from_yaml(yaml)
                 .unwrap_or_else(|e| panic!("failed to parse spec '{name}': {e}"));
         }
@@ -202,7 +204,9 @@ mod tests {
     #[test]
     fn all_specs_have_required_fields() {
         for name in builtin_names() {
-            let Some(yaml) = builtin_spec(name) else { continue };
+            let Some(yaml) = builtin_spec(name) else {
+                continue;
+            };
             let spec = ConnectorSpec::from_yaml(yaml).unwrap();
 
             assert!(!spec.name.is_empty(), "spec '{name}' has empty name");
@@ -237,7 +241,9 @@ mod tests {
     #[test]
     fn spec_name_matches_builtin_key() {
         for key in builtin_names() {
-            let Some(yaml) = builtin_spec(key) else { continue };
+            let Some(yaml) = builtin_spec(key) else {
+                continue;
+            };
             let spec = ConnectorSpec::from_yaml(yaml).unwrap();
             assert_eq!(
                 spec.name, *key,
@@ -250,7 +256,9 @@ mod tests {
     #[test]
     fn get_endpoints_contain_id_placeholder() {
         for name in builtin_names() {
-            let Some(yaml) = builtin_spec(name) else { continue };
+            let Some(yaml) = builtin_spec(name) else {
+                continue;
+            };
             let spec = ConnectorSpec::from_yaml(yaml).unwrap();
 
             for col in &spec.collections {
@@ -267,7 +275,9 @@ mod tests {
     #[test]
     fn compose_endpoints_contain_id_placeholder() {
         for name in builtin_names() {
-            let Some(yaml) = builtin_spec(name) else { continue };
+            let Some(yaml) = builtin_spec(name) else {
+                continue;
+            };
             let spec = ConnectorSpec::from_yaml(yaml).unwrap();
 
             for col in &spec.collections {

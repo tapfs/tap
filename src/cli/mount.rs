@@ -25,13 +25,11 @@ pub async fn run(config: TapConfig) -> Result<()> {
         let data_dir = config.data_dir();
 
         // Check if daemon is already running
-        let daemon_running = crate::ipc::send_request(
-            &socket_path,
-            &serde_json::json!({"cmd": "status"}),
-        )
-        .await
-        .map(|r| r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false))
-        .unwrap_or(false);
+        let daemon_running =
+            crate::ipc::send_request(&socket_path, &serde_json::json!({"cmd": "status"}))
+                .await
+                .map(|r| r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false))
+                .unwrap_or(false);
 
         if daemon_running {
             // Hot-add via IPC
@@ -60,9 +58,8 @@ pub async fn run(config: TapConfig) -> Result<()> {
                 if std::io::stdin().is_terminal() {
                     // Get auth config from spec, or fall back to built-in defaults
                     // for native connectors (google, etc.)
-                    let default_auth = crate::cli::auth::default_oauth2_config(
-                        &auth_err.connector_name,
-                    );
+                    let default_auth =
+                        crate::cli::auth::default_oauth2_config(&auth_err.connector_name);
                     let auth = auth_err
                         .spec
                         .as_ref()
@@ -126,10 +123,8 @@ pub async fn run(config: TapConfig) -> Result<()> {
                 .await
                 {
                     if let Some(connectors) = resp.get("connectors").and_then(|v| v.as_array()) {
-                        let names: Vec<&str> = connectors
-                            .iter()
-                            .filter_map(|v| v.as_str())
-                            .collect();
+                        let names: Vec<&str> =
+                            connectors.iter().filter_map(|v| v.as_str()).collect();
                         println!("tapfs running in background");
                         println!("Mounted: {}", names.join(", "));
                         println!("Mount point: {}", config.mount_point.display());
@@ -242,14 +237,10 @@ pub async fn run(config: TapConfig) -> Result<()> {
                                 .map(|a| a.auth_type.as_str())
                                 .unwrap_or("bearer");
 
-                            let auth_spec = auth_err
-                                .spec
-                                .as_ref()
-                                .and_then(|s| s.auth.as_ref());
+                            let auth_spec = auth_err.spec.as_ref().and_then(|s| s.auth.as_ref());
 
-                            let has_device_flow = auth_spec
-                                .and_then(|a| a.device_code_url.as_ref())
-                                .is_some();
+                            let has_device_flow =
+                                auth_spec.and_then(|a| a.device_code_url.as_ref()).is_some();
                             let has_browser_oauth = auth_type == "oauth2" && !has_device_flow;
 
                             if has_device_flow {
@@ -288,8 +279,8 @@ pub async fn run(config: TapConfig) -> Result<()> {
                         } else {
                             // Non-interactive (CI, daemon) — fall back to spec path or bare connector
                             let spec = if let Some(ref spec_path) = config.connector_spec {
-                                let yaml = std::fs::read_to_string(spec_path)
-                                    .with_context(|| {
+                                let yaml =
+                                    std::fs::read_to_string(spec_path).with_context(|| {
                                         format!("reading spec file {:?}", spec_path)
                                     })?;
                                 let mut spec = ConnectorSpec::from_yaml(&yaml)?;
@@ -311,8 +302,7 @@ pub async fn run(config: TapConfig) -> Result<()> {
                                 .build()?;
 
                             let token = creds.token(&spec.name);
-                            let rest =
-                                RestConnector::new_with_token(spec.clone(), client, token);
+                            let rest = RestConnector::new_with_token(spec.clone(), client, token);
                             let inner: Arc<dyn crate::connector::traits::Connector> =
                                 Arc::new(rest);
                             let audited: Arc<dyn crate::connector::traits::Connector> =
@@ -389,9 +379,8 @@ pub async fn run(config: TapConfig) -> Result<()> {
     let drafts = Arc::new(DraftStore::new(config.drafts_dir()).context("creating draft store")?);
     let versions =
         Arc::new(VersionStore::new(config.versions_dir()).context("creating version store")?);
-    let disk_cache = Arc::new(
-        DiskCache::new(config.cache_dir()).context("creating on-disk resource cache")?,
-    );
+    let disk_cache =
+        Arc::new(DiskCache::new(config.cache_dir()).context("creating on-disk resource cache")?);
 
     // 9. Ensure mount point directory exists
     std::fs::create_dir_all(&config.mount_point)

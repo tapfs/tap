@@ -242,8 +242,7 @@ impl RestConnector {
                         let expires_in = json["expires_in"].as_u64().unwrap_or(3600);
                         // Refresh at 80% of TTL to avoid edge-case expiry
                         *config.expiry.write().unwrap() = Some(
-                            Instant::now()
-                                + std::time::Duration::from_secs(expires_in * 4 / 5),
+                            Instant::now() + std::time::Duration::from_secs(expires_in * 4 / 5),
                         );
                     }
                 }
@@ -861,9 +860,7 @@ impl Connector for RestConnector {
         let path = Self::substitute_id(endpoint, &resolved_id);
         let url = self.url(&path);
 
-        let response = self
-            .send_with_retry(|| self.client.delete(&url))
-            .await?;
+        let response = self.send_with_retry(|| self.client.delete(&url)).await?;
 
         let status = response.status();
         if !status.is_success() {

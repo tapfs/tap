@@ -107,9 +107,7 @@ impl CredentialStore {
         };
 
         // Update the token
-        let entry = entries
-            .entry(connector_name.to_string())
-            .or_insert_with(ConnectorCredentials::default);
+        let entry = entries.entry(connector_name.to_string()).or_default();
         entry.token = Some(token.to_string());
 
         // Serialize — ConnectorCredentials needs Serialize
@@ -153,9 +151,7 @@ impl CredentialStore {
         };
 
         // Update the entry with all OAuth2 fields
-        let entry = entries
-            .entry(connector_name.to_string())
-            .or_insert_with(ConnectorCredentials::default);
+        let entry = entries.entry(connector_name.to_string()).or_default();
         entry.token = Some(token.to_string());
         entry.refresh_token = Some(refresh_token.to_string());
         entry.client_id = Some(client_id.to_string());

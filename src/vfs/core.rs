@@ -17,8 +17,6 @@ use crate::version::store::VersionStore;
 
 use super::types::*;
 
-/// Static help text returned when reading `agent.md`.
-
 // ---------------------------------------------------------------------------
 // Node table
 // ---------------------------------------------------------------------------
@@ -974,8 +972,11 @@ impl VirtualFs {
                             // If create is not supported, fall back to write
                             // (PATCH) so existing behaviour is preserved.
                             if e.downcast_ref::<crate::connector::traits::ConnectorError>()
-                                .map_or(false, |ce| {
-                                    matches!(ce, crate::connector::traits::ConnectorError::NotSupported(_))
+                                .is_some_and(|ce| {
+                                    matches!(
+                                        ce,
+                                        crate::connector::traits::ConnectorError::NotSupported(_)
+                                    )
                                 })
                             {
                                 rt.block_on(conn.write_resource(collection, resource, &data))
@@ -1952,17 +1953,14 @@ impl VirtualFs {
                 // and the listing's `updated_at` for this resource matches
                 // what's on disk. Otherwise refetch.
                 let listing_key = format!("{}/{}", connector, collection);
-                let listing_updated_at = self
-                    .cache
-                    .get_metadata(&listing_key)
-                    .and_then(|metas| {
-                        metas
-                            .into_iter()
-                            .find(|m| m.slug == resource || m.id == resource)
-                            .and_then(|m| m.updated_at)
-                    });
+                let listing_updated_at = self.cache.get_metadata(&listing_key).and_then(|metas| {
+                    metas
+                        .into_iter()
+                        .find(|m| m.slug == resource || m.id == resource)
+                        .and_then(|m| m.updated_at)
+                });
 
-                if let (Some(disk), Some(ref upstream_ts)) =
+                if let (Some(disk), Some(upstream_ts)) =
                     (self.disk_cache.as_ref(), listing_updated_at.as_ref())
                 {
                     if let Some(entry) = disk.get(connector, collection, resource) {
@@ -2628,12 +2626,7 @@ mod disk_cache_integration {
         async fn resource_versions(&self, _: &str, _: &str) -> anyhow::Result<Vec<VersionInfo>> {
             Ok(vec![])
         }
-        async fn read_version(
-            &self,
-            _: &str,
-            _: &str,
-            _: u32,
-        ) -> anyhow::Result<ConnResource> {
+        async fn read_version(&self, _: &str, _: &str, _: u32) -> anyhow::Result<ConnResource> {
             unimplemented!()
         }
     }

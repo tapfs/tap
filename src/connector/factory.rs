@@ -92,17 +92,14 @@ pub fn create_connector(
         audited = Arc::new(AuditedConnector::new(inner, audit.clone()));
         spec = None;
     } else {
-        let yaml = builtin_spec(name)
-            .ok_or_else(|| anyhow::anyhow!("unknown connector: {}", name))?;
+        let yaml =
+            builtin_spec(name).ok_or_else(|| anyhow::anyhow!("unknown connector: {}", name))?;
         let mut parsed = ConnectorSpec::from_yaml(yaml)?;
         if let Some(url) = creds.base_url(name) {
             parsed.base_url = url;
         }
 
-        let is_oauth2 = parsed
-            .auth
-            .as_ref()
-            .map(|a| a.auth_type.as_str()) == Some("oauth2");
+        let is_oauth2 = parsed.auth.as_ref().map(|a| a.auth_type.as_str()) == Some("oauth2");
 
         let client = reqwest::Client::builder()
             .pool_max_idle_per_host(10)
@@ -115,23 +112,18 @@ pub fn create_connector(
         let token = creds.token(name);
         let refresh_token = cred.and_then(|c| c.refresh_token.clone());
 
-        if is_oauth2 && refresh_token.is_some() {
+        if let (true, Some(rt)) = (is_oauth2, refresh_token) {
             // Full OAuth2 with refresh token — use auto-refresh connector
             let auth_spec = parsed.auth.as_ref().unwrap();
             let oauth2_config = OAuth2Config {
                 token_url: auth_spec.token_url.clone().unwrap_or_default(),
                 client_id: auth_spec.client_id.clone().unwrap_or_default(),
                 client_secret: auth_spec.client_secret.clone().unwrap_or_default(),
-                refresh_token: refresh_token.unwrap(),
+                refresh_token: rt,
                 expiry: std::sync::RwLock::new(None),
             };
 
-            let rest = RestConnector::new_with_oauth2(
-                parsed.clone(),
-                client,
-                token,
-                oauth2_config,
-            );
+            let rest = RestConnector::new_with_oauth2(parsed.clone(), client, token, oauth2_config);
             let inner: Arc<dyn Connector> = Arc::new(rest);
             audited = Arc::new(AuditedConnector::new(inner, audit.clone()));
         } else if token.is_some() {

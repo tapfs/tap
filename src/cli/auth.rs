@@ -152,9 +152,9 @@ pub async fn oauth2_browser_flow(
     let access_token = token_resp["access_token"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("no access_token in response"))?;
-    let refresh_token = token_resp["refresh_token"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("no refresh_token in response (need access_type=offline)"))?;
+    let refresh_token = token_resp["refresh_token"].as_str().ok_or_else(|| {
+        anyhow::anyhow!("no refresh_token in response (need access_type=offline)")
+    })?;
 
     // Save to credentials.yaml (for RestConnector OAuth2 refresh)
     CredentialStore::save_oauth2(
@@ -304,13 +304,9 @@ fn percent_encode(input: &str) -> String {
     let mut out = String::with_capacity(input.len() * 2);
     for byte in input.bytes() {
         match byte {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'_'
-            | b'.'
-            | b'~' => out.push(byte as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
             _ => {
                 out.push('%');
                 out.push_str(&format!("{:02X}", byte));
