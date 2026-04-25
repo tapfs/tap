@@ -19,6 +19,7 @@ pub mod cache;
 pub mod cli;
 pub mod config;
 pub mod connector;
+pub mod credentials;
 pub mod draft;
 pub mod ffi;
 #[cfg(feature = "fuse")]

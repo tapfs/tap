@@ -41,14 +41,25 @@ pub struct RestConnector {
 impl RestConnector {
     /// Create a new RestConnector from a spec.
     ///
-    /// If the spec defines auth with a `token_env`, the corresponding
-    /// environment variable is read at construction time.
+    /// Token resolution order:
+    /// 1. Explicit token passed via `override_token` (from credentials file)
+    /// 2. Environment variable specified in `auth.token_env`
     pub fn new(spec: ConnectorSpec, client: Client) -> Self {
-        let token = spec
-            .auth
-            .as_ref()
-            .and_then(|auth| auth.token_env.as_ref())
-            .and_then(|env_var| std::env::var(env_var).ok());
+        Self::new_with_token(spec, client, None)
+    }
+
+    /// Create a RestConnector with an explicit token override.
+    pub fn new_with_token(
+        spec: ConnectorSpec,
+        client: Client,
+        override_token: Option<String>,
+    ) -> Self {
+        let token = override_token.or_else(|| {
+            spec.auth
+                .as_ref()
+                .and_then(|auth| auth.token_env.as_ref())
+                .and_then(|env_var| std::env::var(env_var).ok())
+        });
 
         Self {
             spec,

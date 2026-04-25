@@ -42,6 +42,9 @@ pub async fn run(config: TapConfig) -> Result<()> {
     // Build connector(s) and register them
     let mut registry = ConnectorRegistry::new();
 
+    // Load credentials (from ~/.tapfs/credentials.yaml if it exists)
+    let creds = crate::credentials::CredentialStore::load(&config.data_dir())?;
+
     // Collect spec paths: --specs dir, --spec file, or built-in connector name
     let spec_paths = config.connector_specs.clone().unwrap_or_default();
 
@@ -57,10 +60,18 @@ pub async fn run(config: TapConfig) -> Result<()> {
         for spec_path in &spec_paths {
             let yaml = std::fs::read_to_string(spec_path)
                 .with_context(|| format!("reading spec file {:?}", spec_path))?;
-            let spec = ConnectorSpec::from_yaml(&yaml)?;
+            let mut spec = ConnectorSpec::from_yaml(&yaml)?;
+
+            // Apply base_url from credentials file if available
+            if let Some(url) = creds.base_url(&spec.name) {
+                spec.base_url = url;
+            }
+
             tracing::info!(name = %spec.name, base_url = %spec.base_url, "loaded connector spec");
 
-            let rest = RestConnector::new(spec.clone(), client.clone());
+            // Token: credentials file > env var
+            let token = creds.token(&spec.name);
+            let rest = RestConnector::new_with_token(spec.clone(), client.clone(), token);
             let inner: Arc<dyn crate::connector::traits::Connector> = Arc::new(rest);
             let audited = Arc::new(AuditedConnector::new(inner, audit.clone()));
             registry.register_with_spec(audited, spec);
@@ -122,7 +133,8 @@ pub async fn run(config: TapConfig) -> Result<()> {
                 .tcp_keepalive(Duration::from_secs(60))
                 .build()?;
 
-            let rest = RestConnector::new(spec.clone(), client);
+            let token = creds.token(&spec.name);
+            let rest = RestConnector::new_with_token(spec.clone(), client, token);
             let inner: Arc<dyn crate::connector::traits::Connector> = Arc::new(rest);
             (
                 Arc::new(AuditedConnector::new(inner, audit.clone())),
