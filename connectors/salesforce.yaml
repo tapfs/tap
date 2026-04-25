@@ -27,13 +27,23 @@ collections:
     description: "CRM accounts (companies and organizations)"
     slug_hint: "company name (e.g. Acme Corp)"
     operations: [read, write, draft]
-    list_endpoint: "/services/data/v59.0/query?q=SELECT+Id,Name,Industry,Type+FROM+Account"
+    list_endpoint: "/services/data/v59.0/query?q=SELECT+Id,Name,Industry,Type,Website,Phone,BillingCity,BillingState+FROM+Account+ORDER+BY+LastModifiedDate+DESC+LIMIT+200"
     get_endpoint: "/services/data/v59.0/sobjects/Account/{id}"
     update_endpoint: "/services/data/v59.0/sobjects/Account/{id}"
     id_field: "Id"
     slug_field: "Name"
     title_field: "Name"
     list_root: "records"
+    render:
+      frontmatter:
+        - Name
+        - Industry
+        - Type
+        - Website
+        - Phone
+        - "BillingCity as city"
+        - "BillingState as state"
+      body: "Description"
     relationships:
       - target: opportunities
         type: one-to-many
@@ -42,13 +52,22 @@ collections:
     description: "Sales opportunities with stage and revenue tracking"
     slug_hint: "deal name (e.g. Q3 Renewal)"
     operations: [read, write, draft]
-    list_endpoint: "/services/data/v59.0/query?q=SELECT+Id,Name,StageName,Amount+FROM+Opportunity"
+    list_endpoint: "/services/data/v59.0/query?q=SELECT+Id,Name,StageName,Amount,CloseDate,Probability,LeadSource+FROM+Opportunity+ORDER+BY+LastModifiedDate+DESC+LIMIT+200"
     get_endpoint: "/services/data/v59.0/sobjects/Opportunity/{id}"
     update_endpoint: "/services/data/v59.0/sobjects/Opportunity/{id}"
     id_field: "Id"
     slug_field: "Name"
     title_field: "Name"
     list_root: "records"
+    render:
+      frontmatter:
+        - Name
+        - StageName
+        - Amount
+        - CloseDate
+        - Probability
+        - LeadSource
+      body: "Description"
     relationships:
       - target: accounts
         type: many-to-one

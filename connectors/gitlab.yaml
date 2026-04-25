@@ -1,0 +1,180 @@
+spec_version: "1"
+version: "1.0.0"
+description: "GitLab — projects, issues, merge requests, and CI pipelines"
+
+name: gitlab
+base_url: "https://gitlab.com/api/v4"
+auth:
+  type: bearer
+  token_env: GITLAB_TOKEN
+
+capabilities:
+  read: true
+  write: true
+  create: false
+  delete: false
+  pagination: link_header
+  rate_limit:
+    requests_per_minute: 2000
+
+agent:
+  tips:
+    - "Issues and MRs are scoped to a project — edit list_endpoint to change the project"
+    - "MR comments are composed into merge request files automatically"
+    - "Pipeline filenames use pipeline IDs; issue filenames use IIDs (project-scoped)"
+    - "To find issues by label, grep for the Labels section"
+  relationships:
+    - "Merge requests reference issues via description text"
+    - "Pipelines run on merge request branches"
+
+collections:
+  - name: projects
+    description: "GitLab projects accessible to the authenticated user"
+    slug_hint: "project path (e.g. my-group/my-project)"
+    operations: [read]
+    list_endpoint: "/projects?membership=true&order_by=updated_at&per_page=100"
+    get_endpoint: "/projects/{id}"
+    id_field: "id"
+    slug_field: "path_with_namespace"
+    title_field: "name_with_namespace"
+    render:
+      frontmatter:
+        - "path_with_namespace as name"
+        - visibility
+        - "default_branch as branch"
+        - "star_count as stars"
+        - "forks_count as forks"
+        - "open_issues_count as open_issues"
+        - last_activity_at
+      body: "description"
+
+  - name: issues
+    description: "Project issues with labels, assignees, and comments"
+    slug_hint: "issue IID (e.g. 42, 123)"
+    operations: [read, write, draft]
+    list_endpoint: "/projects/YOUR_PROJECT_ID/issues?state=opened&per_page=100"
+    get_endpoint: "/projects/YOUR_PROJECT_ID/issues/{id}"
+    update_endpoint: "/projects/YOUR_PROJECT_ID/issues/{id}"
+    id_field: "iid"
+    slug_field: "iid"
+    title_field: "title"
+    render:
+      frontmatter:
+        - title
+        - state
+        - "author.username as author"
+        - "assignee.username as assignee"
+        - weight
+        - created_at
+        - updated_at
+      body: "description"
+      sections:
+        - name: Labels
+          field: "labels"
+          format: "list"
+          item_template: "{.}"
+        - name: Assignees
+          field: "assignees"
+          format: "list"
+          item_template: "{username}"
+    compose:
+      - name: Comments
+        endpoint: "/projects/YOUR_PROJECT_ID/issues/{id}/notes?sort=asc"
+        item_template: "**{author.username}** ({created_at}):\n> {body}\n"
+    operations_spec:
+      - name: close
+        description: "Close this issue"
+        endpoint: "/projects/YOUR_PROJECT_ID/issues/{id}"
+        method: PUT
+        trigger: frontmatter
+        trigger_field: state
+        trigger_value: "closed"
+        body: '{"state_event": "close"}'
+      - name: reopen
+        description: "Reopen a closed issue"
+        endpoint: "/projects/YOUR_PROJECT_ID/issues/{id}"
+        method: PUT
+        trigger: frontmatter
+        trigger_field: state
+        trigger_value: "opened"
+        body: '{"state_event": "reopen"}'
+    relationships:
+      - target: merge_requests
+        type: many-to-many
+        description: "MRs that reference this issue"
+
+  - name: merge_requests
+    description: "Open merge requests with review status and CI pipeline"
+    slug_hint: "MR IID (e.g. 42, 123)"
+    operations: [read, write, draft]
+    list_endpoint: "/projects/YOUR_PROJECT_ID/merge_requests?state=opened&per_page=100"
+    get_endpoint: "/projects/YOUR_PROJECT_ID/merge_requests/{id}"
+    update_endpoint: "/projects/YOUR_PROJECT_ID/merge_requests/{id}"
+    id_field: "iid"
+    slug_field: "iid"
+    title_field: "title"
+    render:
+      frontmatter:
+        - title
+        - state
+        - "author.username as author"
+        - "source_branch as branch"
+        - "target_branch as target"
+        - "merge_status as status"
+        - "user_notes_count as comments"
+        - created_at
+        - updated_at
+      body: "description"
+      sections:
+        - name: Labels
+          field: "labels"
+          format: "list"
+          item_template: "{.}"
+        - name: Reviewers
+          field: "reviewers"
+          format: "list"
+          item_template: "{username}"
+    compose:
+      - name: Comments
+        endpoint: "/projects/YOUR_PROJECT_ID/merge_requests/{id}/notes?sort=asc"
+        item_template: "**{author.username}** ({created_at}):\n> {body}\n"
+    operations_spec:
+      - name: merge
+        description: "Merge this merge request"
+        endpoint: "/projects/YOUR_PROJECT_ID/merge_requests/{id}/merge"
+        method: PUT
+        trigger: frontmatter
+        trigger_field: state
+        trigger_value: "merged"
+        body: '{}'
+      - name: close
+        description: "Close this merge request"
+        endpoint: "/projects/YOUR_PROJECT_ID/merge_requests/{id}"
+        method: PUT
+        trigger: frontmatter
+        trigger_field: state
+        trigger_value: "closed"
+        body: '{"state_event": "close"}'
+    relationships:
+      - target: issues
+        type: many-to-many
+        description: "Issues referenced by this MR"
+
+  - name: pipelines
+    description: "CI/CD pipelines with status and duration"
+    slug_hint: "pipeline ID"
+    operations: [read]
+    list_endpoint: "/projects/YOUR_PROJECT_ID/pipelines?per_page=50"
+    get_endpoint: "/projects/YOUR_PROJECT_ID/pipelines/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "ref"
+    render:
+      frontmatter:
+        - "ref as branch"
+        - status
+        - source
+        - "user.username as triggered_by"
+        - duration
+        - created_at
+        - updated_at

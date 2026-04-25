@@ -1,0 +1,82 @@
+spec_version: "1"
+description: "Discord — guilds (servers), channels, and messages"
+
+name: discord
+base_url: "https://discord.com/api/v10"
+auth:
+  type: bearer
+  token_env: DISCORD_BOT_TOKEN
+
+capabilities:
+  read: true
+  write: false
+
+agent:
+  tips:
+    - "Requires a Discord Bot token — prefix is handled automatically"
+    - "Guild filenames use guild names; channel filenames use channel names"
+    - "Messages use snowflake IDs as filenames — grep for content to find specific messages"
+    - "Messages are scoped to a channel — edit list_endpoint with your channel ID"
+  relationships:
+    - "Channels belong to guilds"
+    - "Messages belong to channels"
+
+collections:
+  - name: guilds
+    description: "Discord servers the bot has joined"
+    slug_hint: "guild name (e.g. My Server)"
+    operations: [read]
+    list_endpoint: "/users/@me/guilds?limit=100"
+    get_endpoint: "/guilds/{id}?with_counts=true"
+    id_field: "id"
+    slug_field: "name"
+    title_field: "name"
+    render:
+      frontmatter:
+        - name
+        - "owner_id as owner"
+        - "approximate_member_count as members"
+        - "approximate_presence_count as online"
+        - "preferred_locale as locale"
+
+  - name: channels
+    description: "Channels in a guild"
+    slug_hint: "channel name (e.g. general)"
+    operations: [read]
+    list_endpoint: "/guilds/YOUR_GUILD_ID/channels"
+    get_endpoint: "/channels/{id}"
+    id_field: "id"
+    slug_field: "name"
+    title_field: "name"
+    render:
+      frontmatter:
+        - name
+        - "type as channel_type"
+        - topic
+        - position
+        - nsfw
+
+  - name: messages
+    description: "Recent messages from a channel"
+    slug_hint: "message snowflake ID"
+    operations: [read]
+    list_endpoint: "/channels/YOUR_CHANNEL_ID/messages?limit=50"
+    get_endpoint: "/channels/YOUR_CHANNEL_ID/messages/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "content"
+    render:
+      frontmatter:
+        - "author.username as author"
+        - timestamp
+        - "type as message_type"
+      body: "content"
+      sections:
+        - name: Reactions
+          field: "reactions"
+          format: "list"
+          item_template: "{emoji.name} ({count})"
+        - name: Attachments
+          field: "attachments"
+          format: "list"
+          item_template: "{filename} ({size} bytes)"

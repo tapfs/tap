@@ -166,3 +166,105 @@ impl ConnectorSpec {
         Ok(serde_yaml::from_str(yaml)?)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connector::builtin::{builtin_names, builtin_spec};
+
+    #[test]
+    fn all_builtin_specs_parse() {
+        for name in builtin_names() {
+            let yaml = builtin_spec(name).unwrap_or_else(|| panic!("no builtin spec for {name}"));
+            ConnectorSpec::from_yaml(yaml)
+                .unwrap_or_else(|e| panic!("failed to parse spec '{name}': {e}"));
+        }
+    }
+
+    #[test]
+    fn all_specs_have_required_fields() {
+        for name in builtin_names() {
+            let yaml = builtin_spec(name).unwrap();
+            let spec = ConnectorSpec::from_yaml(yaml).unwrap();
+
+            assert!(!spec.name.is_empty(), "spec '{name}' has empty name");
+            assert!(
+                !spec.base_url.is_empty(),
+                "spec '{name}' has empty base_url"
+            );
+            assert!(
+                !spec.collections.is_empty(),
+                "spec '{name}' has no collections"
+            );
+
+            for col in &spec.collections {
+                assert!(
+                    !col.name.is_empty(),
+                    "spec '{name}' has a collection with empty name"
+                );
+                assert!(
+                    !col.list_endpoint.is_empty(),
+                    "spec '{name}' collection '{}' has empty list_endpoint",
+                    col.name
+                );
+                assert!(
+                    !col.get_endpoint.is_empty(),
+                    "spec '{name}' collection '{}' has empty get_endpoint",
+                    col.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn spec_name_matches_builtin_key() {
+        for key in builtin_names() {
+            let yaml = builtin_spec(key).unwrap();
+            let spec = ConnectorSpec::from_yaml(yaml).unwrap();
+            assert_eq!(
+                spec.name, *key,
+                "spec name '{}' does not match builtin key '{key}'",
+                spec.name
+            );
+        }
+    }
+
+    #[test]
+    fn get_endpoints_contain_id_placeholder() {
+        for name in builtin_names() {
+            let yaml = builtin_spec(name).unwrap();
+            let spec = ConnectorSpec::from_yaml(yaml).unwrap();
+
+            for col in &spec.collections {
+                assert!(
+                    col.get_endpoint.contains("{id}"),
+                    "spec '{name}' collection '{}' get_endpoint '{}' missing {{id}} placeholder",
+                    col.name,
+                    col.get_endpoint
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compose_endpoints_contain_id_placeholder() {
+        for name in builtin_names() {
+            let yaml = builtin_spec(name).unwrap();
+            let spec = ConnectorSpec::from_yaml(yaml).unwrap();
+
+            for col in &spec.collections {
+                if let Some(composes) = &col.compose {
+                    for compose in composes {
+                        assert!(
+                            compose.endpoint.contains("{id}"),
+                            "spec '{name}' collection '{}' compose '{}' endpoint '{}' missing {{id}} placeholder",
+                            col.name,
+                            compose.name,
+                            compose.endpoint
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

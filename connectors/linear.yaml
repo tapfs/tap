@@ -34,6 +34,29 @@ collections:
     slug_field: "identifier"
     title_field: "title"
     list_root: "data"
+    render:
+      frontmatter:
+        - identifier
+        - title
+        - "state.name as status"
+        - "priority as priority_level"
+        - "priorityLabel as priority"
+        - "assignee.name as assignee"
+        - "team.key as team"
+        - "project.name as project"
+        - createdAt
+        - updatedAt
+      body: "description"
+      sections:
+        - name: Labels
+          field: "labels.nodes"
+          format: "list"
+          item_template: "{name}"
+    compose:
+      - name: Comments
+        endpoint: "/rest/v2/issues/{id}/comments"
+        list_root: "data"
+        item_template: "**{user.name}** ({createdAt}):\n> {body}\n"
     relationships:
       - target: projects
         type: many-to-one
@@ -48,6 +71,17 @@ collections:
     slug_field: "slugId"
     title_field: "name"
     list_root: "data"
+    render:
+      frontmatter:
+        - name
+        - "state as status"
+        - "progress as progress_pct"
+        - "lead.name as lead"
+        - startDate
+        - targetDate
+        - createdAt
+        - updatedAt
+      body: "description"
   - name: teams
     description: "Teams and their configuration"
     slug_hint: "team key (e.g. ENG, DESIGN)"
@@ -58,3 +92,10 @@ collections:
     slug_field: "key"
     title_field: "name"
     list_root: "data"
+    render:
+      frontmatter:
+        - name
+        - key
+        - "timezone as tz"
+        - "issueCount as issues"
+      body: "description"

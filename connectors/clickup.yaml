@@ -1,0 +1,92 @@
+spec_version: "1"
+description: "ClickUp — tasks, spaces, and lists for project management"
+
+name: clickup
+base_url: "https://api.clickup.com/api/v2"
+auth:
+  type: bearer
+  token_env: CLICKUP_TOKEN
+
+capabilities:
+  read: true
+  write: true
+
+agent:
+  tips:
+    - "Task filenames use ClickUp task IDs (e.g. abc123.md)"
+    - "Tasks are scoped to a list — edit list_endpoint with your list ID"
+    - "Spaces contain folders, folders contain lists, lists contain tasks"
+    - "Space and list filenames use numeric IDs"
+  relationships:
+    - "Tasks belong to lists"
+    - "Lists belong to spaces (optionally via folders)"
+
+collections:
+  - name: tasks
+    description: "Tasks with status, assignees, priority, and due dates"
+    slug_hint: "task ID (e.g. abc123)"
+    operations: [read, write, draft]
+    list_endpoint: "/list/YOUR_LIST_ID/task?include_closed=false&subtasks=true"
+    get_endpoint: "/task/{id}"
+    update_endpoint: "/task/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "name"
+    list_root: "tasks"
+    render:
+      frontmatter:
+        - name
+        - "status.status as status"
+        - "priority.priority as priority"
+        - "creator.username as creator"
+        - due_date
+        - date_created
+        - date_updated
+      body: "description"
+      sections:
+        - name: Assignees
+          field: "assignees"
+          format: "list"
+          item_template: "{username}"
+        - name: Tags
+          field: "tags"
+          format: "list"
+          item_template: "{name}"
+    relationships:
+      - target: lists
+        type: many-to-one
+        description: "List this task belongs to"
+
+  - name: spaces
+    description: "Spaces in the workspace"
+    slug_hint: "space ID"
+    operations: [read]
+    list_endpoint: "/team/YOUR_TEAM_ID/space"
+    get_endpoint: "/space/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "name"
+    list_root: "spaces"
+    render:
+      frontmatter:
+        - name
+        - "multiple_assignees as multi_assign"
+        - "features.due_dates.enabled as due_dates"
+        - "features.priorities.enabled as priorities"
+
+  - name: lists
+    description: "Lists within a space or folder"
+    slug_hint: "list ID"
+    operations: [read]
+    list_endpoint: "/space/YOUR_SPACE_ID/list"
+    get_endpoint: "/list/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "name"
+    list_root: "lists"
+    render:
+      frontmatter:
+        - name
+        - "status.status as status"
+        - "task_count as tasks"
+        - due_date

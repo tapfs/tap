@@ -33,6 +33,17 @@ collections:
     slug_field: "id"
     title_field: "email"
     list_root: "data"
+    render:
+      frontmatter:
+        - "id as customer_id"
+        - email
+        - name
+        - phone
+        - "currency as default_currency"
+        - "balance as balance_cents"
+        - delinquent
+        - created
+      body: "description"
     relationships:
       - target: charges
         type: one-to-many
@@ -50,6 +61,17 @@ collections:
     slug_field: "id"
     title_field: "description"
     list_root: "data"
+    render:
+      frontmatter:
+        - "id as charge_id"
+        - "amount as amount_cents"
+        - currency
+        - status
+        - paid
+        - "payment_method_details.type as payment_method"
+        - "billing_details.email as customer_email"
+        - created
+      body: "description"
   - name: subscriptions
     description: "Recurring subscriptions with billing details"
     slug_hint: "Stripe subscription ID (e.g. sub_DEF456)"
@@ -61,6 +83,22 @@ collections:
     slug_field: "id"
     title_field: "id"
     list_root: "data"
+    render:
+      frontmatter:
+        - "id as subscription_id"
+        - status
+        - "plan.interval as billing_interval"
+        - "plan.amount as amount_cents"
+        - "plan.currency as currency"
+        - current_period_start
+        - current_period_end
+        - cancel_at_period_end
+        - created
+      sections:
+        - name: Items
+          field: "items.data"
+          format: "list"
+          item_template: "{price.product} — {price.unit_amount} {price.currency}/{price.recurring.interval}"
   - name: invoices
     description: "Invoices generated from subscriptions"
     slug_hint: "Stripe invoice ID (e.g. in_GHI012)"
@@ -71,3 +109,18 @@ collections:
     slug_field: "id"
     title_field: "number"
     list_root: "data"
+    render:
+      frontmatter:
+        - number
+        - status
+        - "amount_due as amount_due_cents"
+        - "amount_paid as amount_paid_cents"
+        - currency
+        - "customer_email as customer"
+        - due_date
+        - created
+      sections:
+        - name: Line Items
+          field: "lines.data"
+          format: "list"
+          item_template: "{description} — {amount} {currency}"

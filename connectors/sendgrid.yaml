@@ -1,0 +1,77 @@
+spec_version: "1"
+description: "SendGrid — email templates, contacts, and marketing campaigns"
+
+name: sendgrid
+base_url: "https://api.sendgrid.com/v3"
+auth:
+  type: bearer
+  token_env: SENDGRID_API_KEY
+
+capabilities:
+  read: true
+  write: true
+
+agent:
+  tips:
+    - "Template filenames use SendGrid template IDs"
+    - "Contact filenames use contact IDs"
+    - "Campaign (single send) filenames use single send IDs"
+    - "Templates support dynamic fields with Handlebars syntax"
+  relationships:
+    - "Single sends (campaigns) use templates"
+    - "Single sends are sent to contact lists"
+
+collections:
+  - name: templates
+    description: "Dynamic transactional and marketing email templates"
+    slug_hint: "template ID (UUID)"
+    operations: [read]
+    list_endpoint: "/templates?generations=dynamic&page_size=100"
+    get_endpoint: "/templates/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "name"
+    list_root: "result"
+    render:
+      frontmatter:
+        - name
+        - generation
+        - updated_at
+
+  - name: contacts
+    description: "Marketing contacts with email and custom fields"
+    slug_hint: "contact ID (UUID)"
+    operations: [read]
+    list_endpoint: "/marketing/contacts?page_size=100"
+    get_endpoint: "/marketing/contacts/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "email"
+    list_root: "result"
+    render:
+      frontmatter:
+        - email
+        - first_name
+        - last_name
+        - created_at
+        - updated_at
+
+  - name: campaigns
+    description: "Single sends (marketing campaigns) with status and stats"
+    slug_hint: "single send ID (UUID)"
+    operations: [read]
+    list_endpoint: "/marketing/singlesends?page_size=100"
+    get_endpoint: "/marketing/singlesends/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "name"
+    list_root: "result"
+    render:
+      frontmatter:
+        - name
+        - status
+        - "send_at as scheduled"
+        - "email_config.subject as subject"
+        - "email_config.sender_id as sender"
+        - created
+        - updated

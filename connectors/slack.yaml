@@ -29,6 +29,15 @@ collections:
     slug_field: "name"
     title_field: "name"
     list_root: "channels"
+    render:
+      frontmatter:
+        - name
+        - "purpose.value as purpose"
+        - "topic.value as topic"
+        - num_members
+        - is_private
+        - is_archived
+        - created
   - name: messages
     description: "Recent messages from a channel"
     slug_hint: "message timestamp (e.g. 1234567890.123456)"
@@ -39,6 +48,17 @@ collections:
     slug_field: "ts"
     title_field: "text"
     list_root: "messages"
+    render:
+      frontmatter:
+        - user
+        - ts
+        - type
+      body: "text"
+      sections:
+        - name: Reactions
+          field: "reactions"
+          format: "list"
+          item_template: ":{name}: ({count})"
   - name: users
     description: "Team members and their profiles"
     slug_hint: "username (e.g. jsmith)"
@@ -49,3 +69,13 @@ collections:
     slug_field: "name"
     title_field: "real_name"
     list_root: "members"
+    render:
+      frontmatter:
+        - "name as username"
+        - real_name
+        - "profile.title as title"
+        - "profile.email as email"
+        - "profile.status_text as status"
+        - tz
+        - is_admin
+        - is_bot

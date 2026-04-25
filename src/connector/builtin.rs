@@ -19,6 +19,14 @@ pub fn builtin_spec(name: &str) -> Option<&'static str> {
         "servicenow" => Some(include_str!("../../connectors/servicenow.yaml")),
         "jsonplaceholder" => Some(include_str!("../../connectors/jsonplaceholder.yaml")),
         "rest" => Some(include_str!("../../connectors/rest.yaml")),
+        "gitlab" => Some(include_str!("../../connectors/gitlab.yaml")),
+        "asana" => Some(include_str!("../../connectors/asana.yaml")),
+        "clickup" => Some(include_str!("../../connectors/clickup.yaml")),
+        "discord" => Some(include_str!("../../connectors/discord.yaml")),
+        "mailchimp" => Some(include_str!("../../connectors/mailchimp.yaml")),
+        "sendgrid" => Some(include_str!("../../connectors/sendgrid.yaml")),
+        "shopify" => Some(include_str!("../../connectors/shopify.yaml")),
+        "cloudflare" => Some(include_str!("../../connectors/cloudflare.yaml")),
         _ => None,
     }
 }
@@ -39,5 +47,13 @@ pub fn builtin_names() -> &'static [&'static str] {
         "servicenow",
         "jsonplaceholder",
         "rest",
+        "gitlab",
+        "asana",
+        "clickup",
+        "discord",
+        "mailchimp",
+        "sendgrid",
+        "shopify",
+        "cloudflare",
     ]
 }

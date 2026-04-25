@@ -1,0 +1,117 @@
+spec_version: "1"
+description: "Shopify — products, orders, and customers"
+
+name: shopify
+base_url: "https://YOUR_STORE.myshopify.com/admin/api/2024-01"
+auth:
+  type: bearer
+  token_env: SHOPIFY_ACCESS_TOKEN
+
+capabilities:
+  read: true
+  write: true
+  pagination: link_header
+
+agent:
+  tips:
+    - "Replace YOUR_STORE in base_url with your Shopify store name"
+    - "Product filenames use product handles (URL-friendly names)"
+    - "Order filenames use order numbers (e.g. 1001.md)"
+    - "Customer filenames use numeric Shopify IDs"
+    - "Shopify uses Link header pagination"
+  relationships:
+    - "Orders contain line items referencing products"
+    - "Orders belong to customers"
+
+collections:
+  - name: products
+    description: "Store products with variants, pricing, and inventory"
+    slug_hint: "product handle (e.g. vintage-t-shirt)"
+    operations: [read, write, draft]
+    list_endpoint: "/products.json?limit=250"
+    get_endpoint: "/products/{id}.json"
+    update_endpoint: "/products/{id}.json"
+    id_field: "id"
+    slug_field: "handle"
+    title_field: "title"
+    list_root: "products"
+    render:
+      frontmatter:
+        - title
+        - "product_type as type"
+        - vendor
+        - status
+        - "variants.0.price as price"
+        - "variants.0.inventory_quantity as inventory"
+        - created_at
+        - updated_at
+      body: "body_html"
+      sections:
+        - name: Variants
+          field: "variants"
+          format: "table"
+          item_template: "{title} — ${price} ({inventory_quantity} in stock)"
+        - name: Tags
+          field: "tags"
+          format: "list"
+          item_template: "{.}"
+    relationships:
+      - target: orders
+        type: one-to-many
+        description: "Orders containing this product"
+
+  - name: orders
+    description: "Customer orders with line items, payment, and fulfillment status"
+    slug_hint: "order number (e.g. 1001)"
+    operations: [read, write, draft]
+    list_endpoint: "/orders.json?status=any&limit=250"
+    get_endpoint: "/orders/{id}.json"
+    update_endpoint: "/orders/{id}.json"
+    id_field: "id"
+    slug_field: "order_number"
+    title_field: "name"
+    list_root: "orders"
+    render:
+      frontmatter:
+        - "name as order"
+        - "total_price as total"
+        - currency
+        - financial_status
+        - fulfillment_status
+        - "customer.email as customer_email"
+        - created_at
+        - updated_at
+      sections:
+        - name: Line Items
+          field: "line_items"
+          format: "list"
+          item_template: "{title} x{quantity} — ${price}"
+        - name: Shipping Address
+          field: "shipping_address"
+          format: "text"
+    relationships:
+      - target: customers
+        type: many-to-one
+        description: "Customer who placed this order"
+
+  - name: customers
+    description: "Customer profiles with order history and contact info"
+    slug_hint: "customer ID (numeric)"
+    operations: [read, write, draft]
+    list_endpoint: "/customers.json?limit=250"
+    get_endpoint: "/customers/{id}.json"
+    update_endpoint: "/customers/{id}.json"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "email"
+    list_root: "customers"
+    render:
+      frontmatter:
+        - email
+        - "first_name as first"
+        - "last_name as last"
+        - "orders_count as orders"
+        - "total_spent as spent"
+        - state
+        - created_at
+        - updated_at

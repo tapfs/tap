@@ -723,3 +723,368 @@ impl Connector for RestConnector {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    use crate::connector::spec::{CollectionSpec, RenderSpec, SectionSpec};
+    use crate::connector::traits::ResourceMeta;
+
+    // ---------------------------------------------------------------
+    // Helper: build a minimal CollectionSpec
+    // ---------------------------------------------------------------
+    fn minimal_collection(name: &str) -> CollectionSpec {
+        CollectionSpec {
+            name: name.to_string(),
+            description: None,
+            slug_hint: None,
+            operations: None,
+            list_endpoint: "/items".to_string(),
+            get_endpoint: "/items/{id}".to_string(),
+            update_endpoint: None,
+            id_field: None,
+            slug_field: None,
+            title_field: None,
+            list_root: None,
+            render: None,
+            compose: None,
+            operations_spec: None,
+            relationships: None,
+        }
+    }
+
+    fn minimal_meta() -> ResourceMeta {
+        ResourceMeta {
+            id: "42".to_string(),
+            slug: "42".to_string(),
+            title: Some("Test Title".to_string()),
+            updated_at: None,
+            content_type: Some("application/json".to_string()),
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // parse_field_alias
+    // ---------------------------------------------------------------
+    #[test]
+    fn parse_field_alias_with_alias() {
+        let (path, alias) = parse_field_alias("user.login as author");
+        assert_eq!(path, "user.login");
+        assert_eq!(alias, "author");
+    }
+
+    #[test]
+    fn parse_field_alias_plain() {
+        let (path, alias) = parse_field_alias("title");
+        assert_eq!(path, "title");
+        assert_eq!(alias, "title");
+    }
+
+    #[test]
+    fn parse_field_alias_dotted_no_alias() {
+        let (path, alias) = parse_field_alias("user.login");
+        assert_eq!(path, "user.login");
+        assert_eq!(alias, "login");
+    }
+
+    // ---------------------------------------------------------------
+    // extract_dotpath
+    // ---------------------------------------------------------------
+    #[test]
+    fn extract_dotpath_flat() {
+        let v = json!({"title": "hello"});
+        assert_eq!(extract_dotpath(&v, "title"), Some(&json!("hello")));
+    }
+
+    #[test]
+    fn extract_dotpath_nested() {
+        let v = json!({"user": {"login": "bob"}});
+        assert_eq!(extract_dotpath(&v, "user.login"), Some(&json!("bob")));
+    }
+
+    #[test]
+    fn extract_dotpath_missing() {
+        let v = json!({"title": "hello"});
+        assert_eq!(extract_dotpath(&v, "missing"), None);
+    }
+
+    #[test]
+    fn extract_dotpath_non_object_intermediate() {
+        let v = json!({"user": "string"});
+        assert_eq!(extract_dotpath(&v, "user.login"), None);
+    }
+
+    // ---------------------------------------------------------------
+    // format_frontmatter_value
+    // ---------------------------------------------------------------
+    #[test]
+    fn format_frontmatter_string() {
+        assert_eq!(format_frontmatter_value(&json!("hello")), "\"hello\"");
+    }
+
+    #[test]
+    fn format_frontmatter_number() {
+        assert_eq!(format_frontmatter_value(&json!(42)), "42");
+    }
+
+    #[test]
+    fn format_frontmatter_bool() {
+        assert_eq!(format_frontmatter_value(&json!(true)), "true");
+    }
+
+    #[test]
+    fn format_frontmatter_null() {
+        assert_eq!(format_frontmatter_value(&json!(null)), "null");
+    }
+
+    #[test]
+    fn format_frontmatter_array_objects() {
+        let v = json!([{"name": "bug"}, {"name": "fix"}]);
+        assert_eq!(format_frontmatter_value(&v), "[bug, fix]");
+    }
+
+    // ---------------------------------------------------------------
+    // expand_template
+    // ---------------------------------------------------------------
+    #[test]
+    fn expand_template_basic() {
+        let v = json!({"name": "hello"});
+        assert_eq!(expand_template("{name}", &v), "hello");
+    }
+
+    #[test]
+    fn expand_template_nested() {
+        let v = json!({"user": {"login": "alice"}});
+        assert_eq!(expand_template("{user.login}", &v), "alice");
+    }
+
+    #[test]
+    fn expand_template_missing() {
+        let v = json!({"name": "hello"});
+        assert_eq!(expand_template("{missing}", &v), "");
+    }
+
+    #[test]
+    fn expand_template_no_placeholders() {
+        let v = json!({"name": "hello"});
+        assert_eq!(expand_template("plain text", &v), "plain text");
+    }
+
+    // ---------------------------------------------------------------
+    // sanitize_slug
+    // ---------------------------------------------------------------
+    #[test]
+    fn sanitize_slug_slashes() {
+        assert_eq!(sanitize_slug("a/b\\c"), "a-b-c");
+    }
+
+    #[test]
+    fn sanitize_slug_null_bytes() {
+        assert_eq!(sanitize_slug("a\0b"), "ab");
+    }
+
+    #[test]
+    fn sanitize_slug_whitespace() {
+        assert_eq!(sanitize_slug("  hello  "), "hello");
+    }
+
+    #[test]
+    fn sanitize_slug_clean() {
+        assert_eq!(sanitize_slug("hello-world"), "hello-world");
+    }
+
+    // ---------------------------------------------------------------
+    // json_value_to_string
+    // ---------------------------------------------------------------
+    #[test]
+    fn json_value_to_string_str() {
+        assert_eq!(json_value_to_string(&json!("hello")), "hello");
+    }
+
+    #[test]
+    fn json_value_to_string_number() {
+        assert_eq!(json_value_to_string(&json!(42)), "42");
+    }
+
+    #[test]
+    fn json_value_to_string_null() {
+        assert_eq!(json_value_to_string(&json!(null)), "");
+    }
+
+    // ---------------------------------------------------------------
+    // truncate_error_body
+    // ---------------------------------------------------------------
+    #[test]
+    fn truncate_body_short() {
+        let body = "a".repeat(100);
+        assert_eq!(truncate_error_body(&body), body.as_str());
+    }
+
+    #[test]
+    fn truncate_body_long() {
+        let body = "a".repeat(1000);
+        let result = truncate_error_body(&body);
+        assert_eq!(result.len(), 512);
+    }
+
+    // ---------------------------------------------------------------
+    // RestConnector::extract_list
+    // ---------------------------------------------------------------
+    #[test]
+    fn extract_list_with_root() {
+        let v = json!({"data": [{"id": 1}]});
+        let list = RestConnector::extract_list(&v, Some("data")).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0], json!({"id": 1}));
+    }
+
+    #[test]
+    fn extract_list_without_root() {
+        let v = json!([{"id": 1}]);
+        let list = RestConnector::extract_list(&v, None).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0], json!({"id": 1}));
+    }
+
+    #[test]
+    fn extract_list_missing_root() {
+        let v = json!({"other": []});
+        let result = RestConnector::extract_list(&v, Some("data"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_list_dotted_root() {
+        let v = json!({"data": {"items": [{"id": 1}]}});
+        let list = RestConnector::extract_list(&v, Some("data.items")).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0], json!({"id": 1}));
+    }
+
+    // ---------------------------------------------------------------
+    // RestConnector::extract_meta
+    // ---------------------------------------------------------------
+    #[test]
+    fn extract_meta_defaults() {
+        let item = json!({"id": 42, "title": "Test"});
+        let coll = minimal_collection("things");
+        let meta = RestConnector::extract_meta(&item, &coll);
+        assert_eq!(meta.id, "42");
+        assert_eq!(meta.slug, "42");
+        // No title_field configured, so title is None
+        assert!(meta.title.is_none());
+    }
+
+    #[test]
+    fn extract_meta_custom_fields() {
+        let item = json!({"number": 7, "name": "widget", "display": "My Widget"});
+        let mut coll = minimal_collection("things");
+        coll.id_field = Some("number".to_string());
+        coll.slug_field = Some("name".to_string());
+        coll.title_field = Some("display".to_string());
+        let meta = RestConnector::extract_meta(&item, &coll);
+        assert_eq!(meta.id, "7");
+        assert_eq!(meta.slug, "widget");
+        assert_eq!(meta.title, Some("My Widget".to_string()));
+    }
+
+    // ---------------------------------------------------------------
+    // RestConnector::render_default
+    // ---------------------------------------------------------------
+    #[test]
+    fn render_default_object() {
+        let meta = minimal_meta();
+        let v = json!({"name": "Alice", "age": 30});
+        let bytes = RestConnector::render_default(&meta, &v);
+        let output = String::from_utf8(bytes).unwrap();
+        // Should contain frontmatter
+        assert!(output.starts_with("---\n"));
+        assert!(output.contains("id: \"42\""));
+        // Should contain a Field|Value table
+        assert!(output.contains("| Field | Value |"));
+        assert!(output.contains("| name | Alice |"));
+        assert!(output.contains("| age | 30 |"));
+    }
+
+    // ---------------------------------------------------------------
+    // RestConnector::render_with_spec
+    // ---------------------------------------------------------------
+    #[test]
+    fn render_with_spec_frontmatter() {
+        let meta = minimal_meta();
+        let v = json!({"state": "open", "user": {"login": "bob"}});
+        let spec = RenderSpec {
+            frontmatter: Some(vec![
+                "state".to_string(),
+                "user.login as author".to_string(),
+            ]),
+            body: None,
+            sections: None,
+            exclude: None,
+        };
+        let bytes = RestConnector::render_with_spec(&meta, &v, &spec);
+        let output = String::from_utf8(bytes).unwrap();
+        assert!(output.contains("state: \"open\""));
+        assert!(output.contains("author: \"bob\""));
+    }
+
+    #[test]
+    fn render_with_spec_body() {
+        let meta = minimal_meta();
+        let v = json!({"body": "Hello world", "state": "open"});
+        let spec = RenderSpec {
+            frontmatter: None,
+            body: Some("body".to_string()),
+            sections: None,
+            exclude: None,
+        };
+        let bytes = RestConnector::render_with_spec(&meta, &v, &spec);
+        let output = String::from_utf8(bytes).unwrap();
+        assert!(output.contains("Hello world"));
+    }
+
+    #[test]
+    fn render_with_spec_sections_list() {
+        let meta = minimal_meta();
+        let v = json!({"labels": [{"name": "bug"}, {"name": "enhancement"}]});
+        let spec = RenderSpec {
+            frontmatter: None,
+            body: None,
+            sections: Some(vec![SectionSpec {
+                name: "Labels".to_string(),
+                field: "labels".to_string(),
+                format: Some("list".to_string()),
+                item_template: Some("{name}".to_string()),
+            }]),
+            exclude: None,
+        };
+        let bytes = RestConnector::render_with_spec(&meta, &v, &spec);
+        let output = String::from_utf8(bytes).unwrap();
+        assert!(output.contains("## Labels"));
+        assert!(output.contains("- bug"));
+        assert!(output.contains("- enhancement"));
+    }
+
+    #[test]
+    fn render_with_spec_empty_section() {
+        let meta = minimal_meta();
+        let v = json!({"labels": []});
+        let spec = RenderSpec {
+            frontmatter: None,
+            body: None,
+            sections: Some(vec![SectionSpec {
+                name: "Labels".to_string(),
+                field: "labels".to_string(),
+                format: Some("list".to_string()),
+                item_template: None,
+            }]),
+            exclude: None,
+        };
+        let bytes = RestConnector::render_with_spec(&meta, &v, &spec);
+        let output = String::from_utf8(bytes).unwrap();
+        assert!(output.contains("## Labels"));
+        assert!(output.contains("None."));
+    }
+}

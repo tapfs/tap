@@ -34,6 +34,16 @@ collections:
     slug_field: "id"
     title_field: "properties.email"
     list_root: "results"
+    render:
+      frontmatter:
+        - "properties.firstname as first_name"
+        - "properties.lastname as last_name"
+        - "properties.email as email"
+        - "properties.company as company"
+        - "properties.phone as phone"
+        - "properties.lifecyclestage as lifecycle_stage"
+        - createdAt
+        - updatedAt
     relationships:
       - target: companies
         type: many-to-one
@@ -49,6 +59,15 @@ collections:
     slug_field: "id"
     title_field: "properties.name"
     list_root: "results"
+    render:
+      frontmatter:
+        - "properties.name as name"
+        - "properties.domain as domain"
+        - "properties.industry as industry"
+        - "properties.annualrevenue as annual_revenue"
+        - "properties.numberofemployees as employees"
+        - createdAt
+        - updatedAt
   - name: deals
     description: "Sales deals with stage, amount, and close date"
     slug_hint: "numeric deal ID"
@@ -60,6 +79,15 @@ collections:
     slug_field: "id"
     title_field: "properties.dealname"
     list_root: "results"
+    render:
+      frontmatter:
+        - "properties.dealname as deal"
+        - "properties.amount as amount"
+        - "properties.dealstage as stage"
+        - "properties.closedate as close_date"
+        - "properties.pipeline as pipeline"
+        - createdAt
+        - updatedAt
     relationships:
       - target: contacts
         type: many-to-many
@@ -72,8 +100,16 @@ collections:
     slug_hint: "numeric ticket ID"
     operations: [read]
     list_endpoint: "/crm/v3/objects/tickets?limit=100&properties=subject,content,hs_pipeline_stage"
-    get_endpoint: "/crm/v3/objects/tickets/{id}"
+    get_endpoint: "/crm/v3/objects/tickets/{id}?properties=subject,content,hs_pipeline_stage,hs_ticket_priority,createdate"
     id_field: "id"
     slug_field: "id"
     title_field: "properties.subject"
     list_root: "results"
+    render:
+      frontmatter:
+        - "properties.subject as subject"
+        - "properties.hs_pipeline_stage as stage"
+        - "properties.hs_ticket_priority as priority"
+        - "properties.createdate as created"
+        - updatedAt
+      body: "properties.content"

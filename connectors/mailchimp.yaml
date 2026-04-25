@@ -1,0 +1,89 @@
+spec_version: "1"
+description: "Mailchimp — email campaigns, audiences, and templates"
+
+name: mailchimp
+base_url: "https://YOUR_DC.api.mailchimp.com/3.0"
+auth:
+  type: bearer
+  token_env: MAILCHIMP_API_KEY
+
+capabilities:
+  read: true
+  write: true
+
+agent:
+  tips:
+    - "Replace YOUR_DC in base_url with your datacenter (e.g. us21) — found in your API key after the dash"
+    - "Campaign filenames use Mailchimp campaign IDs"
+    - "Audience (list) filenames use list IDs"
+    - "Template filenames use numeric template IDs"
+  relationships:
+    - "Campaigns are sent to audiences (lists)"
+    - "Templates are used in campaigns"
+
+collections:
+  - name: campaigns
+    description: "Email campaigns with status, send time, and performance stats"
+    slug_hint: "campaign ID (e.g. abc123def4)"
+    operations: [read, write, draft]
+    list_endpoint: "/campaigns?count=100&sort_field=send_time&sort_dir=DESC"
+    get_endpoint: "/campaigns/{id}"
+    update_endpoint: "/campaigns/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "settings.subject_line"
+    list_root: "campaigns"
+    render:
+      frontmatter:
+        - "settings.subject_line as subject"
+        - "settings.from_name as from"
+        - type
+        - status
+        - send_time
+        - "emails_sent as sent"
+        - "report_summary.open_rate as open_rate"
+        - "report_summary.click_rate as click_rate"
+        - create_time
+      body: "settings.preview_text"
+    relationships:
+      - target: audiences
+        type: many-to-one
+        description: "Audience this campaign was sent to"
+
+  - name: audiences
+    description: "Mailing lists (audiences) with subscriber counts"
+    slug_hint: "list ID"
+    operations: [read]
+    list_endpoint: "/lists?count=100&sort_field=date_created&sort_dir=DESC"
+    get_endpoint: "/lists/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "name"
+    list_root: "lists"
+    render:
+      frontmatter:
+        - name
+        - "stats.member_count as subscribers"
+        - "stats.unsubscribe_count as unsubscribes"
+        - "stats.open_rate as open_rate"
+        - "stats.click_rate as click_rate"
+        - date_created
+
+  - name: templates
+    description: "Email templates for campaigns"
+    slug_hint: "template ID (numeric)"
+    operations: [read]
+    list_endpoint: "/templates?count=100&sort_field=date_edited&sort_dir=DESC"
+    get_endpoint: "/templates/{id}"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "name"
+    list_root: "templates"
+    render:
+      frontmatter:
+        - name
+        - type
+        - category
+        - active
+        - date_created
+        - date_edited

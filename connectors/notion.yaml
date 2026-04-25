@@ -30,6 +30,17 @@ collections:
     slug_field: "id"
     title_field: "properties.title.title.0.plain_text"
     list_root: "results"
+    render:
+      frontmatter:
+        - "properties.title.title.0.plain_text as title"
+        - "object as type"
+        - "parent.type as parent_type"
+        - "parent.database_id as database"
+        - created_time
+        - last_edited_time
+        - "created_by.id as created_by"
+        - "last_edited_by.id as edited_by"
+        - archived
   - name: databases
     description: "Notion databases (structured collections)"
     slug_hint: "database UUID"
@@ -40,3 +51,12 @@ collections:
     slug_field: "id"
     title_field: "title.0.plain_text"
     list_root: "results"
+    render:
+      frontmatter:
+        - "title.0.plain_text as title"
+        - "object as type"
+        - "parent.type as parent_type"
+        - created_time
+        - last_edited_time
+        - archived
+      body: "description.0.plain_text"

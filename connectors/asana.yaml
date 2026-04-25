@@ -1,0 +1,84 @@
+spec_version: "1"
+description: "Asana — tasks, projects, and workspaces"
+
+name: asana
+base_url: "https://app.asana.com/api/1.0"
+auth:
+  type: bearer
+  token_env: ASANA_TOKEN
+
+capabilities:
+  read: true
+  write: true
+  pagination: offset
+
+agent:
+  tips:
+    - "Task filenames use Asana GIDs (globally unique IDs)"
+    - "Tasks are scoped to a project — edit list_endpoint with your project GID"
+    - "Project filenames use GIDs; workspace filenames use GIDs"
+    - "Use opt_fields in endpoints to control which fields are returned"
+  relationships:
+    - "Tasks belong to projects"
+    - "Projects belong to workspaces"
+
+collections:
+  - name: tasks
+    description: "Tasks with assignees, due dates, and notes"
+    slug_hint: "task GID (e.g. 1234567890)"
+    operations: [read, write, draft]
+    list_endpoint: "/tasks?project=YOUR_PROJECT_GID&opt_fields=name,assignee.name,due_on,completed,modified_at&limit=100"
+    get_endpoint: "/tasks/{id}?opt_fields=name,assignee.name,due_on,completed,notes,tags.name,memberships.section.name,modified_at,created_at"
+    update_endpoint: "/tasks/{id}"
+    id_field: "gid"
+    slug_field: "gid"
+    title_field: "name"
+    list_root: "data"
+    render:
+      frontmatter:
+        - name
+        - "assignee.name as assignee"
+        - due_on
+        - completed
+        - created_at
+        - modified_at
+      body: "notes"
+      sections:
+        - name: Tags
+          field: "tags"
+          format: "list"
+          item_template: "{name}"
+    relationships:
+      - target: projects
+        type: many-to-one
+        description: "Project this task belongs to"
+
+  - name: projects
+    description: "Projects with status and team information"
+    slug_hint: "project GID"
+    operations: [read]
+    list_endpoint: "/projects?workspace=YOUR_WORKSPACE_GID&opt_fields=name,owner.name,due_date,current_status_update.title,modified_at&limit=100"
+    get_endpoint: "/projects/{id}?opt_fields=name,owner.name,due_date,notes,current_status_update.title,created_at,modified_at"
+    id_field: "gid"
+    slug_field: "gid"
+    title_field: "name"
+    list_root: "data"
+    render:
+      frontmatter:
+        - name
+        - "owner.name as owner"
+        - due_date
+        - "current_status_update.title as status"
+        - modified_at
+      body: "notes"
+
+  - name: workspaces
+    description: "Workspaces the authenticated user belongs to"
+    slug_hint: "workspace GID"
+    operations: [read]
+    list_endpoint: "/workspaces?limit=100"
+    get_endpoint: "/workspaces/{id}"
+    id_field: "gid"
+    slug_field: "gid"
+    title_field: "name"
+    list_root: "data"
