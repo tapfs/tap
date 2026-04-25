@@ -27,7 +27,7 @@ RUN mkdir -p /mnt/tap /var/lib/tapfs
 COPY docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-ENV TAPFS_SPEC=/etc/tapfs/connectors/jsonplaceholder.yaml
+ENV TAPFS_CONNECTOR=jsonplaceholder
 ENV TAPFS_MOUNT=/mnt/tap
 ENV TAPFS_DATA=/var/lib/tapfs
 

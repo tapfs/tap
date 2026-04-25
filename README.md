@@ -39,22 +39,30 @@ cargo build --release
 ### Docker
 
 ```bash
-docker run --rm --privileged \
-  -e GOOGLE_ACCESS_TOKEN="$(gcloud auth print-access-token)" \
-  tapfs/tap mount google -m /mnt/tap
+# Try the demo (no API key needed)
+docker run --rm -it --privileged tapfs/tap
+
+# Mount a real API
+docker run --rm -it --privileged \
+  -e TAPFS_CONNECTOR=github \
+  -e GITHUB_TOKEN="ghp_..." \
+  tapfs/tap
+
+# Interactive shell
+docker run --rm -it --privileged tapfs/tap shell
 ```
 
 ### Mount a connector
 
 ```bash
-# Mount Google Workspace (Drive, Gmail, Calendar)
-tap mount google -m /mnt/tap
+# Mount with a connector spec
+tap mount github -s connectors/github.yaml
 
-# Mount with a custom connector spec
-tap mount rest -m /mnt/tap --spec connectors/github.yaml
+# Mount Google Workspace (native connector)
+tap mount google
 
 # Mount with explicit base URL
-tap mount rest -m /mnt/tap --spec connectors/stripe.yaml --base-url https://api.stripe.com
+tap mount rest -s connectors/stripe.yaml --base-url https://api.stripe.com
 ```
 
 ### Use it

@@ -836,18 +836,17 @@ Rate limit: 5000 requests/min
       <button class="install-tab" onclick="showTab('source')">From Source</button>
     </div>
     <div id="tab-docker" class="install-panel active">
-      <code>docker run --rm -it \<br>
-&nbsp;&nbsp;--device /dev/fuse --cap-add SYS_ADMIN \<br>
-&nbsp;&nbsp;-e GOOGLE_ACCESS_TOKEN="ya29...." \<br>
-&nbsp;&nbsp;tapfs:latest shell</code>
-      <div class="note">Then inside: <code>tap mount google --mount-point /mnt/tap --data-dir /var/lib/tapfs &</code></div>
+      <code style="display: block; margin-bottom: 16px;"><span style="color: var(--text-dim)"># Try the demo (no API key needed)</span><br>docker run --rm -it --privileged tapfs/tap</code>
+      <code style="display: block; margin-bottom: 16px;"><span style="color: var(--text-dim)"># Mount a real API</span><br>docker run --rm -it --privileged \<br>&nbsp;&nbsp;-e TAPFS_CONNECTOR=github \<br>&nbsp;&nbsp;-e GITHUB_TOKEN="ghp_..." \<br>&nbsp;&nbsp;tapfs/tap</code>
+      <code style="display: block;"><span style="color: var(--text-dim)"># Interactive shell</span><br>docker run --rm -it --privileged tapfs/tap shell</code>
+      <div class="note">Set <code>TAPFS_CONNECTOR</code> to any bundled connector: github, jira, slack, salesforce, stripe, notion, linear, and <a href="https://github.com/tapfs/tap/tree/main/connectors" style="color: var(--text-muted);">more</a>.</div>
     </div>
     <div id="tab-cargo" class="install-panel">
-      <code>cargo install tapfs<br>tap mount google --mount-point /mnt/tap</code>
+      <code>cargo install tapfs<br>tap mount github -s connectors/github.yaml</code>
       <div class="note">Requires FUSE: <code>apt install libfuse-dev</code> (Linux) or macFUSE/FUSE-T (macOS)</div>
     </div>
     <div id="tab-source" class="install-panel">
-      <code>git clone https://github.com/tapfs/tap.git<br>cd tap<br>cargo build --release<br>./target/release/tap mount google --mount-point /mnt/tap</code>
+      <code>git clone https://github.com/tapfs/tap.git<br>cd tap<br>cargo build --release<br>./target/release/tap mount github -s connectors/github.yaml</code>
       <div class="note">Build from source for development or to customize connectors.</div>
     </div>
   </div>
