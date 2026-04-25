@@ -4,8 +4,6 @@
 
 An open source FUSE layer that mounts any enterprise API as a transactional, agent-native filesystem.
 
-> *Origin: tapfs started as PILL — POSIX Interface for Legacy Layers. The acronym stuck internally; the name shipped as tap.*
-
 ---
 
 ## The Problem
