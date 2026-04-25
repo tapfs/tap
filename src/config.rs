@@ -7,8 +7,10 @@ pub struct TapConfig {
     pub mount_point: PathBuf,
     /// Name of the connector to use (e.g. "rest", "salesforce").
     pub connector_name: String,
-    /// Path to a YAML connector spec file.
+    /// Path to a single YAML connector spec file.
     pub connector_spec: Option<PathBuf>,
+    /// Paths to multiple YAML connector spec files (--specs mode).
+    pub connector_specs: Option<Vec<PathBuf>>,
     /// Override the base URL defined in the spec.
     pub base_url: Option<String>,
     /// Cache time-to-live in seconds.

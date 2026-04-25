@@ -16,20 +16,24 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Mount a connector as a FUSE filesystem
+    /// Mount API connectors as a filesystem
     Mount {
-        /// Connector name (e.g., "rest", "salesforce")
-        connector: String,
+        /// Connector name (for single-connector mode: "rest", "google", "jira")
+        connector: Option<String>,
 
         /// Mount point path
         #[arg(short, long, default_value = "/tmp/tap")]
         mount_point: PathBuf,
 
-        /// Path to connector spec YAML
+        /// Path to a single connector spec YAML
         #[arg(short = 's', long)]
         spec: Option<PathBuf>,
 
-        /// Base URL override
+        /// Directory of connector spec YAMLs (mounts all)
+        #[arg(long)]
+        specs: Option<PathBuf>,
+
+        /// Base URL override (single-connector mode only)
         #[arg(short, long)]
         base_url: Option<String>,
 
@@ -180,15 +184,51 @@ async fn main() -> anyhow::Result<()> {
             connector,
             mount_point,
             spec,
+            specs,
             base_url,
             cache_ttl,
             data_dir,
             debug,
         } => {
+            // Resolve specs: --specs dir, --spec file, or connector name
+            let resolved_specs = if let Some(ref dir) = specs {
+                // Multi-connector: load all YAMLs from directory
+                let mut paths = Vec::new();
+                for entry in std::fs::read_dir(dir)
+                    .map_err(|e| anyhow::anyhow!("cannot read specs dir {:?}: {}", dir, e))?
+                {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if path
+                        .extension()
+                        .map(|e| e == "yaml" || e == "yml")
+                        .unwrap_or(false)
+                    {
+                        paths.push(path);
+                    }
+                }
+                if paths.is_empty() {
+                    anyhow::bail!("no .yaml files found in {:?}", dir);
+                }
+                paths.sort();
+                paths
+            } else if let Some(ref path) = spec {
+                vec![path.clone()]
+            } else {
+                vec![]
+            };
+
+            let connector_name = connector.unwrap_or_else(|| "rest".to_string());
+
             let config = TapConfig {
                 mount_point,
-                connector_name: connector,
+                connector_name,
                 connector_spec: spec,
+                connector_specs: if resolved_specs.is_empty() {
+                    None
+                } else {
+                    Some(resolved_specs)
+                },
                 base_url,
                 cache_ttl_secs: Some(cache_ttl),
                 data_dir,
