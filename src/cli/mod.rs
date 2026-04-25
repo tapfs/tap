@@ -3,6 +3,7 @@ pub mod inspect;
 pub mod log;
 pub mod mount;
 pub mod registry;
+pub mod search;
 pub mod service;
 pub mod setup;
 pub mod status;
