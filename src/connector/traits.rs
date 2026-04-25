@@ -75,6 +75,26 @@ pub trait Connector: Send + Sync {
     async fn list_resources(&self, collection: &str) -> Result<Vec<ResourceMeta>>;
     async fn read_resource(&self, collection: &str, id: &str) -> Result<Resource>;
     async fn write_resource(&self, collection: &str, id: &str, content: &[u8]) -> Result<()>;
+
+    /// Create a new resource in the given collection.
+    /// Returns metadata for the newly created resource.
+    async fn create_resource(&self, collection: &str, _content: &[u8]) -> Result<ResourceMeta> {
+        Err(ConnectorError::NotSupported(format!(
+            "create not supported for collection '{}'",
+            collection
+        ))
+        .into())
+    }
+
+    /// Delete a resource from the given collection.
+    async fn delete_resource(&self, collection: &str, _id: &str) -> Result<()> {
+        Err(ConnectorError::NotSupported(format!(
+            "delete not supported for collection '{}'",
+            collection
+        ))
+        .into())
+    }
+
     async fn resource_versions(&self, collection: &str, id: &str) -> Result<Vec<VersionInfo>>;
     async fn read_version(&self, collection: &str, id: &str, version: u32) -> Result<Resource>;
 }

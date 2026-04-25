@@ -190,7 +190,9 @@ impl NFSFileSystem for TapNfs {
 
     async fn remove(&self, dirid: fileid3, filename: &filename3) -> Result<(), nfsstat3> {
         let name = std::str::from_utf8(filename).map_err(|_| nfsstat3::NFS3ERR_INVAL)?;
-        self.vfs.unlink(dirid, name).map_err(Self::vfs_err_to_nfs)
+        self.vfs
+            .unlink(&self.rt, dirid, name)
+            .map_err(Self::vfs_err_to_nfs)
     }
 
     async fn rename(

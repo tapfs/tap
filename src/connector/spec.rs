@@ -100,6 +100,8 @@ pub struct CollectionSpec {
     pub list_endpoint: String, // e.g. "/api/items"
     pub get_endpoint: String,  // e.g. "/api/items/{id}"
     pub update_endpoint: Option<String>,
+    pub create_endpoint: Option<String>,
+    pub delete_endpoint: Option<String>,
     pub id_field: Option<String>,   // field name for ID, default "id"
     pub slug_field: Option<String>, // field for slug, default "slug" or "id"
     pub title_field: Option<String>,
