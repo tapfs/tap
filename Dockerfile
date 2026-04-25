@@ -19,7 +19,6 @@ RUN apt-get update && apt-get install -y fuse3 libfuse2 ca-certificates && rm -r
 RUN echo "user_allow_other" >> /etc/fuse.conf
 
 COPY --from=builder /app/target/release/tap /usr/local/bin/tap
-COPY connectors/ /etc/tapfs/connectors/
 
 # Create mount point and data dirs
 RUN mkdir -p /mnt/tap /var/lib/tapfs

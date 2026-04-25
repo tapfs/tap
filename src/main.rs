@@ -162,6 +162,20 @@ enum Commands {
         #[arg(long)]
         data_dir: Option<PathBuf>,
     },
+
+    /// Generate integration config for AI coding agents
+    Setup {
+        /// Target agent: "claude" (Claude Code)
+        target: String,
+
+        /// Append to CLAUDE.md in current directory instead of printing
+        #[arg(long)]
+        append: bool,
+
+        /// Data directory
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
 }
 
 /// Return the default data directory.
@@ -272,5 +286,18 @@ async fn main() -> anyhow::Result<()> {
         Commands::Update { name, data_dir } => {
             cli::registry::run_update(&name, &data_dir.unwrap_or_else(default_data_dir))
         }
+        Commands::Setup {
+            target,
+            append,
+            data_dir,
+        } => match target.as_str() {
+            "claude" => {
+                cli::setup::run_setup_claude(&data_dir.unwrap_or_else(default_data_dir), append)
+            }
+            other => anyhow::bail!(
+                "unknown setup target '{}'. Supported: claude",
+                other
+            ),
+        },
     }
 }

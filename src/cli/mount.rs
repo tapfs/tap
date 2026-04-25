@@ -98,6 +98,7 @@ pub async fn run(config: TapConfig) -> Result<()> {
             (Arc::new(AuditedConnector::new(inner, audit.clone())), None)
         } else {
             let spec = if let Some(ref spec_path) = config.connector_spec {
+                // Explicit --spec flag
                 let yaml = std::fs::read_to_string(spec_path)
                     .with_context(|| format!("reading spec file {:?}", spec_path))?;
                 let mut spec = ConnectorSpec::from_yaml(&yaml)?;
@@ -105,7 +106,17 @@ pub async fn run(config: TapConfig) -> Result<()> {
                     spec.base_url = url.clone();
                 }
                 spec
+            } else if let Some(yaml) = crate::connector::builtin::builtin_spec(&config.connector_name) {
+                // Built-in connector spec embedded in the binary
+                let mut spec = ConnectorSpec::from_yaml(yaml)
+                    .with_context(|| format!("parsing built-in spec for {}", config.connector_name))?;
+                if let Some(ref url) = config.base_url {
+                    spec.base_url = url.clone();
+                }
+                tracing::info!(name = %spec.name, "using built-in connector spec");
+                spec
             } else {
+                // Unknown connector — bare fallback
                 let base_url = config
                     .base_url
                     .clone()

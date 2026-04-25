@@ -46,24 +46,33 @@ pub fn run_install(source: &str, data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// List installed connectors
+/// List installed and built-in connectors
 pub fn run_list_connectors(data_dir: &Path) -> Result<()> {
-    let connectors_dir = data_dir.join("connectors");
-    if !connectors_dir.exists() {
-        println!("No connectors installed.");
-        return Ok(());
+    use crate::connector::builtin;
+
+    // Built-in connectors
+    println!("Built-in connectors:");
+    for name in builtin::builtin_names() {
+        println!("  {}", name);
     }
 
-    println!("Installed connectors:");
-    for entry in std::fs::read_dir(&connectors_dir)? {
-        let entry = entry?;
-        if entry.path().is_dir() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            // Check for tap.yaml or connector.yaml
-            let has_spec = entry.path().join("tap.yaml").exists()
-                || entry.path().join("connector.yaml").exists();
-            let marker = if has_spec { "[ok]" } else { "[?]" };
-            println!("  {} {}", marker, name);
+    // Installed connectors
+    let connectors_dir = data_dir.join("connectors");
+    if connectors_dir.exists() {
+        let mut found = false;
+        for entry in std::fs::read_dir(&connectors_dir)? {
+            let entry = entry?;
+            if entry.path().is_dir() {
+                if !found {
+                    println!("\nInstalled connectors:");
+                    found = true;
+                }
+                let name = entry.file_name().to_string_lossy().to_string();
+                let has_spec = entry.path().join("tap.yaml").exists()
+                    || entry.path().join("connector.yaml").exists();
+                let marker = if has_spec { "[ok]" } else { "[?]" };
+                println!("  {} {}", marker, name);
+            }
         }
     }
 
