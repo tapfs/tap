@@ -5,10 +5,9 @@ use anyhow::{Context, Result};
 use tracing_subscriber::EnvFilter;
 
 use crate::cache::store::Cache;
+use crate::cli::service::ServiceConfig;
 use crate::config::TapConfig;
-use crate::connector::confluence::ConfluenceConnector;
-use crate::connector::google::GoogleWorkspaceConnector;
-use crate::connector::jira::JiraConnector;
+use crate::connector::factory::create_connector;
 use crate::connector::registry::ConnectorRegistry;
 use crate::connector::rest::RestConnector;
 use crate::connector::spec::ConnectorSpec;
@@ -19,6 +18,32 @@ use crate::version::store::VersionStore;
 use crate::vfs::core::VirtualFs;
 
 pub async fn run(config: TapConfig) -> Result<()> {
+    // If not in daemon mode and a connector is specified, try to hot-add via IPC
+    if !config.daemon {
+        let socket_path = config.socket_path();
+        if let Ok(resp) = crate::ipc::send_request(
+            &socket_path,
+            &serde_json::json!({"cmd": "status"}),
+        )
+        .await
+        {
+            if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                // Daemon is running — hot-add via IPC
+                let resp = crate::ipc::send_request(
+                    &socket_path,
+                    &serde_json::json!({"cmd": "add_connector", "name": config.connector_name}),
+                )
+                .await?;
+                if let Some(msg) = resp.get("message").and_then(|v| v.as_str()) {
+                    println!("{}", msg);
+                } else if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+                    anyhow::bail!("{}", err);
+                }
+                return Ok(());
+            }
+        }
+    }
+
     // 1. Initialize tracing
     let filter = if config.debug {
         EnvFilter::new("debug")
@@ -40,106 +65,35 @@ pub async fn run(config: TapConfig) -> Result<()> {
         Arc::new(AuditLogger::new(config.audit_log_path()).context("creating audit logger")?);
 
     // Build connector(s) and register them
-    let mut registry = ConnectorRegistry::new();
+    let registry = ConnectorRegistry::new();
 
     // Load credentials (from ~/.tapfs/credentials.yaml if it exists)
     let creds = crate::credentials::CredentialStore::load(&config.data_dir())?;
 
-    // Collect spec paths: --specs dir, --spec file, or built-in connector name
-    let spec_paths = config.connector_specs.clone().unwrap_or_default();
-
-    if !spec_paths.is_empty() {
-        // Multi-connector mode: load each YAML spec
-        let client = reqwest::Client::builder()
-            .pool_max_idle_per_host(10)
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(30))
-            .tcp_keepalive(Duration::from_secs(60))
-            .build()?;
-
-        for spec_path in &spec_paths {
-            let yaml = std::fs::read_to_string(spec_path)
-                .with_context(|| format!("reading spec file {:?}", spec_path))?;
-            let mut spec = ConnectorSpec::from_yaml(&yaml)?;
-
-            // Apply base_url from credentials file if available
-            if let Some(url) = creds.base_url(&spec.name) {
-                spec.base_url = url;
+    if config.daemon {
+        // Daemon mode: load connectors from service.yaml
+        let svc_config = ServiceConfig::load(&config.data_dir())?;
+        for name in &svc_config.connectors {
+            match create_connector(name, &audit, &creds) {
+                Ok((connector, spec)) => {
+                    if let Some(s) = spec {
+                        registry.register_with_spec(connector, s);
+                    } else {
+                        registry.register(connector);
+                    }
+                    tracing::info!(connector = %name, "loaded connector from service.yaml");
+                }
+                Err(e) => {
+                    tracing::warn!(connector = %name, error = %e, "failed to load connector from service.yaml, skipping");
+                }
             }
-
-            tracing::info!(name = %spec.name, base_url = %spec.base_url, "loaded connector spec");
-
-            // Token: credentials file > env var
-            let token = creds.token(&spec.name);
-            let rest = RestConnector::new_with_token(spec.clone(), client.clone(), token);
-            let inner: Arc<dyn crate::connector::traits::Connector> = Arc::new(rest);
-            let audited = Arc::new(AuditedConnector::new(inner, audit.clone()));
-            registry.register_with_spec(audited, spec);
         }
     } else {
-        // Single-connector mode (backward compatible)
-        let (audited, connector_spec): (
-            Arc<dyn crate::connector::traits::Connector>,
-            Option<ConnectorSpec>,
-        ) = if config.connector_name == "google" {
-            tracing::info!("initializing Google Workspace connector");
-            let inner: Arc<dyn crate::connector::traits::Connector> =
-                Arc::new(GoogleWorkspaceConnector::new().context("creating Google connector")?);
-            (Arc::new(AuditedConnector::new(inner, audit.clone())), None)
-        } else if config.connector_name == "jira" {
-            tracing::info!("initializing Jira connector");
-            let inner: Arc<dyn crate::connector::traits::Connector> =
-                Arc::new(JiraConnector::new().context("creating Jira connector")?);
-            (Arc::new(AuditedConnector::new(inner, audit.clone())), None)
-        } else if config.connector_name == "confluence" {
-            tracing::info!("initializing Confluence connector");
-            let inner: Arc<dyn crate::connector::traits::Connector> =
-                Arc::new(ConfluenceConnector::new().context("creating Confluence connector")?);
-            (Arc::new(AuditedConnector::new(inner, audit.clone())), None)
-        } else {
-            let spec = if let Some(ref spec_path) = config.connector_spec {
-                // Explicit --spec flag
-                let yaml = std::fs::read_to_string(spec_path)
-                    .with_context(|| format!("reading spec file {:?}", spec_path))?;
-                let mut spec = ConnectorSpec::from_yaml(&yaml)?;
-                if let Some(ref url) = config.base_url {
-                    spec.base_url = url.clone();
-                }
-                spec
-            } else if let Some(yaml) =
-                crate::connector::builtin::builtin_spec(&config.connector_name)
-            {
-                // Built-in connector spec embedded in the binary
-                let mut spec = ConnectorSpec::from_yaml(yaml).with_context(|| {
-                    format!("parsing built-in spec for {}", config.connector_name)
-                })?;
-                if let Some(ref url) = config.base_url {
-                    spec.base_url = url.clone();
-                }
-                tracing::info!(name = %spec.name, "using built-in connector spec");
-                spec
-            } else {
-                // Unknown connector — bare fallback
-                let base_url = config
-                    .base_url
-                    .clone()
-                    .unwrap_or_else(|| "http://localhost:8080".to_string());
-                ConnectorSpec {
-                    spec_version: None,
-                    version: None,
-                    description: None,
-                    name: config.connector_name.clone(),
-                    base_url,
-                    auth: None,
-                    transport: None,
-                    capabilities: None,
-                    agent: None,
-                    collections: vec![],
-                }
-            };
+        // Collect spec paths: --specs dir, --spec file, or built-in connector name
+        let spec_paths = config.connector_specs.clone().unwrap_or_default();
 
-            tracing::info!(name = %spec.name, base_url = %spec.base_url, "loaded connector spec");
-
+        if !spec_paths.is_empty() {
+            // Multi-connector mode: load each YAML spec
             let client = reqwest::Client::builder()
                 .pool_max_idle_per_host(10)
                 .connect_timeout(Duration::from_secs(5))
@@ -147,19 +101,82 @@ pub async fn run(config: TapConfig) -> Result<()> {
                 .tcp_keepalive(Duration::from_secs(60))
                 .build()?;
 
-            let token = creds.token(&spec.name);
-            let rest = RestConnector::new_with_token(spec.clone(), client, token);
-            let inner: Arc<dyn crate::connector::traits::Connector> = Arc::new(rest);
-            (
-                Arc::new(AuditedConnector::new(inner, audit.clone())),
-                Some(spec),
-            )
-        };
+            for spec_path in &spec_paths {
+                let yaml = std::fs::read_to_string(spec_path)
+                    .with_context(|| format!("reading spec file {:?}", spec_path))?;
+                let mut spec = ConnectorSpec::from_yaml(&yaml)?;
 
-        if let Some(spec) = connector_spec {
-            registry.register_with_spec(audited, spec);
+                // Apply base_url from credentials file if available
+                if let Some(url) = creds.base_url(&spec.name) {
+                    spec.base_url = url;
+                }
+
+                tracing::info!(name = %spec.name, base_url = %spec.base_url, "loaded connector spec");
+
+                // Token: credentials file > env var
+                let token = creds.token(&spec.name);
+                let rest = RestConnector::new_with_token(spec.clone(), client.clone(), token);
+                let inner: Arc<dyn crate::connector::traits::Connector> = Arc::new(rest);
+                let audited = Arc::new(AuditedConnector::new(inner, audit.clone()));
+                registry.register_with_spec(audited, spec);
+            }
         } else {
-            registry.register(audited);
+            // Single-connector mode (backward compatible) — use factory
+            match create_connector(&config.connector_name, &audit, &creds) {
+                Ok((connector, spec)) => {
+                    if let Some(s) = spec {
+                        registry.register_with_spec(connector, s);
+                    } else {
+                        registry.register(connector);
+                    }
+                }
+                Err(_) => {
+                    // Factory failed — fall back to explicit spec path or bare connector
+                    let spec = if let Some(ref spec_path) = config.connector_spec {
+                        let yaml = std::fs::read_to_string(spec_path)
+                            .with_context(|| format!("reading spec file {:?}", spec_path))?;
+                        let mut spec = ConnectorSpec::from_yaml(&yaml)?;
+                        if let Some(ref url) = config.base_url {
+                            spec.base_url = url.clone();
+                        }
+                        spec
+                    } else {
+                        // Unknown connector — bare fallback
+                        let base_url = config
+                            .base_url
+                            .clone()
+                            .unwrap_or_else(|| "http://localhost:8080".to_string());
+                        ConnectorSpec {
+                            spec_version: None,
+                            version: None,
+                            description: None,
+                            name: config.connector_name.clone(),
+                            base_url,
+                            auth: None,
+                            transport: None,
+                            capabilities: None,
+                            agent: None,
+                            collections: vec![],
+                        }
+                    };
+
+                    tracing::info!(name = %spec.name, base_url = %spec.base_url, "loaded connector spec");
+
+                    let client = reqwest::Client::builder()
+                        .pool_max_idle_per_host(10)
+                        .connect_timeout(Duration::from_secs(5))
+                        .timeout(Duration::from_secs(30))
+                        .tcp_keepalive(Duration::from_secs(60))
+                        .build()?;
+
+                    let token = creds.token(&spec.name);
+                    let rest = RestConnector::new_with_token(spec.clone(), client, token);
+                    let inner: Arc<dyn crate::connector::traits::Connector> = Arc::new(rest);
+                    let audited: Arc<dyn crate::connector::traits::Connector> =
+                        Arc::new(AuditedConnector::new(inner, audit.clone()));
+                    registry.register_with_spec(audited, spec);
+                }
+            }
         }
     }
 
@@ -215,10 +232,23 @@ pub async fn run(config: TapConfig) -> Result<()> {
 
     // 11. Build VirtualFs
     let cache_for_ipc = cache.clone();
-    let vfs = Arc::new(VirtualFs::new(registry, cache, drafts, versions, audit));
+    let vfs = Arc::new(VirtualFs::new(
+        registry.clone(),
+        cache,
+        drafts,
+        versions,
+        audit.clone(),
+    ));
 
-    // 12. Start IPC socket for CLI commands (inspect, status, invalidate)
-    crate::ipc::start(cache_for_ipc, config.socket_path());
+    // 12. Start IPC socket for CLI commands (inspect, status, invalidate, add/remove connector)
+    let ipc_state = Arc::new(crate::ipc::IpcState {
+        cache: cache_for_ipc,
+        registry: registry.clone(),
+        audit,
+        credentials: creds,
+        data_dir: config.data_dir(),
+    });
+    crate::ipc::start(ipc_state, config.socket_path());
 
     // 13. Choose transport
     #[cfg(all(feature = "nfs", feature = "fuse"))]

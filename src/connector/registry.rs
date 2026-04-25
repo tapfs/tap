@@ -1,6 +1,6 @@
 use crate::connector::spec::ConnectorSpec;
 use crate::connector::traits::Connector;
-use std::collections::HashMap;
+use dashmap::DashMap;
 use std::sync::Arc;
 
 struct RegisteredConnector {
@@ -9,18 +9,18 @@ struct RegisteredConnector {
 }
 
 pub struct ConnectorRegistry {
-    connectors: HashMap<String, RegisteredConnector>,
+    connectors: DashMap<String, RegisteredConnector>,
 }
 
 impl ConnectorRegistry {
     pub fn new() -> Self {
         Self {
-            connectors: HashMap::new(),
+            connectors: DashMap::new(),
         }
     }
 
     /// Register a connector without a spec (native connectors).
-    pub fn register(&mut self, connector: Arc<dyn Connector>) {
+    pub fn register(&self, connector: Arc<dyn Connector>) {
         let name = connector.name().to_string();
         self.connectors.insert(
             name,
@@ -32,7 +32,7 @@ impl ConnectorRegistry {
     }
 
     /// Register a connector with its spec (YAML-driven connectors).
-    pub fn register_with_spec(&mut self, connector: Arc<dyn Connector>, spec: ConnectorSpec) {
+    pub fn register_with_spec(&self, connector: Arc<dyn Connector>, spec: ConnectorSpec) {
         let name = connector.name().to_string();
         self.connectors.insert(
             name,
@@ -48,12 +48,19 @@ impl ConnectorRegistry {
     }
 
     /// Get the spec for a connector, if one was registered.
-    pub fn get_spec(&self, name: &str) -> Option<&ConnectorSpec> {
-        self.connectors.get(name).and_then(|r| r.spec.as_ref())
+    pub fn get_spec(&self, name: &str) -> Option<ConnectorSpec> {
+        self.connectors
+            .get(name)
+            .and_then(|r| r.spec.clone())
+    }
+
+    /// Remove a connector by name.
+    pub fn deregister(&self, name: &str) -> bool {
+        self.connectors.remove(name).is_some()
     }
 
     pub fn list(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.connectors.keys().cloned().collect();
+        let mut names: Vec<String> = self.connectors.iter().map(|r| r.key().clone()).collect();
         names.sort();
         names
     }

@@ -1,6 +1,7 @@
 pub mod atlassian_auth;
 pub mod builtin;
 pub mod confluence;
+pub mod factory;
 pub mod google;
 pub mod jira;
 pub mod registry;

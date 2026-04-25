@@ -188,7 +188,7 @@ pub unsafe extern "C" fn tapfs_init(
     let audited: Arc<dyn crate::connector::traits::Connector> =
         Arc::new(AuditedConnector::new(inner, audit.clone()));
 
-    let mut registry = ConnectorRegistry::new();
+    let registry = ConnectorRegistry::new();
     registry.register(audited);
     let registry = Arc::new(registry);
 

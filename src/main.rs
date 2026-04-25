@@ -48,12 +48,19 @@ enum Commands {
         /// Enable debug logging
         #[arg(long)]
         debug: bool,
+
+        /// Run as daemon (reads connectors from service.yaml)
+        #[arg(long, hide = true)]
+        daemon: bool,
     },
 
-    /// Unmount a tapfs mount
+    /// Unmount a tapfs connector or stop everything
     Unmount {
+        /// Connector to unmount (omit to stop everything)
+        connector: Option<String>,
+
         /// Mount point to unmount
-        #[arg(default_value = "/tmp/tap")]
+        #[arg(short, long, default_value = "/tmp/tap")]
         mount_point: PathBuf,
     },
 
@@ -176,6 +183,26 @@ enum Commands {
         #[arg(long)]
         data_dir: Option<PathBuf>,
     },
+
+    /// Manage the tapfs background service
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ServiceAction {
+    /// Show service status and mounted connectors
+    Status,
+    /// Stream service logs
+    Logs,
+    /// Register tapfs as a system service
+    Install,
+    /// Remove tapfs system service
+    Uninstall,
+    /// Restart the service
+    Restart,
 }
 
 /// Return the default data directory.
@@ -203,6 +230,7 @@ async fn main() -> anyhow::Result<()> {
             cache_ttl,
             data_dir,
             debug,
+            daemon,
         } => {
             // Resolve specs: --specs dir, --spec file, or connector name
             let resolved_specs = if let Some(ref dir) = specs {
@@ -247,10 +275,35 @@ async fn main() -> anyhow::Result<()> {
                 cache_ttl_secs: Some(cache_ttl),
                 data_dir,
                 debug,
+                daemon,
             };
             cli::mount::run(config).await
         }
-        Commands::Unmount { mount_point } => cli::unmount::run(&mount_point),
+        Commands::Unmount {
+            connector,
+            mount_point,
+        } => {
+            if let Some(name) = connector {
+                // Unmount a specific connector via IPC
+                let socket_path = dirs::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join(".tapfs/tap.sock");
+                let resp = tapfs::ipc::send_request(
+                    &socket_path,
+                    &serde_json::json!({"cmd": "remove_connector", "name": name}),
+                )
+                .await?;
+                if let Some(msg) = resp.get("message").and_then(|v| v.as_str()) {
+                    println!("{}", msg);
+                } else if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+                    anyhow::bail!("{}", err);
+                }
+                Ok(())
+            } else {
+                // Unmount everything (original behavior)
+                cli::unmount::run(&mount_point)
+            }
+        }
         Commands::Log {
             limit,
             connector,
@@ -295,6 +348,13 @@ async fn main() -> anyhow::Result<()> {
                 cli::setup::run_setup_claude(&data_dir.unwrap_or_else(default_data_dir), append)
             }
             other => anyhow::bail!("unknown setup target '{}'. Supported: claude", other),
+        },
+        Commands::Service { action } => match action {
+            ServiceAction::Status => cli::service::status().await,
+            ServiceAction::Logs => cli::service::logs(),
+            ServiceAction::Install => cli::service::install(),
+            ServiceAction::Uninstall => cli::service::uninstall(),
+            ServiceAction::Restart => cli::service::restart(),
         },
     }
 }

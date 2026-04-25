@@ -1,4 +1,4 @@
-//! Unix domain socket IPC server for CLI ↔ mount process communication.
+//! Unix domain socket IPC server for CLI <-> mount process communication.
 //!
 //! The mount process starts a socket at `~/.tapfs/tap.sock`. CLI commands
 //! like `tap inspect` connect to it to query the in-memory cache without
@@ -13,12 +13,25 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 
 use crate::cache::store::Cache;
+use crate::cli::service::ServiceConfig;
+use crate::connector::registry::ConnectorRegistry;
+use crate::credentials::CredentialStore;
+use crate::governance::audit::AuditLogger;
+
+/// Shared state accessible to IPC command handlers.
+pub struct IpcState {
+    pub cache: Arc<Cache>,
+    pub registry: Arc<ConnectorRegistry>,
+    pub audit: Arc<AuditLogger>,
+    pub credentials: CredentialStore,
+    pub data_dir: PathBuf,
+}
 
 /// Start the IPC socket server in a background task.
 ///
 /// The socket is created at `socket_path` with `0o600` permissions (owner-only).
 /// Each incoming connection can send one JSON request and receives one JSON response.
-pub fn start(cache: Arc<Cache>, socket_path: PathBuf) {
+pub fn start(state: Arc<IpcState>, socket_path: PathBuf) {
     // Remove stale socket from a previous run.
     let _ = std::fs::remove_file(&socket_path);
 
@@ -49,13 +62,13 @@ pub fn start(cache: Arc<Cache>, socket_path: PathBuf) {
                 }
             };
 
-            let cache = cache.clone();
+            let state = state.clone();
             tokio::spawn(async move {
                 let (reader, mut writer) = stream.into_split();
                 let mut lines = BufReader::new(reader).lines();
 
                 if let Ok(Some(line)) = lines.next_line().await {
-                    let response = handle_request(&cache, &line);
+                    let response = handle_request(&state, &line);
                     let mut out = serde_json::to_string(&response).unwrap_or_default();
                     out.push('\n');
                     let _ = writer.write_all(out.as_bytes()).await;
@@ -66,7 +79,7 @@ pub fn start(cache: Arc<Cache>, socket_path: PathBuf) {
 }
 
 /// Handle a single IPC request and return a JSON response.
-fn handle_request(cache: &Cache, request: &str) -> serde_json::Value {
+fn handle_request(state: &IpcState, request: &str) -> serde_json::Value {
     let req: serde_json::Value = match serde_json::from_str(request) {
         Ok(v) => v,
         Err(_) => return error_response("invalid JSON request"),
@@ -80,7 +93,7 @@ fn handle_request(cache: &Cache, request: &str) -> serde_json::Value {
                 Some(k) => k,
                 None => return error_response("missing 'key' field"),
             };
-            match cache.get_resource(key) {
+            match state.cache.get_resource(key) {
                 Some(resource) => match resource.raw_json {
                     Some(json) => serde_json::json!({ "ok": true, "data": json }),
                     None => error_response("resource cached but no raw JSON available"),
@@ -89,7 +102,7 @@ fn handle_request(cache: &Cache, request: &str) -> serde_json::Value {
             }
         }
         "status" => {
-            let stats = cache.stats();
+            let stats = state.cache.stats();
             serde_json::json!({
                 "ok": true,
                 "resources_cached": stats.0,
@@ -101,8 +114,60 @@ fn handle_request(cache: &Cache, request: &str) -> serde_json::Value {
                 Some(k) => k,
                 None => return error_response("missing 'key' field"),
             };
-            cache.invalidate(key);
+            state.cache.invalidate(key);
             serde_json::json!({ "ok": true })
+        }
+        "add_connector" => {
+            let name = match req.get("name").and_then(|v| v.as_str()) {
+                Some(n) => n,
+                None => return error_response("missing 'name' field"),
+            };
+            if state.registry.get(name).is_some() {
+                return serde_json::json!({ "ok": true, "message": "already mounted" });
+            }
+            match crate::connector::factory::create_connector(
+                name,
+                &state.audit,
+                &state.credentials,
+            ) {
+                Ok((connector, spec)) => {
+                    if let Some(s) = spec {
+                        state.registry.register_with_spec(connector, s);
+                    } else {
+                        state.registry.register(connector);
+                    }
+                    // Update service.yaml
+                    if let Ok(mut svc) = ServiceConfig::load(&state.data_dir) {
+                        svc.add_connector(name);
+                        let _ = svc.save(&state.data_dir);
+                    }
+                    serde_json::json!({ "ok": true, "message": format!("mounted {}", name) })
+                }
+                Err(e) => {
+                    error_response(&format!("failed to create connector {}: {}", name, e))
+                }
+            }
+        }
+        "remove_connector" => {
+            let name = match req.get("name").and_then(|v| v.as_str()) {
+                Some(n) => n,
+                None => return error_response("missing 'name' field"),
+            };
+            let removed = state.registry.deregister(name);
+            if removed {
+                // Update service.yaml
+                if let Ok(mut svc) = ServiceConfig::load(&state.data_dir) {
+                    svc.remove_connector(name);
+                    let _ = svc.save(&state.data_dir);
+                }
+                serde_json::json!({ "ok": true, "message": format!("unmounted {}", name) })
+            } else {
+                error_response(&format!("connector '{}' is not mounted", name))
+            }
+        }
+        "list_connectors" => {
+            let names = state.registry.list();
+            serde_json::json!({ "ok": true, "connectors": names })
         }
         _ => error_response(&format!("unknown command: {}", cmd)),
     }

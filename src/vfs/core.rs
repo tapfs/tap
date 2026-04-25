@@ -1614,7 +1614,8 @@ impl VirtualFs {
     }
 
     fn generate_connector_agent_md(&self, rt: &tokio::runtime::Handle, connector: &str) -> String {
-        let spec = self.registry.get_spec(connector);
+        let spec_owned = self.registry.get_spec(connector);
+        let spec = spec_owned.as_ref();
         let mut out = String::new();
         out.push_str("---\n");
         out.push_str(&format!("connector: {}\n", connector));
@@ -1728,7 +1729,8 @@ impl VirtualFs {
         connector: &str,
         collection: &str,
     ) -> String {
-        let spec = self.registry.get_spec(connector);
+        let spec_owned = self.registry.get_spec(connector);
+        let spec = spec_owned.as_ref();
         let col_spec = spec.and_then(|s| s.collections.iter().find(|c| c.name == collection));
 
         let mut out = String::new();

@@ -19,6 +19,9 @@ pub struct TapConfig {
     pub data_dir: Option<PathBuf>,
     /// Enable debug-level logging.
     pub debug: bool,
+    /// Run as daemon (reads connectors from service.yaml).
+    #[serde(default)]
+    pub daemon: bool,
 }
 
 impl TapConfig {
