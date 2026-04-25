@@ -75,10 +75,7 @@ fn generate_snippet(mount_point: &str, connector: Option<&str>) -> String {
         "1. Read the guide: `cat {}/agent.md`\n",
         mount_point
     ));
-    out.push_str(&format!(
-        "2. List services: `ls {}/`\n",
-        mount_point
-    ));
+    out.push_str(&format!("2. List services: `ls {}/`\n", mount_point));
     out.push_str(&format!(
         "3. Browse collections: `ls {}/<service>/`\n",
         mount_point

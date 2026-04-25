@@ -106,10 +106,13 @@ pub async fn run(config: TapConfig) -> Result<()> {
                     spec.base_url = url.clone();
                 }
                 spec
-            } else if let Some(yaml) = crate::connector::builtin::builtin_spec(&config.connector_name) {
+            } else if let Some(yaml) =
+                crate::connector::builtin::builtin_spec(&config.connector_name)
+            {
                 // Built-in connector spec embedded in the binary
-                let mut spec = ConnectorSpec::from_yaml(yaml)
-                    .with_context(|| format!("parsing built-in spec for {}", config.connector_name))?;
+                let mut spec = ConnectorSpec::from_yaml(yaml).with_context(|| {
+                    format!("parsing built-in spec for {}", config.connector_name)
+                })?;
                 if let Some(ref url) = config.base_url {
                     spec.base_url = url.clone();
                 }

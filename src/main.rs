@@ -294,10 +294,7 @@ async fn main() -> anyhow::Result<()> {
             "claude" => {
                 cli::setup::run_setup_claude(&data_dir.unwrap_or_else(default_data_dir), append)
             }
-            other => anyhow::bail!(
-                "unknown setup target '{}'. Supported: claude",
-                other
-            ),
+            other => anyhow::bail!("unknown setup target '{}'. Supported: claude", other),
         },
     }
 }
