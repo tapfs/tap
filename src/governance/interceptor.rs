@@ -227,6 +227,38 @@ impl Connector for AuditedConnector {
         }
     }
 
+    async fn search_resources(
+        &self,
+        collection: Option<&str>,
+        query: &str,
+    ) -> Result<Vec<ResourceMeta>> {
+        let connector_name = self.inner.name().to_string();
+        match self.inner.search_resources(collection, query).await {
+            Ok(metas) => {
+                let _ = self.audit.record(
+                    "search",
+                    &connector_name,
+                    collection,
+                    None,
+                    "success",
+                    Some(format!("q={:?} hits={}", query, metas.len())),
+                );
+                Ok(metas)
+            }
+            Err(e) => {
+                let _ = self.audit.record(
+                    "search",
+                    &connector_name,
+                    collection,
+                    None,
+                    "error",
+                    Some(format!("q={:?}: {}", query, e)),
+                );
+                Err(e)
+            }
+        }
+    }
+
     async fn read_version(&self, collection: &str, id: &str, version: u32) -> Result<Resource> {
         let connector_name = self.inner.name().to_string();
         match self.inner.read_version(collection, id, version).await {
