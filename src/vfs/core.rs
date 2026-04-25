@@ -722,8 +722,13 @@ impl VirtualFs {
     // unlink
     // -----------------------------------------------------------------------
 
-    /// Delete a file (draft or lock).
-    pub fn unlink(&self, parent_id: u64, name: &str) -> Result<(), VfsError> {
+    /// Delete a file (draft, lock, or live resource).
+    pub fn unlink(
+        &self,
+        rt: &tokio::runtime::Handle,
+        parent_id: u64,
+        name: &str,
+    ) -> Result<(), VfsError> {
         let parent_kind = self.nodes.get(parent_id).ok_or(VfsError::NotFound)?;
 
         // Delegate to unlink_tx for transaction-related parents
@@ -781,7 +786,43 @@ impl VirtualFs {
                 );
             }
             ResourceVariant::Live => {
-                return Err(VfsError::PermissionDenied);
+                // Check if the connector supports delete via the spec.
+                let spec = self.registry.get_spec(&connector);
+                let supports_delete = spec
+                    .as_ref()
+                    .and_then(|s| s.capabilities.as_ref())
+                    .and_then(|c| c.delete)
+                    .unwrap_or(false);
+
+                if !supports_delete {
+                    return Err(VfsError::PermissionDenied);
+                }
+
+                let conn = self.registry.get(&connector).ok_or(VfsError::NotFound)?;
+                rt.block_on(conn.delete_resource(&collection, &slug))
+                    .map_err(|e| {
+                        tracing::error!("delete_resource error: {}", e);
+                        let _ = self.audit.record(
+                            "delete",
+                            &connector,
+                            Some(&collection),
+                            Some(&slug),
+                            "error",
+                            Some(e.to_string()),
+                        );
+                        VfsError::IoError(e.to_string())
+                    })?;
+
+                self.invalidate_resource_cache(&connector, &collection, &slug);
+
+                let _ = self.audit.record(
+                    "delete",
+                    &connector,
+                    Some(&collection),
+                    Some(&slug),
+                    "success",
+                    Some("live resource deleted via API".to_string()),
+                );
             }
         }
 
@@ -899,13 +940,63 @@ impl VirtualFs {
                     .map_err(|e| VfsError::IoError(e.to_string()))?
                     .ok_or(VfsError::NotFound)?;
 
-                // Push to API
                 let conn = self.registry.get(connector).ok_or(VfsError::NotFound)?;
-                rt.block_on(conn.write_resource(collection, resource, &data))
-                    .map_err(|e| {
-                        tracing::error!("auto-promote error: {}", e);
-                        VfsError::IoError(e.to_string())
-                    })?;
+
+                // Determine if this is a new resource (created locally, never
+                // fetched from the API) or an existing one being updated.
+                let cache_key = format!("{}/{}/{}", connector, collection, resource);
+                let is_new = self.cache.get_resource(&cache_key).is_none()
+                    && self
+                        .disk_cache
+                        .as_ref()
+                        .and_then(|d| d.get(connector, collection, resource))
+                        .is_none();
+
+                if is_new {
+                    // New resource — POST to create.
+                    match rt.block_on(conn.create_resource(collection, &data)) {
+                        Ok(_meta) => {
+                            let _ = self.audit.record(
+                                "create",
+                                connector,
+                                Some(collection),
+                                Some(resource),
+                                "success",
+                                Some(format!("{} bytes posted to API on close", data.len())),
+                            );
+                            tracing::info!(
+                                connector = %connector,
+                                resource = %resource,
+                                "created new resource via API on close"
+                            );
+                        }
+                        Err(e) => {
+                            // If create is not supported, fall back to write
+                            // (PATCH) so existing behaviour is preserved.
+                            if e.downcast_ref::<crate::connector::traits::ConnectorError>()
+                                .map_or(false, |ce| {
+                                    matches!(ce, crate::connector::traits::ConnectorError::NotSupported(_))
+                                })
+                            {
+                                rt.block_on(conn.write_resource(collection, resource, &data))
+                                    .map_err(|e| {
+                                        tracing::error!("auto-promote error: {}", e);
+                                        VfsError::IoError(e.to_string())
+                                    })?;
+                            } else {
+                                tracing::error!("create_resource error: {}", e);
+                                return Err(VfsError::IoError(e.to_string()));
+                            }
+                        }
+                    }
+                } else {
+                    // Existing resource — PATCH to update.
+                    rt.block_on(conn.write_resource(collection, resource, &data))
+                        .map_err(|e| {
+                            tracing::error!("auto-promote error: {}", e);
+                            VfsError::IoError(e.to_string())
+                        })?;
+                }
 
                 // Snapshot + cleanup
                 let _ = self

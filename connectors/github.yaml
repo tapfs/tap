@@ -17,7 +17,7 @@ auth:
 capabilities:
   read: true
   write: true
-  create: false
+  create: true
   delete: false
   pagination: link_header
   rate_limit:
@@ -58,9 +58,10 @@ collections:
   - name: issues
     description: "GitHub issues with labels, assignees, and comments"
     slug_hint: "issue number (e.g. 42, 123)"
-    operations: [read, write, draft]
+    operations: [read, write, create, draft]
     list_endpoint: "/repos/tapfs/tap/issues?state=open&per_page=100"
     get_endpoint: "/repos/tapfs/tap/issues/{id}"
+    create_endpoint: "/repos/tapfs/tap/issues"
     id_field: "number"
     slug_field: "number"
     title_field: "title"

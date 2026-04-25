@@ -791,6 +791,96 @@ impl Connector for RestConnector {
         Ok(())
     }
 
+    async fn create_resource(&self, collection: &str, content: &[u8]) -> Result<ResourceMeta> {
+        let coll = self.find_collection(collection)?;
+        let endpoint = coll
+            .create_endpoint
+            .as_deref()
+            .unwrap_or(&coll.list_endpoint);
+        // Strip query parameters from the endpoint for POST requests.
+        let clean_endpoint = endpoint.split('?').next().unwrap_or(endpoint);
+        let url = self.url(clean_endpoint);
+
+        // Parse the incoming content as JSON.  If the content looks like
+        // Markdown with YAML frontmatter (starts with "---"), attempt to
+        // extract the JSON code block; otherwise treat the whole body as JSON.
+        let body_json: Value = if content.starts_with(b"---") {
+            let text = std::str::from_utf8(content).context("content is not valid UTF-8")?;
+            let json_block = text
+                .split("```json")
+                .nth(1)
+                .and_then(|after| after.split("```").next())
+                .unwrap_or(text);
+            serde_json::from_str(json_block.trim())
+                .context("failed to parse JSON from markdown content")?
+        } else {
+            serde_json::from_slice(content).context("failed to parse content as JSON")?
+        };
+
+        let response = self
+            .send_with_retry(|| self.client.post(&url).json(&body_json))
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "create_resource failed: HTTP {} — {}",
+                status,
+                truncate_error_body(&body)
+            ));
+        }
+
+        let json: Value = response
+            .json()
+            .await
+            .context("failed to parse create response as JSON")?;
+
+        let meta = Self::extract_meta(&json, coll);
+
+        // Cache the new slug → ID mapping.
+        if meta.slug != meta.id {
+            let key = format!("{}/{}", collection, meta.slug);
+            self.slug_to_id.insert(key, meta.id.clone());
+        }
+
+        Ok(meta)
+    }
+
+    async fn delete_resource(&self, collection: &str, id: &str) -> Result<()> {
+        let coll = self.find_collection(collection)?;
+        let resolved_id = self
+            .slug_to_id
+            .get(&format!("{}/{}", collection, id))
+            .map(|v| v.clone())
+            .unwrap_or_else(|| id.to_string());
+        let endpoint = coll
+            .delete_endpoint
+            .as_deref()
+            .unwrap_or(&coll.get_endpoint);
+        let path = Self::substitute_id(endpoint, &resolved_id);
+        let url = self.url(&path);
+
+        let response = self
+            .send_with_retry(|| self.client.delete(&url))
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "delete_resource failed: HTTP {} — {}",
+                status,
+                truncate_error_body(&body)
+            ));
+        }
+
+        // Remove the slug → ID mapping.
+        self.slug_to_id.remove(&format!("{}/{}", collection, id));
+
+        Ok(())
+    }
+
     async fn resource_versions(&self, _collection: &str, _id: &str) -> Result<Vec<VersionInfo>> {
         // Versioning is not supported by the generic REST connector.
         // Individual API-specific connectors can override this.
@@ -828,6 +918,8 @@ mod tests {
             list_endpoint: "/items".to_string(),
             get_endpoint: "/items/{id}".to_string(),
             update_endpoint: None,
+            create_endpoint: None,
+            delete_endpoint: None,
             id_field: None,
             slug_field: None,
             title_field: None,
