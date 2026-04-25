@@ -1,4 +1,5 @@
 pub mod approve;
+pub mod auth;
 pub mod inspect;
 pub mod log;
 pub mod mount;

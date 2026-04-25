@@ -6,6 +6,7 @@ base_url: "http://localhost:8080"
 auth:
   type: bearer
   token_env: REST_API_TOKEN
+  setup_instructions: "Set your API token via the REST_API_TOKEN environment variable or enter it when prompted"
 
 capabilities:
   read: true

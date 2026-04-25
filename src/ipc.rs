@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 
+use crate::cache::disk::DiskCache;
 use crate::cache::store::Cache;
 use crate::cli::service::ServiceConfig;
 use crate::connector::registry::ConnectorRegistry;
@@ -21,6 +22,9 @@ use crate::governance::audit::AuditLogger;
 /// Shared state accessible to IPC command handlers.
 pub struct IpcState {
     pub cache: Arc<Cache>,
+    /// Optional persistent cache; when present, `invalidate` clears it too
+    /// so external `tap invalidate` callers don't leave stale bytes on disk.
+    pub disk_cache: Option<Arc<DiskCache>>,
     pub registry: Arc<ConnectorRegistry>,
     pub audit: Arc<AuditLogger>,
     pub credentials: CredentialStore,
@@ -115,6 +119,9 @@ fn handle_request(state: &IpcState, request: &str) -> serde_json::Value {
                 None => return error_response("missing 'key' field"),
             };
             state.cache.invalidate(key);
+            if let Some(disk) = &state.disk_cache {
+                disk.invalidate_key(key);
+            }
             serde_json::json!({ "ok": true })
         }
         "add_connector" => {

@@ -6,6 +6,8 @@ base_url: "https://your-instance.service-now.com"
 auth:
   type: basic
   token_env: SERVICENOW_API_TOKEN
+  setup_url: "https://your-instance.service-now.com/nav_to.do?uri=sys_properties.do"
+  setup_instructions: "Use your ServiceNow username and password, or create an OAuth API endpoint for token-based access"
 
 capabilities:
   read: true

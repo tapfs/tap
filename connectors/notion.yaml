@@ -6,6 +6,8 @@ base_url: "https://api.notion.com"
 auth:
   type: bearer
   token_env: NOTION_API_TOKEN
+  setup_url: "https://www.notion.so/my-integrations"
+  setup_instructions: "Create an internal integration and copy the API key"
 
 capabilities:
   read: true

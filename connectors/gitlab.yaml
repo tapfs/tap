@@ -7,6 +7,8 @@ base_url: "https://gitlab.com/api/v4"
 auth:
   type: bearer
   token_env: GITLAB_TOKEN
+  setup_url: "https://gitlab.com/-/profile/personal_access_tokens"
+  setup_instructions: "Create a personal access token with 'api' scope"
 
 capabilities:
   read: true

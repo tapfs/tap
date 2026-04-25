@@ -6,6 +6,8 @@ base_url: "https://YOUR_DC.api.mailchimp.com/3.0"
 auth:
   type: bearer
   token_env: MAILCHIMP_API_KEY
+  setup_url: "https://admin.mailchimp.com/account/api/"
+  setup_instructions: "Create an API key under Account > Extras > API keys"
 
 capabilities:
   read: true

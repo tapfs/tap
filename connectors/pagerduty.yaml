@@ -6,6 +6,8 @@ base_url: "https://api.pagerduty.com"
 auth:
   type: bearer
   token_env: PAGERDUTY_API_TOKEN
+  setup_url: "https://support.pagerduty.com/docs/api-access-keys"
+  setup_instructions: "Create a REST API key"
 
 capabilities:
   read: true

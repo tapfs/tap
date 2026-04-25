@@ -129,9 +129,37 @@ impl TokenProvider {
 
     /// Find and parse the credentials file once at init.
     fn find_and_parse_credentials() -> Option<ParsedCredentials> {
-        let path = Self::find_credentials_path()?;
-        let data = std::fs::read_to_string(&path).ok()?;
-        let creds: CredentialsFile = serde_json::from_str(&data).ok()?;
+        // Try JSON credential files first
+        if let Some(path) = Self::find_credentials_path() {
+            let data = std::fs::read_to_string(&path).ok()?;
+            let creds: CredentialsFile = serde_json::from_str(&data).ok()?;
+            if let Some(parsed) = Self::parse_creds_file(creds) {
+                return Some(parsed);
+            }
+        }
+
+        // Fall back to ~/.tapfs/credentials.yaml (saved by `tap mount google` OAuth2 flow)
+        let tapfs_dir = dirs::home_dir()?.join(".tapfs");
+        if let Ok(store) = crate::credentials::CredentialStore::load(&tapfs_dir) {
+            if let Some(cred) = store.get("google") {
+                if let (Some(ref rt), Some(ref cid), Some(ref cs)) =
+                    (&cred.refresh_token, &cred.client_id, &cred.client_secret)
+                {
+                    return Some(ParsedCredentials {
+                        client_id: cid.clone(),
+                        client_secret: cs.clone(),
+                        refresh_token: rt.clone(),
+                    });
+                }
+                // Also check if we just have a plain access token
+                // (from device flow or similar — no refresh possible)
+            }
+        }
+
+        None
+    }
+
+    fn parse_creds_file(creds: CredentialsFile) -> Option<ParsedCredentials> {
         Some(ParsedCredentials {
             client_id: creds.client_id?,
             client_secret: creds.client_secret?,

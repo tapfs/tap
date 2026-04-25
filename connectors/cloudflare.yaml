@@ -6,6 +6,8 @@ base_url: "https://api.cloudflare.com/client/v4"
 auth:
   type: bearer
   token_env: CLOUDFLARE_TOKEN
+  setup_url: "https://dash.cloudflare.com/profile/api-tokens"
+  setup_instructions: "Create an API token with appropriate permissions"
 
 capabilities:
   read: true

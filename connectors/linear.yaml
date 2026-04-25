@@ -6,6 +6,8 @@ base_url: "https://api.linear.app"
 auth:
   type: bearer
   token_env: LINEAR_API_TOKEN
+  setup_url: "https://linear.app/settings/api"
+  setup_instructions: "Create a personal API key"
 
 capabilities:
   read: true

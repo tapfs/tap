@@ -6,6 +6,8 @@ base_url: "https://api.clickup.com/api/v2"
 auth:
   type: bearer
   token_env: CLICKUP_TOKEN
+  setup_url: "https://app.clickup.com/settings/apps"
+  setup_instructions: "Generate a personal API token under Settings > Apps"
 
 capabilities:
   read: true

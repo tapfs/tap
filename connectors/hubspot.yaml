@@ -6,6 +6,8 @@ base_url: "https://api.hubapi.com"
 auth:
   type: bearer
   token_env: HUBSPOT_API_TOKEN
+  setup_url: "https://app.hubspot.com/settings/api-key"
+  setup_instructions: "Create a private app under Settings > Integrations > Private Apps and copy the access token"
 
 capabilities:
   read: true

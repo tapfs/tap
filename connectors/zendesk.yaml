@@ -6,6 +6,8 @@ base_url: "https://your-subdomain.zendesk.com"
 auth:
   type: bearer
   token_env: ZENDESK_API_TOKEN
+  setup_url: "https://your-subdomain.zendesk.com/admin/apps-integrations/apis/zendesk-api/settings"
+  setup_instructions: "Enable Token Access in the API settings, then create an API token"
 
 capabilities:
   read: true

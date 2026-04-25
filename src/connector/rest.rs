@@ -2,6 +2,8 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::Value;
+use std::sync::RwLock;
+use std::time::Instant;
 
 use crate::connector::spec::{CollectionSpec, ConnectorSpec};
 use crate::connector::traits::{CollectionInfo, Connector, Resource, ResourceMeta, VersionInfo};
@@ -31,11 +33,21 @@ const MAX_CONCURRENT_REQUESTS: usize = 10;
 pub struct RestConnector {
     spec: ConnectorSpec,
     client: Client,
-    token: Option<String>,
+    token: RwLock<Option<String>>,
+    oauth2_config: Option<OAuth2Config>,
     /// Maps "collection/slug" → API resource ID for endpoint substitution.
     slug_to_id: dashmap::DashMap<String, String>,
     /// Limits concurrent HTTP requests to prevent overwhelming APIs.
     request_semaphore: tokio::sync::Semaphore,
+}
+
+/// OAuth2 configuration for automatic token refresh.
+pub struct OAuth2Config {
+    pub token_url: String,
+    pub client_id: String,
+    pub client_secret: String,
+    pub refresh_token: String,
+    pub expiry: RwLock<Option<Instant>>,
 }
 
 impl RestConnector {
@@ -64,7 +76,25 @@ impl RestConnector {
         Self {
             spec,
             client,
-            token,
+            token: RwLock::new(token),
+            oauth2_config: None,
+            slug_to_id: dashmap::DashMap::new(),
+            request_semaphore: tokio::sync::Semaphore::new(MAX_CONCURRENT_REQUESTS),
+        }
+    }
+
+    /// Create a RestConnector with OAuth2 token refresh support.
+    pub fn new_with_oauth2(
+        spec: ConnectorSpec,
+        client: Client,
+        access_token: Option<String>,
+        oauth2_config: OAuth2Config,
+    ) -> Self {
+        Self {
+            spec,
+            client,
+            token: RwLock::new(access_token),
+            oauth2_config: Some(oauth2_config),
             slug_to_id: dashmap::DashMap::new(),
             request_semaphore: tokio::sync::Semaphore::new(MAX_CONCURRENT_REQUESTS),
         }
@@ -115,6 +145,7 @@ impl RestConnector {
         &self,
         build_request: impl Fn() -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response> {
+        self.ensure_token().await;
         const MAX_RETRIES: u32 = 3;
         let mut delay = std::time::Duration::from_millis(500);
 
@@ -171,14 +202,67 @@ impl RestConnector {
         unreachable!()
     }
 
+    /// Ensure the OAuth2 access token is fresh, refreshing if expired or missing.
+    async fn ensure_token(&self) {
+        let config = match &self.oauth2_config {
+            Some(c) => c,
+            None => return, // No OAuth2, static token
+        };
+
+        // Check if refresh is needed
+        let needs_refresh = {
+            let expiry = config.expiry.read().unwrap();
+            match expiry.as_ref() {
+                Some(exp) => Instant::now() >= *exp,
+                None => self.token.read().unwrap().is_none(),
+            }
+        };
+
+        if !needs_refresh {
+            return;
+        }
+
+        // Refresh the token
+        match self
+            .client
+            .post(&config.token_url)
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", config.refresh_token.as_str()),
+                ("client_id", config.client_id.as_str()),
+                ("client_secret", config.client_secret.as_str()),
+            ])
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    if let Some(new_token) = json["access_token"].as_str() {
+                        *self.token.write().unwrap() = Some(new_token.to_string());
+                        let expires_in = json["expires_in"].as_u64().unwrap_or(3600);
+                        // Refresh at 80% of TTL to avoid edge-case expiry
+                        *config.expiry.write().unwrap() = Some(
+                            Instant::now()
+                                + std::time::Duration::from_secs(expires_in * 4 / 5),
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("OAuth2 token refresh failed: {}", e);
+            }
+        }
+    }
+
     /// Add authentication and standard headers to a request builder.
     fn authenticate(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         let builder = builder
             .header("User-Agent", "tapfs/0.1")
             .header("Accept", "application/json");
-        match (&self.spec.auth, &self.token) {
+        let token = self.token.read().unwrap().clone();
+        match (&self.spec.auth, &token) {
             (Some(auth), Some(token)) => match auth.auth_type.as_str() {
-                "bearer" => builder.bearer_auth(token),
+                "bearer" | "oauth2" => builder.bearer_auth(token),
                 "basic" => builder.header("Authorization", format!("Basic {}", token)),
                 _ => builder.bearer_auth(token),
             },

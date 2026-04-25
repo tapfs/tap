@@ -4,10 +4,11 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tracing_subscriber::EnvFilter;
 
+use crate::cache::disk::DiskCache;
 use crate::cache::store::Cache;
 use crate::cli::service::ServiceConfig;
 use crate::config::TapConfig;
-use crate::connector::factory::create_connector;
+use crate::connector::factory::{create_connector, AuthRequired};
 use crate::connector::registry::ConnectorRegistry;
 use crate::connector::rest::RestConnector;
 use crate::connector::spec::ConnectorSpec;
@@ -18,28 +19,126 @@ use crate::version::store::VersionStore;
 use crate::vfs::core::VirtualFs;
 
 pub async fn run(config: TapConfig) -> Result<()> {
-    // If not in daemon mode and a connector is specified, try to hot-add via IPC
+    // If not in daemon mode, either hot-add to running daemon or start the service
     if !config.daemon {
         let socket_path = config.socket_path();
-        if let Ok(resp) = crate::ipc::send_request(
+        let data_dir = config.data_dir();
+
+        // Check if daemon is already running
+        let daemon_running = crate::ipc::send_request(
             &socket_path,
             &serde_json::json!({"cmd": "status"}),
         )
         .await
-        {
-            if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-                // Daemon is running — hot-add via IPC
-                let resp = crate::ipc::send_request(
+        .map(|r| r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false))
+        .unwrap_or(false);
+
+        if daemon_running {
+            // Hot-add via IPC
+            let resp = crate::ipc::send_request(
+                &socket_path,
+                &serde_json::json!({"cmd": "add_connector", "name": config.connector_name}),
+            )
+            .await?;
+            if let Some(msg) = resp.get("message").and_then(|v| v.as_str()) {
+                println!("{}", msg);
+            } else if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+                anyhow::bail!("{}", err);
+            }
+            return Ok(());
+        }
+
+        // No daemon running — handle auth, update service.yaml, start service
+        // First check if auth is needed (try creating the connector to see)
+        let creds = crate::credentials::CredentialStore::load(&data_dir)?;
+        let audit_tmp = std::sync::Arc::new(
+            AuditLogger::new(config.audit_log_path()).context("creating audit logger")?,
+        );
+        if let Err(e) = create_connector(&config.connector_name, &audit_tmp, &creds) {
+            if let Some(auth_err) = e.downcast_ref::<crate::connector::factory::AuthRequired>() {
+                use std::io::IsTerminal;
+                if std::io::stdin().is_terminal() {
+                    // Get auth config from spec, or fall back to built-in defaults
+                    // for native connectors (google, etc.)
+                    let default_auth = crate::cli::auth::default_oauth2_config(
+                        &auth_err.connector_name,
+                    );
+                    let auth = auth_err
+                        .spec
+                        .as_ref()
+                        .and_then(|s| s.auth.clone())
+                        .unwrap_or(default_auth);
+
+                    let oauth2_ready = auth.auth_type == "oauth2"
+                        && auth.auth_url.is_some()
+                        && auth.token_url.is_some()
+                        && auth.client_id.is_some();
+
+                    if auth.device_code_url.is_some() && auth.client_id.is_some() {
+                        crate::cli::auth::oauth2_device_flow(
+                            &auth_err.connector_name,
+                            &auth,
+                            &data_dir,
+                        )
+                        .await?;
+                    } else if oauth2_ready {
+                        crate::cli::auth::oauth2_browser_flow(
+                            &auth_err.connector_name,
+                            &auth,
+                            &data_dir,
+                        )
+                        .await?;
+                    } else {
+                        // Fall back to API key prompt (covers bearer, basic,
+                        // and incomplete oauth2 specs)
+                        crate::cli::auth::prompt_api_key(
+                            &auth_err.connector_name,
+                            auth_err.spec.as_ref(),
+                            &data_dir,
+                        )?;
+                    }
+                } else {
+                    return Err(e);
+                }
+            }
+            // Other errors (not auth) — will be caught again when daemon starts
+        }
+
+        // Add connector to service.yaml
+        let mut svc_config = ServiceConfig::load(&data_dir)?;
+        svc_config.add_connector(&config.connector_name);
+        svc_config.mount_point = config.mount_point.clone();
+        svc_config.save(&data_dir)?;
+
+        // Install and start the service
+        use crate::cli::service::{detect_service_manager, ServiceManager};
+        match detect_service_manager() {
+            ServiceManager::Launchd | ServiceManager::Systemd => {
+                // Install plist/unit if not already present
+                let _ = crate::cli::service::install();
+                crate::cli::service::start()?;
+                // Wait briefly for daemon to start, then verify
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                if let Ok(resp) = crate::ipc::send_request(
                     &socket_path,
-                    &serde_json::json!({"cmd": "add_connector", "name": config.connector_name}),
+                    &serde_json::json!({"cmd": "list_connectors"}),
                 )
-                .await?;
-                if let Some(msg) = resp.get("message").and_then(|v| v.as_str()) {
-                    println!("{}", msg);
-                } else if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
-                    anyhow::bail!("{}", err);
+                .await
+                {
+                    if let Some(connectors) = resp.get("connectors").and_then(|v| v.as_array()) {
+                        let names: Vec<&str> = connectors
+                            .iter()
+                            .filter_map(|v| v.as_str())
+                            .collect();
+                        println!("tapfs running in background");
+                        println!("Mounted: {}", names.join(", "));
+                        println!("Mount point: {}", config.mount_point.display());
+                    }
                 }
                 return Ok(());
+            }
+            ServiceManager::None => {
+                // No service manager (container/CI) — fall through to foreground mode
             }
         }
     }
@@ -121,7 +220,7 @@ pub async fn run(config: TapConfig) -> Result<()> {
                 registry.register_with_spec(audited, spec);
             }
         } else {
-            // Single-connector mode (backward compatible) — use factory
+            // Single-connector mode — auth handled upfront, just create
             match create_connector(&config.connector_name, &audit, &creds) {
                 Ok((connector, spec)) => {
                     if let Some(s) = spec {
@@ -130,51 +229,142 @@ pub async fn run(config: TapConfig) -> Result<()> {
                         registry.register(connector);
                     }
                 }
-                Err(_) => {
-                    // Factory failed — fall back to explicit spec path or bare connector
-                    let spec = if let Some(ref spec_path) = config.connector_spec {
-                        let yaml = std::fs::read_to_string(spec_path)
-                            .with_context(|| format!("reading spec file {:?}", spec_path))?;
-                        let mut spec = ConnectorSpec::from_yaml(&yaml)?;
-                        if let Some(ref url) = config.base_url {
-                            spec.base_url = url.clone();
+                Err(e) => {
+                    // Check if the factory is asking for interactive auth
+                    if let Some(auth_err) = e.downcast_ref::<AuthRequired>() {
+                        use std::io::IsTerminal;
+                        if std::io::stdin().is_terminal() {
+                            // Interactive terminal — prompt the user
+                            let auth_type = auth_err
+                                .spec
+                                .as_ref()
+                                .and_then(|s| s.auth.as_ref())
+                                .map(|a| a.auth_type.as_str())
+                                .unwrap_or("bearer");
+
+                            let auth_spec = auth_err
+                                .spec
+                                .as_ref()
+                                .and_then(|s| s.auth.as_ref());
+
+                            let has_device_flow = auth_spec
+                                .and_then(|a| a.device_code_url.as_ref())
+                                .is_some();
+                            let has_browser_oauth = auth_type == "oauth2" && !has_device_flow;
+
+                            if has_device_flow {
+                                let auth = auth_spec.unwrap();
+                                crate::cli::auth::oauth2_device_flow(
+                                    &auth_err.connector_name,
+                                    auth,
+                                    &config.data_dir(),
+                                )
+                                .await?;
+                            } else if has_browser_oauth {
+                                let auth = auth_spec.unwrap();
+                                crate::cli::auth::oauth2_browser_flow(
+                                    &auth_err.connector_name,
+                                    auth,
+                                    &config.data_dir(),
+                                )
+                                .await?;
+                            } else {
+                                crate::cli::auth::prompt_api_key(
+                                    &auth_err.connector_name,
+                                    auth_err.spec.as_ref(),
+                                    &config.data_dir(),
+                                )?;
+                            }
+                            // Reload credentials and retry
+                            let creds =
+                                crate::credentials::CredentialStore::load(&config.data_dir())?;
+                            let (connector, spec) =
+                                create_connector(&config.connector_name, &audit, &creds)?;
+                            if let Some(s) = spec {
+                                registry.register_with_spec(connector, s);
+                            } else {
+                                registry.register(connector);
+                            }
+                        } else {
+                            // Non-interactive (CI, daemon) — fall back to spec path or bare connector
+                            let spec = if let Some(ref spec_path) = config.connector_spec {
+                                let yaml = std::fs::read_to_string(spec_path)
+                                    .with_context(|| {
+                                        format!("reading spec file {:?}", spec_path)
+                                    })?;
+                                let mut spec = ConnectorSpec::from_yaml(&yaml)?;
+                                if let Some(ref url) = config.base_url {
+                                    spec.base_url = url.clone();
+                                }
+                                spec
+                            } else {
+                                return Err(e);
+                            };
+
+                            tracing::info!(name = %spec.name, base_url = %spec.base_url, "loaded connector spec");
+
+                            let client = reqwest::Client::builder()
+                                .pool_max_idle_per_host(10)
+                                .connect_timeout(Duration::from_secs(5))
+                                .timeout(Duration::from_secs(30))
+                                .tcp_keepalive(Duration::from_secs(60))
+                                .build()?;
+
+                            let token = creds.token(&spec.name);
+                            let rest =
+                                RestConnector::new_with_token(spec.clone(), client, token);
+                            let inner: Arc<dyn crate::connector::traits::Connector> =
+                                Arc::new(rest);
+                            let audited: Arc<dyn crate::connector::traits::Connector> =
+                                Arc::new(AuditedConnector::new(inner, audit.clone()));
+                            registry.register_with_spec(audited, spec);
                         }
-                        spec
                     } else {
-                        // Unknown connector — bare fallback
-                        let base_url = config
-                            .base_url
-                            .clone()
-                            .unwrap_or_else(|| "http://localhost:8080".to_string());
-                        ConnectorSpec {
-                            spec_version: None,
-                            version: None,
-                            description: None,
-                            name: config.connector_name.clone(),
-                            base_url,
-                            auth: None,
-                            transport: None,
-                            capabilities: None,
-                            agent: None,
-                            collections: vec![],
-                        }
-                    };
+                        // Non-auth factory failure — fall back to explicit spec path or bare connector
+                        let spec = if let Some(ref spec_path) = config.connector_spec {
+                            let yaml = std::fs::read_to_string(spec_path)
+                                .with_context(|| format!("reading spec file {:?}", spec_path))?;
+                            let mut spec = ConnectorSpec::from_yaml(&yaml)?;
+                            if let Some(ref url) = config.base_url {
+                                spec.base_url = url.clone();
+                            }
+                            spec
+                        } else {
+                            // Unknown connector — bare fallback
+                            let base_url = config
+                                .base_url
+                                .clone()
+                                .unwrap_or_else(|| "http://localhost:8080".to_string());
+                            ConnectorSpec {
+                                spec_version: None,
+                                version: None,
+                                description: None,
+                                name: config.connector_name.clone(),
+                                base_url,
+                                auth: None,
+                                transport: None,
+                                capabilities: None,
+                                agent: None,
+                                collections: vec![],
+                            }
+                        };
 
-                    tracing::info!(name = %spec.name, base_url = %spec.base_url, "loaded connector spec");
+                        tracing::info!(name = %spec.name, base_url = %spec.base_url, "loaded connector spec");
 
-                    let client = reqwest::Client::builder()
-                        .pool_max_idle_per_host(10)
-                        .connect_timeout(Duration::from_secs(5))
-                        .timeout(Duration::from_secs(30))
-                        .tcp_keepalive(Duration::from_secs(60))
-                        .build()?;
+                        let client = reqwest::Client::builder()
+                            .pool_max_idle_per_host(10)
+                            .connect_timeout(Duration::from_secs(5))
+                            .timeout(Duration::from_secs(30))
+                            .tcp_keepalive(Duration::from_secs(60))
+                            .build()?;
 
-                    let token = creds.token(&spec.name);
-                    let rest = RestConnector::new_with_token(spec.clone(), client, token);
-                    let inner: Arc<dyn crate::connector::traits::Connector> = Arc::new(rest);
-                    let audited: Arc<dyn crate::connector::traits::Connector> =
-                        Arc::new(AuditedConnector::new(inner, audit.clone()));
-                    registry.register_with_spec(audited, spec);
+                        let token = creds.token(&spec.name);
+                        let rest = RestConnector::new_with_token(spec.clone(), client, token);
+                        let inner: Arc<dyn crate::connector::traits::Connector> = Arc::new(rest);
+                        let audited: Arc<dyn crate::connector::traits::Connector> =
+                            Arc::new(AuditedConnector::new(inner, audit.clone()));
+                        registry.register_with_spec(audited, spec);
+                    }
                 }
             }
         }
@@ -199,6 +389,9 @@ pub async fn run(config: TapConfig) -> Result<()> {
     let drafts = Arc::new(DraftStore::new(config.drafts_dir()).context("creating draft store")?);
     let versions =
         Arc::new(VersionStore::new(config.versions_dir()).context("creating version store")?);
+    let disk_cache = Arc::new(
+        DiskCache::new(config.cache_dir()).context("creating on-disk resource cache")?,
+    );
 
     // 9. Ensure mount point directory exists
     std::fs::create_dir_all(&config.mount_point)
@@ -232,17 +425,16 @@ pub async fn run(config: TapConfig) -> Result<()> {
 
     // 11. Build VirtualFs
     let cache_for_ipc = cache.clone();
-    let vfs = Arc::new(VirtualFs::new(
-        registry.clone(),
-        cache,
-        drafts,
-        versions,
-        audit.clone(),
-    ));
+    let disk_for_ipc = disk_cache.clone();
+    let vfs = Arc::new(
+        VirtualFs::new(registry.clone(), cache, drafts, versions, audit.clone())
+            .with_disk_cache(disk_cache),
+    );
 
     // 12. Start IPC socket for CLI commands (inspect, status, invalidate, add/remove connector)
     let ipc_state = Arc::new(crate::ipc::IpcState {
         cache: cache_for_ipc,
+        disk_cache: Some(disk_for_ipc),
         registry: registry.clone(),
         audit,
         credentials: creds,

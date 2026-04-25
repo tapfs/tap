@@ -22,5 +22,8 @@ Thumbs.db
 .idea/
 .vscode/
 
+# AI assistant config
+CLAUDE.md
+
 # Dependencies
 node_modules/

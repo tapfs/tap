@@ -16,14 +16,17 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Credentials for a single connector.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConnectorCredentials {
     pub token: Option<String>,
     pub email: Option<String>,
     pub base_url: Option<String>,
+    pub refresh_token: Option<String>,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
 }
 
 /// All credentials keyed by connector name.
@@ -88,5 +91,92 @@ impl CredentialStore {
         self.entries
             .get(connector_name)
             .and_then(|c| c.base_url.clone())
+    }
+
+    /// Save a token for a connector to credentials.yaml.
+    /// Creates the file if it doesn't exist, preserves existing entries.
+    pub fn save_token(data_dir: &Path, connector_name: &str, token: &str) -> Result<()> {
+        let path = data_dir.join("credentials.yaml");
+
+        // Load existing entries or start fresh
+        let mut entries: HashMap<String, ConnectorCredentials> = if path.exists() {
+            let content = std::fs::read_to_string(&path).context("reading credentials file")?;
+            serde_yaml::from_str(&content).unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+
+        // Update the token
+        let entry = entries
+            .entry(connector_name.to_string())
+            .or_insert_with(ConnectorCredentials::default);
+        entry.token = Some(token.to_string());
+
+        // Serialize — ConnectorCredentials needs Serialize
+        let yaml = serde_yaml::to_string(&entries).context("serializing credentials")?;
+
+        // Ensure parent dir exists
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        std::fs::write(&path, yaml).context("writing credentials file")?;
+
+        // Set permissions to 0600
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
+
+        Ok(())
+    }
+
+    /// Save OAuth2 credentials for a connector to credentials.yaml.
+    /// Creates the file if it doesn't exist, preserves existing entries.
+    pub fn save_oauth2(
+        data_dir: &Path,
+        connector_name: &str,
+        token: &str,
+        refresh_token: &str,
+        client_id: &str,
+        client_secret: &str,
+    ) -> Result<()> {
+        let path = data_dir.join("credentials.yaml");
+
+        // Load existing entries or start fresh
+        let mut entries: HashMap<String, ConnectorCredentials> = if path.exists() {
+            let content = std::fs::read_to_string(&path).context("reading credentials file")?;
+            serde_yaml::from_str(&content).unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+
+        // Update the entry with all OAuth2 fields
+        let entry = entries
+            .entry(connector_name.to_string())
+            .or_insert_with(ConnectorCredentials::default);
+        entry.token = Some(token.to_string());
+        entry.refresh_token = Some(refresh_token.to_string());
+        entry.client_id = Some(client_id.to_string());
+        entry.client_secret = Some(client_secret.to_string());
+
+        let yaml = serde_yaml::to_string(&entries).context("serializing credentials")?;
+
+        // Ensure parent dir exists
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        std::fs::write(&path, yaml).context("writing credentials file")?;
+
+        // Set permissions to 0600
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
+
+        Ok(())
     }
 }

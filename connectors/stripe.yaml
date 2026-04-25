@@ -6,6 +6,8 @@ base_url: "https://api.stripe.com"
 auth:
   type: bearer
   token_env: STRIPE_API_KEY
+  setup_url: "https://dashboard.stripe.com/apikeys"
+  setup_instructions: "Copy your Secret key (starts with sk_)"
 
 capabilities:
   read: true

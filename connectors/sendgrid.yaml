@@ -6,6 +6,8 @@ base_url: "https://api.sendgrid.com/v3"
 auth:
   type: bearer
   token_env: SENDGRID_API_KEY
+  setup_url: "https://app.sendgrid.com/settings/api_keys"
+  setup_instructions: "Create an API key with appropriate permissions"
 
 capabilities:
   read: true

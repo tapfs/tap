@@ -6,6 +6,8 @@ base_url: "https://app.asana.com/api/1.0"
 auth:
   type: bearer
   token_env: ASANA_TOKEN
+  setup_url: "https://app.asana.com/0/my-apps"
+  setup_instructions: "Create a personal access token under My Apps > Developer Apps"
 
 capabilities:
   read: true

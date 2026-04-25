@@ -5,8 +5,14 @@ description: "GitHub repositories, issues, pull requests, and notifications"
 name: github
 base_url: "https://api.github.com"
 auth:
-  type: bearer
+  type: oauth2
   token_env: GITHUB_TOKEN
+  client_id: "Ov23liS2DRALKdevKymx"
+  device_code_url: "https://github.com/login/device/code"
+  token_url: "https://github.com/login/oauth/access_token"
+  scopes: "repo read:org notifications read:user"
+  setup_url: "https://github.com/settings/tokens"
+  setup_instructions: "Or create a personal access token with 'repo' scope"
 
 capabilities:
   read: true

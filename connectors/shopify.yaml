@@ -6,6 +6,8 @@ base_url: "https://YOUR_STORE.myshopify.com/admin/api/2024-01"
 auth:
   type: bearer
   token_env: SHOPIFY_ACCESS_TOKEN
+  setup_url: "https://admin.shopify.com/store/YOUR_STORE/settings/apps/development"
+  setup_instructions: "Create a custom app under Settings > Apps and sales channels > Develop apps, then install and copy the Admin API access token"
 
 capabilities:
   read: true

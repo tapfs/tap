@@ -4,8 +4,10 @@ description: "Salesforce CRM — accounts, opportunities, and sales data"
 name: salesforce
 base_url: "https://login.salesforce.com"
 auth:
-  type: oauth2
-  token_env: SF_CLIENT_SECRET
+  type: bearer
+  token_env: SF_ACCESS_TOKEN
+  setup_url: "https://help.salesforce.com/s/articleView?id=sf.connected_app_create_api_integration.htm"
+  setup_instructions: "Create a Connected App, then use your access token from Salesforce CLI: sf org login web"
 
 capabilities:
   read: true

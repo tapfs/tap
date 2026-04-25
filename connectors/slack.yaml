@@ -6,6 +6,8 @@ base_url: "https://slack.com/api"
 auth:
   type: bearer
   token_env: SLACK_BOT_TOKEN
+  setup_url: "https://api.slack.com/apps"
+  setup_instructions: "Create a Slack app, add Bot Token scopes, install to workspace, copy Bot User OAuth Token"
 
 capabilities:
   read: true

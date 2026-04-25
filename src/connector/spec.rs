@@ -26,6 +26,22 @@ pub struct AuthSpec {
     #[serde(rename = "type")]
     pub auth_type: String, // "bearer", "basic", "oauth2"
     pub token_env: Option<String>, // env var name for token
+    /// URL where the user can create/find their API key.
+    pub setup_url: Option<String>,
+    /// Human-readable instructions for obtaining credentials.
+    pub setup_instructions: Option<String>,
+    /// OAuth2 authorization endpoint.
+    pub auth_url: Option<String>,
+    /// OAuth2 token endpoint.
+    pub token_url: Option<String>,
+    /// OAuth2 client ID.
+    pub client_id: Option<String>,
+    /// OAuth2 client secret.
+    pub client_secret: Option<String>,
+    /// Space-separated OAuth2 scopes.
+    pub scopes: Option<String>,
+    /// OAuth2 Device Flow code endpoint (e.g. https://github.com/login/device/code).
+    pub device_code_url: Option<String>,
 }
 
 /// Transport abstraction — how to reach the API.

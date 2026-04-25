@@ -46,6 +46,11 @@ impl TapConfig {
         self.data_dir().join("versions")
     }
 
+    /// Directory used to persist the on-disk resource cache.
+    pub fn cache_dir(&self) -> PathBuf {
+        self.data_dir().join("cache")
+    }
+
     /// Path to the NDJSON audit log file.
     pub fn audit_log_path(&self) -> PathBuf {
         self.data_dir().join("audit.log")

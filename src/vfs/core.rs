@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 
+use crate::cache::disk::{DiskCache, DiskEntry, DiskMeta};
 use crate::cache::store::Cache;
 use crate::connector::registry::ConnectorRegistry;
 use crate::connector::traits::{CollectionInfo, ResourceMeta};
@@ -157,6 +158,11 @@ pub struct VirtualFs {
     pub nodes: Arc<NodeTable>,
     pub registry: Arc<ConnectorRegistry>,
     pub cache: Arc<Cache>,
+    /// Optional persistent L2 cache. Survives restarts and has no size cap;
+    /// validated against `ResourceMeta.updated_at` before serving so a
+    /// changed upstream resource is refetched even if the in-memory L1 has
+    /// expired.
+    pub disk_cache: Option<Arc<DiskCache>>,
     pub drafts: Arc<DraftStore>,
     pub versions: Arc<VersionStore>,
     pub audit: Arc<AuditLogger>,
@@ -186,12 +192,31 @@ impl VirtualFs {
             nodes: Arc::new(NodeTable::new()),
             registry,
             cache,
+            disk_cache: None,
             drafts,
             versions,
             audit,
             write_buffers: DashMap::new(),
             resource_mtimes: DashMap::new(),
             content_lengths: DashMap::new(),
+        }
+    }
+
+    /// Attach a persistent disk cache. Returns `self` so the call chains with
+    /// `Arc::new(VirtualFs::new(...).with_disk_cache(...))`.
+    pub fn with_disk_cache(mut self, disk: Arc<DiskCache>) -> Self {
+        self.disk_cache = Some(disk);
+        self
+    }
+
+    /// Drop both the in-memory and on-disk cache entries for a single
+    /// resource, used after promoting a draft so the next read sees the
+    /// upstream's authoritative version.
+    fn invalidate_resource_cache(&self, connector: &str, collection: &str, resource: &str) {
+        let cache_key = format!("{}/{}/{}", connector, collection, resource);
+        self.cache.invalidate(&cache_key);
+        if let Some(disk) = &self.disk_cache {
+            disk.invalidate(connector, collection, resource);
         }
     }
 
@@ -665,8 +690,7 @@ impl VirtualFs {
             let _ = self.drafts.delete_draft(&connector, &collection, &old_slug);
 
             // Invalidate the cache so the next read fetches the updated resource.
-            let cache_key = format!("{}/{}/{}", connector, collection, old_slug);
-            self.cache.invalidate(&cache_key);
+            self.invalidate_resource_cache(&connector, &collection, &old_slug);
 
             // Remove the draft node.
             let draft_kind = NodeKind::Resource {
@@ -888,8 +912,7 @@ impl VirtualFs {
                     .versions
                     .save_snapshot(connector, collection, resource, &data);
                 let _ = self.drafts.delete_draft(connector, collection, resource);
-                let cache_key = format!("{}/{}/{}", connector, collection, resource);
-                self.cache.invalidate(&cache_key);
+                self.invalidate_resource_cache(connector, collection, resource);
 
                 let _ = self.audit.record(
                     "auto-promote",
@@ -1827,12 +1850,52 @@ impl VirtualFs {
             }
             ResourceVariant::Live => {
                 let cache_key = format!("{}/{}/{}", connector, collection, resource);
+
+                // L1 — in-memory cache. Bytes::clone is O(1).
                 if let Some(cached) = self.cache.get_resource(&cache_key) {
-                    // Bytes::clone() is O(1) — refcount bump, no deep copy.
                     return Ok(cached.data.clone());
                 }
 
-                // Fetch from connector.
+                // L2 — disk cache, validated by `updated_at`. We only trust a
+                // disk hit if we've seen the collection's listing recently
+                // and the listing's `updated_at` for this resource matches
+                // what's on disk. Otherwise refetch.
+                let listing_key = format!("{}/{}", connector, collection);
+                let listing_updated_at = self
+                    .cache
+                    .get_metadata(&listing_key)
+                    .and_then(|metas| {
+                        metas
+                            .into_iter()
+                            .find(|m| m.slug == resource || m.id == resource)
+                            .and_then(|m| m.updated_at)
+                    });
+
+                if let (Some(disk), Some(ref upstream_ts)) =
+                    (self.disk_cache.as_ref(), listing_updated_at.as_ref())
+                {
+                    if let Some(entry) = disk.get(connector, collection, resource) {
+                        if entry.meta.updated_at.as_deref() == Some(upstream_ts.as_str()) {
+                            let data = entry.data.clone();
+                            self.content_lengths
+                                .insert(cache_key.clone(), data.len() as u64);
+                            // Promote into L1 if under the in-memory size cap
+                            // so subsequent reads in this TTL window stay hot.
+                            if data.len() <= crate::cache::store::MAX_CACHEABLE_SIZE {
+                                self.cache.put_resource(
+                                    &cache_key,
+                                    crate::cache::store::Resource {
+                                        data: data.clone(),
+                                        raw_json: entry.meta.raw_json.clone(),
+                                    },
+                                );
+                            }
+                            return Ok(data);
+                        }
+                    }
+                }
+
+                // Cache miss (or stale disk entry) — fetch from the connector.
                 let conn = self.registry.get(connector).ok_or(VfsError::NotFound)?;
                 let result = rt
                     .block_on(conn.read_resource(collection, resource))
@@ -1843,25 +1906,50 @@ impl VirtualFs {
 
                 let data = bytes::Bytes::from(result.content);
 
-                // Record content length for accurate getattr sizing.
                 self.content_lengths
                     .insert(cache_key.clone(), data.len() as u64);
 
-                // Only cache resources under the size cap to prevent OOM.
+                // L1: bound by the in-memory size cap to prevent OOM.
                 if data.len() <= crate::cache::store::MAX_CACHEABLE_SIZE {
                     self.cache.put_resource(
                         &cache_key,
                         crate::cache::store::Resource {
-                            data: data.clone(), // O(1) clone
-                            raw_json: result.raw_json,
+                            data: data.clone(),
+                            raw_json: result.raw_json.clone(),
                         },
                     );
                 } else {
                     tracing::info!(
                         key = %cache_key,
                         size = data.len(),
-                        "resource exceeds cache size cap, not caching"
+                        "resource exceeds in-memory cache cap, on-disk only"
                     );
+                }
+
+                // L2: persist regardless of size, with the `updated_at` we
+                // saw in the listing (if any). If no listing has been
+                // populated yet, store with `None` and let the next read
+                // refetch — better than handing back stale bytes.
+                if let Some(disk) = &self.disk_cache {
+                    let entry = DiskEntry {
+                        data: data.clone(),
+                        meta: DiskMeta {
+                            id: resource.to_string(),
+                            updated_at: listing_updated_at
+                                .or_else(|| result.meta.updated_at.clone()),
+                            fetched_at: chrono::Utc::now().to_rfc3339(),
+                            raw_json: result.raw_json,
+                        },
+                    };
+                    if let Err(e) = disk.put(connector, collection, resource, &entry) {
+                        tracing::warn!(
+                            connector = %connector,
+                            collection = %collection,
+                            resource = %resource,
+                            error = %e,
+                            "disk cache write failed"
+                        );
+                    }
                 }
 
                 Ok(data)
@@ -1951,8 +2039,7 @@ impl VirtualFs {
                             .versions
                             .save_snapshot(connector, collection, resource, &data);
                         let _ = self.drafts.delete_draft(connector, collection, slug);
-                        let cache_key = format!("{}/{}/{}", connector, collection, resource);
-                        self.cache.invalidate(&cache_key);
+                        self.invalidate_resource_cache(connector, collection, resource);
 
                         // Remove the tx resource node
                         let tx_res_kind = NodeKind::TxResource {
@@ -2375,5 +2462,233 @@ mod tests {
         assert_eq!(table.get(id_a), Some(kind_a));
         assert_eq!(table.get(id_b), Some(kind_b.clone()));
         assert_eq!(table.lookup(&kind_b), Some(id_b));
+    }
+}
+
+#[cfg(test)]
+mod disk_cache_integration {
+    use super::*;
+    use crate::cache::disk::DiskCache;
+    use crate::connector::traits::{
+        CollectionInfo, Connector, Resource as ConnResource, ResourceMeta, VersionInfo,
+    };
+    use crate::draft::store::DraftStore;
+    use crate::governance::audit::AuditLogger;
+    use crate::version::store::VersionStore;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    struct CountingConnector {
+        reads: AtomicUsize,
+        updated_at: Mutex<String>,
+    }
+
+    impl CountingConnector {
+        fn new(updated_at: &str) -> Self {
+            Self {
+                reads: AtomicUsize::new(0),
+                updated_at: Mutex::new(updated_at.into()),
+            }
+        }
+        fn updated_at(&self) -> String {
+            self.updated_at.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Connector for CountingConnector {
+        fn name(&self) -> &str {
+            "mock"
+        }
+        async fn list_collections(&self) -> anyhow::Result<Vec<CollectionInfo>> {
+            Ok(vec![CollectionInfo {
+                name: "things".into(),
+                description: None,
+            }])
+        }
+        async fn list_resources(&self, _: &str) -> anyhow::Result<Vec<ResourceMeta>> {
+            Ok(vec![ResourceMeta {
+                id: "alpha".into(),
+                slug: "alpha".into(),
+                title: None,
+                updated_at: Some(self.updated_at()),
+                content_type: None,
+            }])
+        }
+        async fn read_resource(&self, _: &str, _: &str) -> anyhow::Result<ConnResource> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Ok(ConnResource {
+                meta: ResourceMeta {
+                    id: "alpha".into(),
+                    slug: "alpha".into(),
+                    title: None,
+                    updated_at: Some(self.updated_at()),
+                    content_type: None,
+                },
+                content: b"hello world".to_vec(),
+                raw_json: None,
+            })
+        }
+        async fn write_resource(&self, _: &str, _: &str, _: &[u8]) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn resource_versions(&self, _: &str, _: &str) -> anyhow::Result<Vec<VersionInfo>> {
+            Ok(vec![])
+        }
+        async fn read_version(
+            &self,
+            _: &str,
+            _: &str,
+            _: u32,
+        ) -> anyhow::Result<ConnResource> {
+            unimplemented!()
+        }
+    }
+
+    fn build_vfs(disk_root: &Path) -> (Arc<VirtualFs>, Arc<CountingConnector>) {
+        let conn = Arc::new(CountingConnector::new("2026-01-01T00:00:00Z"));
+        let registry = ConnectorRegistry::new();
+        registry.register(conn.clone() as Arc<dyn Connector>);
+        let registry = Arc::new(registry);
+        let cache = Arc::new(Cache::new(Duration::from_secs(60)));
+        let drafts = Arc::new(DraftStore::new(disk_root.join("drafts")).unwrap());
+        let versions = Arc::new(VersionStore::new(disk_root.join("versions")).unwrap());
+        let audit = Arc::new(AuditLogger::new(disk_root.join("audit.log")).unwrap());
+        let disk = Arc::new(DiskCache::new(disk_root.join("cache")).unwrap());
+        let vfs = Arc::new(
+            VirtualFs::new(registry, cache, drafts, versions, audit).with_disk_cache(disk),
+        );
+        (vfs, conn)
+    }
+
+    fn put_listing(vfs: &VirtualFs, updated_at: &str) {
+        vfs.cache.put_metadata(
+            "mock/things",
+            vec![ResourceMeta {
+                id: "alpha".into(),
+                slug: "alpha".into(),
+                title: None,
+                updated_at: Some(updated_at.into()),
+                content_type: None,
+            }],
+        );
+    }
+
+    #[test]
+    fn second_read_after_l1_invalidation_hits_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (vfs, conn) = build_vfs(tmp.path());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let handle = rt.handle().clone();
+
+        let data1 = vfs
+            .read_resource_data(&handle, "mock", "things", "alpha", &ResourceVariant::Live)
+            .unwrap();
+        assert_eq!(&data1[..], b"hello world");
+        assert_eq!(conn.reads.load(Ordering::SeqCst), 1);
+
+        // The first read populated the disk entry with no listing in cache,
+        // so the disk meta has whatever updated_at the connector returned.
+        // Pre-populate the metadata cache to match for the second read.
+        put_listing(&vfs, "2026-01-01T00:00:00Z");
+
+        // Simulate L1 TTL expiry without sleeping.
+        vfs.cache.invalidate("mock/things/alpha");
+
+        let data2 = vfs
+            .read_resource_data(&handle, "mock", "things", "alpha", &ResourceVariant::Live)
+            .unwrap();
+        assert_eq!(&data2[..], b"hello world");
+        assert_eq!(
+            conn.reads.load(Ordering::SeqCst),
+            1,
+            "second read should be served from disk cache, not refetched"
+        );
+    }
+
+    #[test]
+    fn updated_at_change_forces_refetch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (vfs, conn) = build_vfs(tmp.path());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let handle = rt.handle().clone();
+
+        // Warm L1 + L2 with the original updated_at via the listing.
+        put_listing(&vfs, "2026-01-01T00:00:00Z");
+        let _ = vfs
+            .read_resource_data(&handle, "mock", "things", "alpha", &ResourceVariant::Live)
+            .unwrap();
+        assert_eq!(conn.reads.load(Ordering::SeqCst), 1);
+
+        // L1 expires, listing now reports a newer updated_at than what's on
+        // disk → disk entry is stale, must refetch.
+        vfs.cache.invalidate("mock/things/alpha");
+        put_listing(&vfs, "2026-04-01T00:00:00Z");
+
+        let _ = vfs
+            .read_resource_data(&handle, "mock", "things", "alpha", &ResourceVariant::Live)
+            .unwrap();
+        assert_eq!(
+            conn.reads.load(Ordering::SeqCst),
+            2,
+            "stale disk entry must be refetched when listing reports a new updated_at"
+        );
+    }
+
+    #[test]
+    fn disk_cache_survives_vfs_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().to_owned();
+
+        // Round 1: read once, populate disk.
+        {
+            let (vfs, conn) = build_vfs(&path);
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            put_listing(&vfs, "2026-01-01T00:00:00Z");
+            let _ = vfs
+                .read_resource_data(
+                    &rt.handle().clone(),
+                    "mock",
+                    "things",
+                    "alpha",
+                    &ResourceVariant::Live,
+                )
+                .unwrap();
+            assert_eq!(conn.reads.load(Ordering::SeqCst), 1);
+        }
+
+        // Round 2: brand new VFS (fresh cache, fresh registry, same disk root).
+        let (vfs, conn) = build_vfs(&path);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        put_listing(&vfs, "2026-01-01T00:00:00Z");
+        let data = vfs
+            .read_resource_data(
+                &rt.handle().clone(),
+                "mock",
+                "things",
+                "alpha",
+                &ResourceVariant::Live,
+            )
+            .unwrap();
+        assert_eq!(&data[..], b"hello world");
+        assert_eq!(
+            conn.reads.load(Ordering::SeqCst),
+            0,
+            "fresh-process read should be served entirely from disk"
+        );
     }
 }
