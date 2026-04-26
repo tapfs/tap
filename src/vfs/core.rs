@@ -31,18 +31,32 @@ struct TapfsMeta {
 fn parse_tapfs_meta(data: &[u8]) -> TapfsMeta {
     let text = match std::str::from_utf8(data) {
         Ok(t) => t,
-        Err(_) => return TapfsMeta { draft: false, id: None, version: None },
+        Err(_) => {
+            return TapfsMeta {
+                draft: false,
+                id: None,
+                version: None,
+            }
+        }
     };
 
     if !text.starts_with("---") {
-        return TapfsMeta { draft: false, id: None, version: None };
+        return TapfsMeta {
+            draft: false,
+            id: None,
+            version: None,
+        };
     }
 
     let after_open = &text[3..];
     let fm_text = if let Some(pos) = after_open.find("\n---") {
         &after_open[..pos]
     } else {
-        return TapfsMeta { draft: false, id: None, version: None };
+        return TapfsMeta {
+            draft: false,
+            id: None,
+            version: None,
+        };
     };
 
     let mut draft = false;
@@ -118,10 +132,7 @@ fn inject_tapfs_fields(data: &[u8], id: &str, version: u32) -> Vec<u8> {
 
     if !text.starts_with("---") {
         // No frontmatter — prepend one
-        let result = format!(
-            "---\n_id: {}\n_version: {}\n---\n{}",
-            id, version, text
-        );
+        let result = format!("---\n_id: {}\n_version: {}\n---\n{}", id, version, text);
         return result.into_bytes();
     }
 
@@ -797,14 +808,12 @@ impl VirtualFs {
                     // its _id so flush uses write_resource (PATCH) not create_resource.
                     let api_id = {
                         let listing_key = format!("{}/{}", connector, collection);
-                        self.cache
-                            .get_metadata(&listing_key)
-                            .and_then(|metas| {
-                                metas
-                                    .into_iter()
-                                    .find(|m| m.slug == slug || m.id == slug)
-                                    .map(|m| m.id)
-                            })
+                        self.cache.get_metadata(&listing_key).and_then(|metas| {
+                            metas
+                                .into_iter()
+                                .find(|m| m.slug == slug || m.id == slug)
+                                .map(|m| m.id)
+                        })
                     };
                     let template: Vec<u8> = if let Some(ref id) = api_id {
                         format!("---\n_id: {}\n_version: 0\n---\n\n", id).into_bytes()
@@ -947,11 +956,14 @@ impl VirtualFs {
             ResourceVariant::Live => {
                 // Determine the API id from frontmatter if a draft exists locally.
                 let api_id = if self.drafts.has_draft(&connector, &collection, &slug) {
-                    if let Ok(Some(data)) =
-                        self.drafts.read_draft(&connector, &collection, &slug)
-                    {
+                    if let Ok(Some(data)) = self.drafts.read_draft(&connector, &collection, &slug) {
                         let meta = parse_tapfs_meta(&data);
-                        if meta.id.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+                        if meta
+                            .id
+                            .as_ref()
+                            .map(|s| s.trim().is_empty())
+                            .unwrap_or(true)
+                        {
                             // Never posted to API — just remove the local draft.
                             let _ = self.drafts.delete_draft(&connector, &collection, &slug);
                             let _ = self.audit.record(
@@ -1131,11 +1143,7 @@ impl VirtualFs {
                             {
                                 // Carry forward _id/_version so next flush
                                 // uses write_resource instead of create_resource
-                                inject_tapfs_fields(
-                                    &buf,
-                                    existing_id,
-                                    ex.version.unwrap_or(0),
-                                )
+                                inject_tapfs_fields(&buf, existing_id, ex.version.unwrap_or(0))
                             } else {
                                 buf
                             }
@@ -1269,7 +1277,8 @@ impl VirtualFs {
 
                 // Store in slug map for readdir display
                 if api_id != *resource {
-                    self.slug_map.insert(connector, collection, &api_id, resource);
+                    self.slug_map
+                        .insert(connector, collection, &api_id, resource);
                 }
 
                 let _ = self
@@ -1934,7 +1943,13 @@ impl VirtualFs {
                 }
                 if let Ok(Some(data)) = self.drafts.read_draft(connector, collection, &slug) {
                     let meta = parse_tapfs_meta(&data);
-                    if meta.draft || meta.id.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+                    if meta.draft
+                        || meta
+                            .id
+                            .as_ref()
+                            .map(|s| s.trim().is_empty())
+                            .unwrap_or(true)
+                    {
                         let kind = NodeKind::Resource {
                             connector: connector.to_string(),
                             collection: collection.to_string(),
@@ -3118,11 +3133,7 @@ mod flush_promotion {
             self.writes.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
-        async fn create_resource(
-            &self,
-            _: &str,
-            _: &[u8],
-        ) -> anyhow::Result<ResourceMeta> {
+        async fn create_resource(&self, _: &str, _: &[u8]) -> anyhow::Result<ResourceMeta> {
             self.creates.fetch_add(1, Ordering::SeqCst);
             Ok(ResourceMeta {
                 id: "new-123".into(),
@@ -3181,15 +3192,31 @@ mod flush_promotion {
         vfs.write(node_id, 0, b"# My Issue\n").unwrap();
         vfs.flush(&handle, node_id).unwrap();
 
-        assert_eq!(conn.creates.load(Ordering::SeqCst), 1, "first flush must POST");
-        assert_eq!(conn.writes.load(Ordering::SeqCst), 0, "no PATCH on first flush");
+        assert_eq!(
+            conn.creates.load(Ordering::SeqCst),
+            1,
+            "first flush must POST"
+        );
+        assert_eq!(
+            conn.writes.load(Ordering::SeqCst),
+            0,
+            "no PATCH on first flush"
+        );
 
         // Second write + flush → must PATCH (write_resource), not create again
         vfs.write(node_id, 0, b"# Updated\n").unwrap();
         vfs.flush(&handle, node_id).unwrap();
 
-        assert_eq!(conn.creates.load(Ordering::SeqCst), 1, "create_resource must not fire again");
-        assert_eq!(conn.writes.load(Ordering::SeqCst), 1, "second flush must PATCH");
+        assert_eq!(
+            conn.creates.load(Ordering::SeqCst),
+            1,
+            "create_resource must not fire again"
+        );
+        assert_eq!(
+            conn.writes.load(Ordering::SeqCst),
+            1,
+            "second flush must PATCH"
+        );
     }
 
     /// Writing to a resource that already exists in the API must PATCH, never POST.
@@ -3230,7 +3257,15 @@ mod flush_promotion {
         vfs.write(attr.id, 0, b"# Edited\n").unwrap();
         vfs.flush(&handle, attr.id).unwrap();
 
-        assert_eq!(conn.creates.load(Ordering::SeqCst), 0, "must not POST for existing resource");
-        assert_eq!(conn.writes.load(Ordering::SeqCst), 1, "must PATCH existing resource");
+        assert_eq!(
+            conn.creates.load(Ordering::SeqCst),
+            0,
+            "must not POST for existing resource"
+        );
+        assert_eq!(
+            conn.writes.load(Ordering::SeqCst),
+            1,
+            "must PATCH existing resource"
+        );
     }
 }

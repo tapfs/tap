@@ -44,12 +44,15 @@ fn markdown_to_json(content: &[u8], coll: &CollectionSpec) -> Result<Value> {
         // YAML frontmatter
         let after_open = &text[3..];
         let (fm_text, body_text) = if let Some(pos) = after_open.find("\n---") {
-            (&after_open[..pos], after_open[pos + 4..].trim_start_matches('\n'))
+            (
+                &after_open[..pos],
+                after_open[pos + 4..].trim_start_matches('\n'),
+            )
         } else {
             (after_open, "")
         };
-        let fm: serde_json::Map<String, Value> = serde_yaml::from_str(fm_text)
-            .context("failed to parse YAML frontmatter")?;
+        let fm: serde_json::Map<String, Value> =
+            serde_yaml::from_str(fm_text).context("failed to parse YAML frontmatter")?;
         map.extend(fm);
         // Strip tapfs-managed fields (_draft, _id, _version) — never send to API
         map.retain(|k, _| !k.starts_with('_'));
