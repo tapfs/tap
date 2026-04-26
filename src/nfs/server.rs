@@ -44,12 +44,15 @@ impl TapNfs {
                 })
                 .unwrap_or_else(|_| Self::now_nfstime())
         } else {
-            Self::now_nfstime()
+            nfstime3 { seconds: 0, nseconds: 0 }
         };
 
         fattr3 {
             ftype,
-            mode: attr.perm as u32,
+            mode: match attr.file_type {
+                VfsFileType::Directory => (libc::S_IFDIR as u32) | (attr.perm as u32),
+                VfsFileType::RegularFile => (libc::S_IFREG as u32) | (attr.perm as u32),
+            },
             nlink: if attr.file_type == VfsFileType::Directory {
                 2
             } else {
@@ -149,9 +152,16 @@ impl NFSFileSystem for TapNfs {
     }
 
     async fn write(&self, id: fileid3, offset: u64, data: &[u8]) -> Result<fattr3, nfsstat3> {
-        self.vfs
-            .write(id, offset, data)
-            .map_err(Self::vfs_err_to_nfs)?;
+        let vfs = Arc::clone(&self.vfs);
+        let rt = self.rt.clone();
+        let data_owned = data.to_vec();
+        tokio::task::spawn_blocking(move || {
+            vfs.write(id, offset, &data_owned)
+                .and_then(|_| vfs.flush(&rt, id))
+        })
+        .await
+        .map_err(|_| nfsstat3::NFS3ERR_IO)?
+        .map_err(Self::vfs_err_to_nfs)?;
         self.getattr(id).await
     }
 
@@ -278,5 +288,103 @@ impl NFSFileSystem for TapNfs {
 
     async fn readlink(&self, _id: fileid3) -> Result<nfspath3, nfsstat3> {
         Err(nfsstat3::NFS3ERR_NOTSUPP)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vfs::types::{VfsAttr, VfsFileType};
+
+    fn dummy_tapnfs() -> TapNfs {
+        // Minimal construction just to call vfs_attr_to_fattr.
+        // The vfs field is never accessed in these tests.
+        use crate::connector::registry::ConnectorRegistry;
+        use crate::cache::store::Cache;
+        use crate::draft::store::DraftStore;
+        use crate::governance::audit::AuditLogger;
+        use crate::version::store::VersionStore;
+        use std::time::Duration;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = Arc::new(ConnectorRegistry::new());
+        let cache = Arc::new(Cache::new(Duration::from_secs(60)));
+        let drafts = Arc::new(DraftStore::new(tmp.path().join("d")).unwrap());
+        let versions = Arc::new(VersionStore::new(tmp.path().join("v")).unwrap());
+        let audit = Arc::new(AuditLogger::new(tmp.path().join("a.log")).unwrap());
+        let vfs = Arc::new(
+            crate::vfs::core::VirtualFs::new(registry, cache, drafts, versions, audit),
+        );
+        TapNfs {
+            vfs,
+            rt: tokio::runtime::Handle::current(),
+            uid: 0,
+            gid: 0,
+        }
+    }
+
+    /// vfs_attr_to_fattr must include S_IFDIR / S_IFREG in the mode field.
+    /// Without these bits macOS NFS client misidentifies file types and
+    /// returns EPERM when re-validating directory attributes.
+    #[test]
+    fn mode_includes_file_type_bits() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = rt.enter();
+        let nfs = dummy_tapnfs();
+
+        let dir_attr = VfsAttr {
+            id: 1,
+            size: 0,
+            file_type: VfsFileType::Directory,
+            perm: 0o755,
+            mtime: None,
+        };
+        let fattr = nfs.vfs_attr_to_fattr(&dir_attr);
+        assert_eq!(
+            fattr.mode,
+            (libc::S_IFDIR as u32) | 0o755,
+            "directory mode must contain S_IFDIR"
+        );
+
+        let file_attr = VfsAttr {
+            id: 2,
+            size: 100,
+            file_type: VfsFileType::RegularFile,
+            perm: 0o644,
+            mtime: None,
+        };
+        let fattr = nfs.vfs_attr_to_fattr(&file_attr);
+        assert_eq!(
+            fattr.mode,
+            (libc::S_IFREG as u32) | 0o644,
+            "regular file mode must contain S_IFREG"
+        );
+    }
+
+    /// Nodes with no real mtime must emit epoch-0, not the current wall clock.
+    /// A changing mtime causes macOS NFS client to re-validate aggressively,
+    /// eventually triggering a strict mode-bit check and returning EPERM.
+    #[test]
+    fn stable_mtime_for_nodes_without_mtime() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = rt.enter();
+        let nfs = dummy_tapnfs();
+
+        let attr = VfsAttr {
+            id: 1,
+            size: 0,
+            file_type: VfsFileType::Directory,
+            perm: 0o755,
+            mtime: None,
+        };
+        let fattr = nfs.vfs_attr_to_fattr(&attr);
+        assert_eq!(fattr.mtime.seconds, 0, "mtime must be epoch-0 when node has no real mtime");
+        assert_eq!(fattr.mtime.nseconds, 0);
     }
 }
