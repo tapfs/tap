@@ -44,7 +44,10 @@ impl TapNfs {
                 })
                 .unwrap_or_else(|_| Self::now_nfstime())
         } else {
-            nfstime3 { seconds: 0, nseconds: 0 }
+            nfstime3 {
+                seconds: 0,
+                nseconds: 0,
+            }
         };
 
         fattr3 {
@@ -299,8 +302,8 @@ mod tests {
     fn dummy_tapnfs() -> TapNfs {
         // Minimal construction just to call vfs_attr_to_fattr.
         // The vfs field is never accessed in these tests.
-        use crate::connector::registry::ConnectorRegistry;
         use crate::cache::store::Cache;
+        use crate::connector::registry::ConnectorRegistry;
         use crate::draft::store::DraftStore;
         use crate::governance::audit::AuditLogger;
         use crate::version::store::VersionStore;
@@ -312,9 +315,9 @@ mod tests {
         let drafts = Arc::new(DraftStore::new(tmp.path().join("d")).unwrap());
         let versions = Arc::new(VersionStore::new(tmp.path().join("v")).unwrap());
         let audit = Arc::new(AuditLogger::new(tmp.path().join("a.log")).unwrap());
-        let vfs = Arc::new(
-            crate::vfs::core::VirtualFs::new(registry, cache, drafts, versions, audit),
-        );
+        let vfs = Arc::new(crate::vfs::core::VirtualFs::new(
+            registry, cache, drafts, versions, audit,
+        ));
         TapNfs {
             vfs,
             rt: tokio::runtime::Handle::current(),
@@ -384,7 +387,10 @@ mod tests {
             mtime: None,
         };
         let fattr = nfs.vfs_attr_to_fattr(&attr);
-        assert_eq!(fattr.mtime.seconds, 0, "mtime must be epoch-0 when node has no real mtime");
+        assert_eq!(
+            fattr.mtime.seconds, 0,
+            "mtime must be epoch-0 when node has no real mtime"
+        );
         assert_eq!(fattr.mtime.nseconds, 0);
     }
 }
