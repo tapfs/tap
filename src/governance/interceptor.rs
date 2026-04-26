@@ -108,6 +108,62 @@ impl Connector for AuditedConnector {
         }
     }
 
+    async fn create_resource(&self, collection: &str, content: &[u8]) -> Result<ResourceMeta> {
+        let connector_name = self.inner.name().to_string();
+        match self.inner.create_resource(collection, content).await {
+            Ok(meta) => {
+                let _ = self.audit.record(
+                    "create",
+                    &connector_name,
+                    Some(collection),
+                    Some(&meta.id),
+                    "success",
+                    Some(format!("{} bytes", content.len())),
+                );
+                Ok(meta)
+            }
+            Err(e) => {
+                let _ = self.audit.record(
+                    "create",
+                    &connector_name,
+                    Some(collection),
+                    None,
+                    "error",
+                    Some(e.to_string()),
+                );
+                Err(e)
+            }
+        }
+    }
+
+    async fn delete_resource(&self, collection: &str, id: &str) -> Result<()> {
+        let connector_name = self.inner.name().to_string();
+        match self.inner.delete_resource(collection, id).await {
+            Ok(()) => {
+                let _ = self.audit.record(
+                    "delete",
+                    &connector_name,
+                    Some(collection),
+                    Some(id),
+                    "success",
+                    None,
+                );
+                Ok(())
+            }
+            Err(e) => {
+                let _ = self.audit.record(
+                    "delete",
+                    &connector_name,
+                    Some(collection),
+                    Some(id),
+                    "error",
+                    Some(e.to_string()),
+                );
+                Err(e)
+            }
+        }
+    }
+
     async fn write_resource(&self, collection: &str, id: &str, content: &[u8]) -> Result<()> {
         let connector_name = self.inner.name().to_string();
         match self.inner.write_resource(collection, id, content).await {

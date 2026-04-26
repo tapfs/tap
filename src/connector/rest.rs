@@ -10,6 +10,71 @@ use crate::connector::traits::{CollectionInfo, Connector, Resource, ResourceMeta
 
 const MAX_ERROR_BODY_LEN: usize = 512;
 
+/// Convert user-written markdown into the JSON object expected by the API.
+///
+/// Uses the collection spec to know which field is the title and which is the
+/// body, so field names are never hardcoded (GitHub uses "body", others use
+/// "description", "content", etc.).
+///
+/// Supported input formats:
+///   1. YAML frontmatter (`---` … `---`) — each key/value becomes a JSON field;
+///      text after the closing `---` goes into `render.body` field.
+///   2. Plain markdown — a leading `# Heading` line becomes `title_field`;
+///      everything else becomes `render.body` field.
+///   3. Raw JSON — returned as-is so callers that already produce JSON keep working.
+fn markdown_to_json(content: &[u8], coll: &CollectionSpec) -> Result<Value> {
+    let body_field = coll
+        .render
+        .as_ref()
+        .and_then(|r| r.body.as_deref())
+        .unwrap_or("body");
+    let title_field = coll.title_field.as_deref().unwrap_or("title");
+
+    let text = std::str::from_utf8(content).context("content is not valid UTF-8")?;
+
+    // Raw JSON — pass through.
+    let trimmed = text.trim_start();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        return serde_json::from_str(trimmed).context("failed to parse content as JSON");
+    }
+
+    let mut map = serde_json::Map::new();
+
+    if text.starts_with("---") {
+        // YAML frontmatter
+        let after_open = &text[3..];
+        let (fm_text, body_text) = if let Some(pos) = after_open.find("\n---") {
+            (&after_open[..pos], after_open[pos + 4..].trim_start_matches('\n'))
+        } else {
+            (after_open, "")
+        };
+        let fm: serde_json::Map<String, Value> = serde_yaml::from_str(fm_text)
+            .context("failed to parse YAML frontmatter")?;
+        map.extend(fm);
+        // Strip tapfs-managed fields (_draft, _id, _version) — never send to API
+        map.retain(|k, _| !k.starts_with('_'));
+        if !body_text.is_empty() {
+            map.insert(body_field.to_string(), Value::String(body_text.to_string()));
+        }
+    } else {
+        // Plain markdown — first `# ` line is title, rest is body.
+        let mut lines = text.splitn(2, '\n');
+        let first = lines.next().unwrap_or("").trim();
+        let rest = lines.next().unwrap_or("").trim_start_matches('\n');
+        let title = first.trim_start_matches('#').trim();
+        if !title.is_empty() {
+            map.insert(title_field.to_string(), Value::String(title.to_string()));
+        }
+        if !rest.is_empty() {
+            map.insert(body_field.to_string(), Value::String(rest.to_string()));
+        }
+        // Strip tapfs-managed fields (_draft, _id, _version) — never send to API
+        map.retain(|k, _| !k.starts_with('_'));
+    }
+
+    Ok(Value::Object(map))
+}
+
 fn truncate_error_body(body: &str) -> &str {
     if body.len() <= MAX_ERROR_BODY_LEN {
         body
@@ -756,22 +821,7 @@ impl Connector for RestConnector {
         let path = Self::substitute_id(endpoint, &resolved_id);
         let url = self.url(&path);
 
-        // Parse the incoming content as JSON.  If the content looks like
-        // Markdown with YAML frontmatter (starts with "---"), attempt to
-        // extract the JSON code block; otherwise treat the whole body as JSON.
-        let body_json: Value = if content.starts_with(b"---") {
-            // Try to find a ```json code block and parse that
-            let text = std::str::from_utf8(content).context("content is not valid UTF-8")?;
-            let json_block = text
-                .split("```json")
-                .nth(1)
-                .and_then(|after| after.split("```").next())
-                .unwrap_or(text);
-            serde_json::from_str(json_block.trim())
-                .context("failed to parse JSON from markdown content")?
-        } else {
-            serde_json::from_slice(content).context("failed to parse content as JSON")?
-        };
+        let body_json = markdown_to_json(content, coll)?;
 
         let response = self
             .send_with_retry(|| self.client.patch(&url).json(&body_json))
@@ -800,21 +850,7 @@ impl Connector for RestConnector {
         let clean_endpoint = endpoint.split('?').next().unwrap_or(endpoint);
         let url = self.url(clean_endpoint);
 
-        // Parse the incoming content as JSON.  If the content looks like
-        // Markdown with YAML frontmatter (starts with "---"), attempt to
-        // extract the JSON code block; otherwise treat the whole body as JSON.
-        let body_json: Value = if content.starts_with(b"---") {
-            let text = std::str::from_utf8(content).context("content is not valid UTF-8")?;
-            let json_block = text
-                .split("```json")
-                .nth(1)
-                .and_then(|after| after.split("```").next())
-                .unwrap_or(text);
-            serde_json::from_str(json_block.trim())
-                .context("failed to parse JSON from markdown content")?
-        } else {
-            serde_json::from_slice(content).context("failed to parse content as JSON")?
-        };
+        let body_json = markdown_to_json(content, coll)?;
 
         let response = self
             .send_with_retry(|| self.client.post(&url).json(&body_json))

@@ -3,6 +3,7 @@
 //! Contains ALL the filesystem logic previously in `fs/ops.rs`, but using
 //! VFS types instead of fuser types.  This module has ZERO dependency on fuser.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -16,6 +17,205 @@ use crate::governance::audit::AuditLogger;
 use crate::version::store::VersionStore;
 
 use super::types::*;
+
+// ---------------------------------------------------------------------------
+// tapfs frontmatter helpers
+// ---------------------------------------------------------------------------
+
+struct TapfsMeta {
+    draft: bool,
+    id: Option<String>,
+    version: Option<u32>,
+}
+
+fn parse_tapfs_meta(data: &[u8]) -> TapfsMeta {
+    let text = match std::str::from_utf8(data) {
+        Ok(t) => t,
+        Err(_) => return TapfsMeta { draft: false, id: None, version: None },
+    };
+
+    if !text.starts_with("---") {
+        return TapfsMeta { draft: false, id: None, version: None };
+    }
+
+    let after_open = &text[3..];
+    let fm_text = if let Some(pos) = after_open.find("\n---") {
+        &after_open[..pos]
+    } else {
+        return TapfsMeta { draft: false, id: None, version: None };
+    };
+
+    let mut draft = false;
+    let mut id: Option<String> = None;
+    let mut version: Option<u32> = None;
+
+    for line in fm_text.lines() {
+        let line = line.trim();
+        if let Some(val) = line.strip_prefix("_draft:") {
+            let v = val.trim();
+            draft = v == "true";
+        } else if let Some(val) = line.strip_prefix("_id:") {
+            let v = val.trim().trim_matches('"').trim_matches('\'');
+            if !v.is_empty() {
+                id = Some(v.to_string());
+            }
+        } else if let Some(val) = line.strip_prefix("_version:") {
+            let v = val.trim();
+            if let Ok(n) = v.parse::<u32>() {
+                version = Some(n);
+            }
+        }
+    }
+
+    TapfsMeta { draft, id, version }
+}
+
+fn strip_tapfs_fields(data: &[u8]) -> Vec<u8> {
+    let text = match std::str::from_utf8(data) {
+        Ok(t) => t,
+        Err(_) => return data.to_vec(),
+    };
+
+    if !text.starts_with("---") {
+        return data.to_vec();
+    }
+
+    let after_open = &text[3..];
+    let close_pos = match after_open.find("\n---") {
+        Some(p) => p,
+        None => return data.to_vec(),
+    };
+
+    let fm_text = &after_open[..close_pos];
+    let body = &after_open[close_pos + 4..];
+
+    let filtered: Vec<&str> = fm_text
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !trimmed.starts_with("_draft:")
+                && !trimmed.starts_with("_id:")
+                && !trimmed.starts_with("_version:")
+        })
+        .collect();
+
+    let new_fm = filtered.join("\n");
+    if new_fm.trim().is_empty() {
+        // All frontmatter was tapfs fields — collapse to just body
+        let result = format!("---\n---{}", body);
+        result.into_bytes()
+    } else {
+        let result = format!("---\n{}\n---{}", new_fm, body);
+        result.into_bytes()
+    }
+}
+
+fn inject_tapfs_fields(data: &[u8], id: &str, version: u32) -> Vec<u8> {
+    let text = match std::str::from_utf8(data) {
+        Ok(t) => t,
+        Err(_) => return data.to_vec(),
+    };
+
+    if !text.starts_with("---") {
+        // No frontmatter — prepend one
+        let result = format!(
+            "---\n_id: {}\n_version: {}\n---\n{}",
+            id, version, text
+        );
+        return result.into_bytes();
+    }
+
+    let after_open = &text[3..];
+    let close_pos = match after_open.find("\n---") {
+        Some(p) => p,
+        None => {
+            let result = format!("---\n_id: {}\n_version: {}\n---\n{}", id, version, text);
+            return result.into_bytes();
+        }
+    };
+
+    let fm_text = &after_open[..close_pos];
+    let body = &after_open[close_pos + 4..];
+
+    // Remove old tapfs fields and _draft, then append updated values
+    let mut lines: Vec<&str> = fm_text
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !trimmed.starts_with("_draft:")
+                && !trimmed.starts_with("_id:")
+                && !trimmed.starts_with("_version:")
+        })
+        .collect();
+
+    lines.push(&""); // placeholder to trigger join separator trick
+    let mut new_fm = lines[..lines.len() - 1].join("\n");
+    if !new_fm.is_empty() && !new_fm.ends_with('\n') {
+        new_fm.push('\n');
+    }
+    new_fm.push_str(&format!("_id: {}\n_version: {}", id, version));
+
+    let result = format!("---\n{}\n---{}", new_fm, body);
+    result.into_bytes()
+}
+
+// ---------------------------------------------------------------------------
+// SlugMap — api_id → user_slug persistence
+// ---------------------------------------------------------------------------
+
+/// Maps api_id → user_slug for readdir display. Persisted to disk.
+struct SlugMap {
+    /// key: "connector/collection/api_id" → user_slug filename stem
+    inner: DashMap<String, String>,
+    path: PathBuf,
+}
+
+impl SlugMap {
+    fn load(path: PathBuf) -> Self {
+        let inner = DashMap::new();
+        if path.exists() {
+            if let Ok(bytes) = std::fs::read(&path) {
+                if let Ok(map) =
+                    serde_json::from_slice::<std::collections::HashMap<String, String>>(&bytes)
+                {
+                    for (k, v) in map {
+                        inner.insert(k, v);
+                    }
+                }
+            }
+        }
+        Self { inner, path }
+    }
+
+    fn insert(&self, connector: &str, collection: &str, api_id: &str, user_slug: &str) {
+        self.inner.insert(
+            format!("{}/{}/{}", connector, collection, api_id),
+            user_slug.to_string(),
+        );
+        self.save();
+    }
+
+    fn get_user_slug(&self, connector: &str, collection: &str, api_id: &str) -> Option<String> {
+        self.inner
+            .get(&format!("{}/{}/{}", connector, collection, api_id))
+            .map(|v| v.clone())
+    }
+
+    fn save(&self) {
+        let map: std::collections::HashMap<String, String> = self
+            .inner
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect();
+        if let Ok(json) = serde_json::to_string(&map) {
+            // Atomic write: temp file then rename
+            let tmp = self.path.with_extension("tmp");
+            if std::fs::write(&tmp, &json).is_ok() {
+                let _ = std::fs::rename(&tmp, &self.path);
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Node table
@@ -164,6 +364,9 @@ pub struct VirtualFs {
     pub drafts: Arc<DraftStore>,
     pub versions: Arc<VersionStore>,
     pub audit: Arc<AuditLogger>,
+    /// Maps api_id → user_slug for readdir display. Persisted to disk so that
+    /// renames survive restarts.
+    slug_map: Arc<SlugMap>,
     /// In-memory write buffers, keyed by inode ID. Flushed to draft store on
     /// flush/release so that small, repeated FUSE `write()` calls (e.g. 4 KB
     /// chunks) accumulate in RAM instead of doing O(n^2) read-modify-write
@@ -194,6 +397,7 @@ impl VirtualFs {
             drafts,
             versions,
             audit,
+            slug_map: Arc::new(SlugMap::load(PathBuf::from("/dev/null"))),
             write_buffers: DashMap::new(),
             resource_mtimes: DashMap::new(),
             content_lengths: DashMap::new(),
@@ -204,6 +408,12 @@ impl VirtualFs {
     /// `Arc::new(VirtualFs::new(...).with_disk_cache(...))`.
     pub fn with_disk_cache(mut self, disk: Arc<DiskCache>) -> Self {
         self.disk_cache = Some(disk);
+        self
+    }
+
+    /// Attach a persistent slug map. Returns `self` for chaining.
+    pub fn with_slug_map(mut self, path: PathBuf) -> Self {
+        self.slug_map = Arc::new(SlugMap::load(path));
         self
     }
 
@@ -583,8 +793,26 @@ impl VirtualFs {
                 // Allow creating .md files directly — buffer as a draft.
                 // Auto-promote happens on flush/release.
                 if !self.drafts.has_draft(&connector, &collection, &slug) {
+                    // If resource already exists in API (listing cache), inject
+                    // its _id so flush uses write_resource (PATCH) not create_resource.
+                    let api_id = {
+                        let listing_key = format!("{}/{}", connector, collection);
+                        self.cache
+                            .get_metadata(&listing_key)
+                            .and_then(|metas| {
+                                metas
+                                    .into_iter()
+                                    .find(|m| m.slug == slug || m.id == slug)
+                                    .map(|m| m.id)
+                            })
+                    };
+                    let template: Vec<u8> = if let Some(ref id) = api_id {
+                        format!("---\n_id: {}\n_version: 0\n---\n\n", id).into_bytes()
+                    } else {
+                        b"---\n_draft: true\n_id:\n_version:\n---\n\n".to_vec()
+                    };
                     self.drafts
-                        .create_draft(&connector, &collection, &slug, &[])
+                        .create_draft(&connector, &collection, &slug, &template)
                         .map_err(|e| VfsError::IoError(e.to_string()))?;
                 }
                 let _ = self.audit.record(
@@ -630,88 +858,21 @@ impl VirtualFs {
     /// Rename (promote draft to live).
     pub fn rename(
         &self,
-        rt: &tokio::runtime::Handle,
+        _rt: &tokio::runtime::Handle,
         parent_id: u64,
-        old_name: &str,
+        _old_name: &str,
         new_parent_id: u64,
-        new_name: &str,
+        _new_name: &str,
     ) -> Result<(), VfsError> {
         if parent_id != new_parent_id {
             return Err(VfsError::CrossDevice);
         }
 
         let parent_kind = self.nodes.get(parent_id).ok_or(VfsError::NotFound)?;
-        let (connector, collection) = match &parent_kind {
-            NodeKind::Collection {
-                connector,
-                collection,
-            } => (connector.clone(), collection.clone()),
+        match &parent_kind {
+            NodeKind::Collection { .. } => {}
             _ => return Err(VfsError::PermissionDenied),
         };
-
-        let (old_slug, old_variant) = parse_resource_filename(old_name)?;
-        let (new_slug, new_variant) = parse_resource_filename(new_name)?;
-
-        // The main use case: draft -> live (promote).
-        if old_variant == ResourceVariant::Draft
-            && new_variant == ResourceVariant::Live
-            && old_slug == new_slug
-        {
-            let data = self
-                .drafts
-                .read_draft(&connector, &collection, &old_slug)
-                .map_err(|e| VfsError::IoError(e.to_string()))?
-                .ok_or(VfsError::NotFound)?;
-
-            // Push to API.
-            let conn = self.registry.get(&connector).ok_or(VfsError::NotFound)?;
-            rt.block_on(conn.write_resource(&collection, &old_slug, &data))
-                .map_err(|e| {
-                    tracing::error!("promote write_resource error: {}", e);
-                    let _ = self.audit.record(
-                        "promote",
-                        &connector,
-                        Some(&collection),
-                        Some(&old_slug),
-                        "error",
-                        Some(e.to_string()),
-                    );
-                    VfsError::IoError(e.to_string())
-                })?;
-
-            // Record a version snapshot.
-            let _ = self
-                .versions
-                .save_snapshot(&connector, &collection, &old_slug, &data);
-
-            // Remove the draft.
-            let _ = self.drafts.delete_draft(&connector, &collection, &old_slug);
-
-            // Invalidate the cache so the next read fetches the updated resource.
-            self.invalidate_resource_cache(&connector, &collection, &old_slug);
-
-            // Remove the draft node.
-            let draft_kind = NodeKind::Resource {
-                connector: connector.clone(),
-                collection: collection.clone(),
-                resource: old_slug.clone(),
-                variant: ResourceVariant::Draft,
-            };
-            if let Some(draft_id) = self.nodes.lookup(&draft_kind) {
-                self.nodes.remove(draft_id);
-            }
-
-            let _ = self.audit.record(
-                "promote",
-                &connector,
-                Some(&collection),
-                Some(&old_slug),
-                "success",
-                None,
-            );
-
-            return Ok(());
-        }
 
         Err(VfsError::NotSupported)
     }
@@ -784,6 +945,42 @@ impl VirtualFs {
                 );
             }
             ResourceVariant::Live => {
+                // Determine the API id from frontmatter if a draft exists locally.
+                let api_id = if self.drafts.has_draft(&connector, &collection, &slug) {
+                    if let Ok(Some(data)) =
+                        self.drafts.read_draft(&connector, &collection, &slug)
+                    {
+                        let meta = parse_tapfs_meta(&data);
+                        if meta.id.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+                            // Never posted to API — just remove the local draft.
+                            let _ = self.drafts.delete_draft(&connector, &collection, &slug);
+                            let _ = self.audit.record(
+                                "delete",
+                                &connector,
+                                Some(&collection),
+                                Some(&slug),
+                                "success",
+                                Some("local-only draft removed (never posted)".to_string()),
+                            );
+                            let kind = NodeKind::Resource {
+                                connector,
+                                collection,
+                                resource: slug,
+                                variant,
+                            };
+                            if let Some(id) = self.nodes.lookup(&kind) {
+                                self.nodes.remove(id);
+                            }
+                            return Ok(());
+                        }
+                        meta.id
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
                 // Check if the connector supports delete via the spec.
                 let spec = self.registry.get_spec(&connector);
                 let supports_delete = spec
@@ -793,11 +990,14 @@ impl VirtualFs {
                     .unwrap_or(false);
 
                 if !supports_delete {
+                    // Clean up local draft even when API delete is unsupported.
+                    let _ = self.drafts.delete_draft(&connector, &collection, &slug);
                     return Err(VfsError::PermissionDenied);
                 }
 
+                let delete_id = api_id.as_deref().unwrap_or(&slug);
                 let conn = self.registry.get(&connector).ok_or(VfsError::NotFound)?;
-                rt.block_on(conn.delete_resource(&collection, &slug))
+                rt.block_on(conn.delete_resource(&collection, delete_id))
                     .map_err(|e| {
                         tracing::error!("delete_resource error: {}", e);
                         let _ = self.audit.record(
@@ -811,6 +1011,7 @@ impl VirtualFs {
                         VfsError::IoError(e.to_string())
                     })?;
 
+                let _ = self.drafts.delete_draft(&connector, &collection, &slug);
                 self.invalidate_resource_cache(&connector, &collection, &slug);
 
                 let _ = self.audit.record(
@@ -906,8 +1107,50 @@ impl VirtualFs {
                     ResourceVariant::Lock => lock_slug(resource),
                     _ => resource.clone(),
                 };
+
+                // For Live resources: if the existing draft has _id/_version
+                // set (written after a previous flush/promote) and the incoming
+                // write buffer doesn't carry _id, re-inject it so we don't
+                // lose track of the API id across multi-packet writes.
+                let to_write = if matches!(variant, ResourceVariant::Live) {
+                    let existing_meta = self
+                        .drafts
+                        .read_draft(connector, collection, &slug)
+                        .ok()
+                        .flatten()
+                        .map(|d| parse_tapfs_meta(&d));
+                    let new_meta = parse_tapfs_meta(&buf);
+                    if let Some(ex) = existing_meta {
+                        if let Some(ref existing_id) = ex.id {
+                            if !existing_id.trim().is_empty()
+                                && new_meta
+                                    .id
+                                    .as_ref()
+                                    .map(|s| s.trim().is_empty())
+                                    .unwrap_or(true)
+                            {
+                                // Carry forward _id/_version so next flush
+                                // uses write_resource instead of create_resource
+                                inject_tapfs_fields(
+                                    &buf,
+                                    existing_id,
+                                    ex.version.unwrap_or(0),
+                                )
+                            } else {
+                                buf
+                            }
+                        } else {
+                            buf
+                        }
+                    } else {
+                        buf
+                    }
+                } else {
+                    buf
+                };
+
                 self.drafts
-                    .write_draft(connector, collection, &slug, &buf)
+                    .write_draft(connector, collection, &slug, &to_write)
                     .map_err(|e| VfsError::IoError(e.to_string()))?;
             } else if let NodeKind::TxResource {
                 connector,
@@ -938,22 +1181,26 @@ impl VirtualFs {
                     .map_err(|e| VfsError::IoError(e.to_string()))?
                     .ok_or(VfsError::NotFound)?;
 
+                let tapfs_meta = parse_tapfs_meta(&data);
+
+                // _draft: true means user hasn't published yet — keep local, no API call
+                if tapfs_meta.draft {
+                    return Ok(());
+                }
+
                 let conn = self.registry.get(connector).ok_or(VfsError::NotFound)?;
+                let clean_data = strip_tapfs_fields(&data);
 
-                // Determine if this is a new resource (created locally, never
-                // fetched from the API) or an existing one being updated.
-                let cache_key = format!("{}/{}/{}", connector, collection, resource);
-                let is_new = self.cache.get_resource(&cache_key).is_none()
-                    && self
-                        .disk_cache
-                        .as_ref()
-                        .and_then(|d| d.get(connector, collection, resource))
-                        .is_none();
+                // is_new: _id absent/empty means never been to the API
+                let is_new = tapfs_meta
+                    .id
+                    .as_ref()
+                    .map(|s| s.trim().is_empty())
+                    .unwrap_or(true);
 
-                if is_new {
-                    // New resource — POST to create.
-                    match rt.block_on(conn.create_resource(collection, &data)) {
-                        Ok(_meta) => {
+                let api_id = if is_new {
+                    match rt.block_on(conn.create_resource(collection, &clean_data)) {
+                        Ok(meta) => {
                             let _ = self.audit.record(
                                 "create",
                                 connector,
@@ -962,15 +1209,11 @@ impl VirtualFs {
                                 "success",
                                 Some(format!("{} bytes posted to API on close", data.len())),
                             );
-                            tracing::info!(
-                                connector = %connector,
-                                resource = %resource,
-                                "created new resource via API on close"
-                            );
+                            let listing_key = format!("{}/{}", connector, collection);
+                            self.cache.invalidate(&listing_key);
+                            meta.id
                         }
                         Err(e) => {
-                            // If create is not supported, fall back to write
-                            // (PATCH) so existing behaviour is preserved.
                             if e.downcast_ref::<crate::connector::traits::ConnectorError>()
                                 .is_some_and(|ce| {
                                     matches!(
@@ -979,11 +1222,9 @@ impl VirtualFs {
                                     )
                                 })
                             {
-                                rt.block_on(conn.write_resource(collection, resource, &data))
-                                    .map_err(|e| {
-                                        tracing::error!("auto-promote error: {}", e);
-                                        VfsError::IoError(e.to_string())
-                                    })?;
+                                rt.block_on(conn.write_resource(collection, resource, &clean_data))
+                                    .map_err(|e| VfsError::IoError(e.to_string()))?;
+                                resource.to_string()
                             } else {
                                 tracing::error!("create_resource error: {}", e);
                                 return Err(VfsError::IoError(e.to_string()));
@@ -991,20 +1232,55 @@ impl VirtualFs {
                         }
                     }
                 } else {
-                    // Existing resource — PATCH to update.
-                    rt.block_on(conn.write_resource(collection, resource, &data))
+                    let id = tapfs_meta.id.as_deref().unwrap();
+                    rt.block_on(conn.write_resource(collection, id, &clean_data))
                         .map_err(|e| {
-                            tracing::error!("auto-promote error: {}", e);
+                            tracing::error!("write_resource error: {}", e);
                             VfsError::IoError(e.to_string())
                         })?;
+                    let _ = self.audit.record(
+                        "write",
+                        connector,
+                        Some(collection),
+                        Some(resource),
+                        "success",
+                        Some(format!("{} bytes", data.len())),
+                    );
+                    id.to_string()
+                };
+
+                // Write _id and _version back into the draft so subsequent
+                // flushes treat the resource as existing and use write_resource.
+                let new_version = tapfs_meta.version.unwrap_or(0) + 1;
+                let updated = inject_tapfs_fields(&data, &api_id, new_version);
+                let _ = self
+                    .drafts
+                    .write_draft(connector, collection, resource, &updated);
+
+                // Populate in-memory cache so the next flush uses write_resource.
+                let cache_key = format!("{}/{}/{}", connector, collection, resource);
+                self.cache.put_resource(
+                    &cache_key,
+                    crate::cache::store::Resource {
+                        data: bytes::Bytes::from(clean_data.clone()),
+                        raw_json: None,
+                    },
+                );
+
+                // Store in slug map for readdir display
+                if api_id != *resource {
+                    self.slug_map.insert(connector, collection, &api_id, resource);
                 }
 
-                // Snapshot + cleanup
                 let _ = self
                     .versions
-                    .save_snapshot(connector, collection, resource, &data);
-                let _ = self.drafts.delete_draft(connector, collection, resource);
+                    .save_snapshot(connector, collection, resource, &clean_data);
                 self.invalidate_resource_cache(connector, collection, resource);
+
+                // Bump mtime so the NFS client invalidates its attribute cache
+                // and re-reads the file (which now contains _id/_version).
+                let now_ts = chrono::Utc::now().to_rfc3339();
+                self.resource_mtimes.insert(id, now_ts);
 
                 let _ = self.audit.record(
                     "auto-promote",
@@ -1013,12 +1289,6 @@ impl VirtualFs {
                     Some(resource),
                     "success",
                     Some(format!("{} bytes pushed to API on close", data.len())),
-                );
-
-                tracing::info!(
-                    connector = %connector,
-                    resource = %resource,
-                    "auto-promoted live file on close"
                 );
             }
         }
@@ -1407,6 +1677,17 @@ impl VirtualFs {
             return Ok(kind);
         }
 
+        // Also surface locally-created resources that have a pending draft
+        // (e.g. _draft: true files not yet pushed to API)
+        if self.drafts.has_draft(connector, collection, &slug) {
+            return Ok(NodeKind::Resource {
+                connector: connector.to_string(),
+                collection: collection.to_string(),
+                resource: slug,
+                variant: ResourceVariant::Live,
+            });
+        }
+
         Err(VfsError::NotFound)
     }
 
@@ -1429,6 +1710,11 @@ impl VirtualFs {
                     .unwrap_or(0)
             }
             ResourceVariant::Live => {
+                // Draft store is authoritative: if a draft exists it's what
+                // read_resource_data() will serve, so its size must match.
+                if let Some(sz) = self.drafts.draft_size(connector, collection, resource) {
+                    return sz;
+                }
                 let cache_key = format!("{}/{}/{}", connector, collection, resource);
                 if let Some(cached) = self.cache.get_resource(&cache_key) {
                     return cached.data.len() as u64;
@@ -1571,8 +1857,12 @@ impl VirtualFs {
         let resources = self.get_resources_cached(rt, connector, collection)?;
 
         for res in &resources {
-            // Live resource file
-            let filename = format!("{}.md", res.slug);
+            // Use user slug from slug map if available (set after first flush)
+            let display_slug = self
+                .slug_map
+                .get_user_slug(connector, collection, &res.id)
+                .unwrap_or_else(|| res.slug.clone());
+            let filename = format!("{}.md", display_slug);
             let kind = NodeKind::Resource {
                 connector: connector.to_string(),
                 collection: collection.to_string(),
@@ -1588,23 +1878,6 @@ impl VirtualFs {
                 id,
                 file_type: VfsFileType::RegularFile,
             });
-
-            // If a draft exists for this resource, list it too.
-            if self.drafts.has_draft(connector, collection, &res.slug) {
-                let draft_filename = format!("{}.draft.md", res.slug);
-                let draft_kind = NodeKind::Resource {
-                    connector: connector.to_string(),
-                    collection: collection.to_string(),
-                    resource: res.slug.clone(),
-                    variant: ResourceVariant::Draft,
-                };
-                let draft_id = self.nodes.allocate(draft_kind);
-                entries.push(VfsDirEntry {
-                    name: draft_filename,
-                    id: draft_id,
-                    file_type: VfsFileType::RegularFile,
-                });
-            }
 
             // If a lock exists for this resource, list it too.
             let lslug = lock_slug(&res.slug);
@@ -1646,30 +1919,36 @@ impl VirtualFs {
             }
         }
 
-        // Also list draft-only resources.
+        // Add locally-created resources (have a pending draft, not yet on API)
+        let api_ids: std::collections::HashSet<String> = resources
+            .iter()
+            .flat_map(|r| [r.id.clone(), r.slug.clone()])
+            .collect();
         if let Ok(draft_slugs) = self.drafts.list_drafts(connector, collection) {
-            let live_slugs: std::collections::HashSet<&str> =
-                resources.iter().map(|r| r.slug.as_str()).collect();
             for slug in draft_slugs {
-                if slug.ends_with(".lock")
-                    || slug.starts_with("__tx_")
-                    || live_slugs.contains(slug.as_str())
-                {
+                if slug.ends_with(".lock") || slug.starts_with("__tx_") {
                     continue;
                 }
-                let draft_filename = format!("{}.draft.md", slug);
-                let draft_kind = NodeKind::Resource {
-                    connector: connector.to_string(),
-                    collection: collection.to_string(),
-                    resource: slug.clone(),
-                    variant: ResourceVariant::Draft,
-                };
-                let draft_id = self.nodes.allocate(draft_kind);
-                entries.push(VfsDirEntry {
-                    name: draft_filename,
-                    id: draft_id,
-                    file_type: VfsFileType::RegularFile,
-                });
+                if api_ids.contains(&slug) {
+                    continue;
+                }
+                if let Ok(Some(data)) = self.drafts.read_draft(connector, collection, &slug) {
+                    let meta = parse_tapfs_meta(&data);
+                    if meta.draft || meta.id.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+                        let kind = NodeKind::Resource {
+                            connector: connector.to_string(),
+                            collection: collection.to_string(),
+                            resource: slug.clone(),
+                            variant: ResourceVariant::Live,
+                        };
+                        let id = self.nodes.allocate(kind);
+                        entries.push(VfsDirEntry {
+                            name: format!("{}.md", slug),
+                            id,
+                            file_type: VfsFileType::RegularFile,
+                        });
+                    }
+                }
             }
         }
 
@@ -1941,6 +2220,17 @@ impl VirtualFs {
                 Ok(bytes::Bytes::from(data))
             }
             ResourceVariant::Live => {
+                // Serve local draft if present (new resource not yet on API, or pending changes)
+                if self.drafts.has_draft(connector, collection, resource) {
+                    if let Some(data) = self
+                        .drafts
+                        .read_draft(connector, collection, resource)
+                        .map_err(|e| VfsError::IoError(e.to_string()))?
+                    {
+                        return Ok(bytes::Bytes::from(data));
+                    }
+                }
+
                 let cache_key = format!("{}/{}/{}", connector, collection, resource);
 
                 // L1 — in-memory cache. Bytes::clone is O(1).
@@ -2774,5 +3064,173 @@ mod disk_cache_integration {
             0,
             "fresh-process read should be served entirely from disk"
         );
+    }
+}
+
+/// Tests for VirtualFs::flush — the NFS write-then-flush path that promotes
+/// new files to the API and updates existing ones without duplicate POSTs.
+#[cfg(test)]
+mod flush_promotion {
+    use super::*;
+    use crate::cache::disk::DiskCache;
+    use crate::connector::traits::{
+        CollectionInfo, Connector, Resource as ConnResource, ResourceMeta, VersionInfo,
+    };
+    use crate::draft::store::DraftStore;
+    use crate::governance::audit::AuditLogger;
+    use crate::version::store::VersionStore;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    /// Connector that counts create_resource / write_resource calls.
+    struct WritableConnector {
+        creates: AtomicUsize,
+        writes: AtomicUsize,
+    }
+
+    impl WritableConnector {
+        fn new() -> Self {
+            Self {
+                creates: AtomicUsize::new(0),
+                writes: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Connector for WritableConnector {
+        fn name(&self) -> &str {
+            "mock"
+        }
+        async fn list_collections(&self) -> anyhow::Result<Vec<CollectionInfo>> {
+            Ok(vec![CollectionInfo {
+                name: "issues".into(),
+                description: None,
+            }])
+        }
+        async fn list_resources(&self, _: &str) -> anyhow::Result<Vec<ResourceMeta>> {
+            Ok(vec![])
+        }
+        async fn read_resource(&self, _: &str, _: &str) -> anyhow::Result<ConnResource> {
+            Err(anyhow::anyhow!("not found"))
+        }
+        async fn write_resource(&self, _: &str, _: &str, _: &[u8]) -> anyhow::Result<()> {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        async fn create_resource(
+            &self,
+            _: &str,
+            _: &[u8],
+        ) -> anyhow::Result<ResourceMeta> {
+            self.creates.fetch_add(1, Ordering::SeqCst);
+            Ok(ResourceMeta {
+                id: "new-123".into(),
+                slug: "new".into(),
+                title: None,
+                updated_at: None,
+                content_type: None,
+            })
+        }
+        async fn resource_versions(&self, _: &str, _: &str) -> anyhow::Result<Vec<VersionInfo>> {
+            Ok(vec![])
+        }
+        async fn read_version(&self, _: &str, _: &str, _: u32) -> anyhow::Result<ConnResource> {
+            unimplemented!()
+        }
+    }
+
+    fn build_vfs(dir: &std::path::Path, conn: Arc<dyn Connector>) -> Arc<VirtualFs> {
+        let registry = ConnectorRegistry::new();
+        registry.register(conn);
+        let registry = Arc::new(registry);
+        let cache = Arc::new(Cache::new(Duration::from_secs(60)));
+        let drafts = Arc::new(DraftStore::new(dir.join("drafts")).unwrap());
+        let versions = Arc::new(VersionStore::new(dir.join("versions")).unwrap());
+        let audit = Arc::new(AuditLogger::new(dir.join("audit.log")).unwrap());
+        let disk = Arc::new(DiskCache::new(dir.join("cache")).unwrap());
+        Arc::new(VirtualFs::new(registry, cache, drafts, versions, audit).with_disk_cache(disk))
+    }
+
+    fn make_rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// Creating a new .md file and flushing twice should POST once then PATCH.
+    /// This covers the NFS write path: each NFS WRITE calls vfs.flush(), so
+    /// multi-packet writes must not POST duplicate resources.
+    #[test]
+    fn flush_new_file_posts_once_then_patches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = Arc::new(WritableConnector::new());
+        let vfs = build_vfs(tmp.path(), conn.clone() as Arc<dyn Connector>);
+        let rt = make_rt();
+        let handle = rt.handle().clone();
+
+        let mock_id = vfs.lookup(&handle, 1, "mock").unwrap().id;
+        let issues_id = vfs.lookup(&handle, mock_id, "issues").unwrap().id;
+
+        // Create new.md (live resource buffered as draft)
+        let attr = vfs.create(issues_id, "new.md").unwrap();
+        let node_id = attr.id;
+
+        // First write + flush → should POST (create_resource)
+        vfs.write(node_id, 0, b"# My Issue\n").unwrap();
+        vfs.flush(&handle, node_id).unwrap();
+
+        assert_eq!(conn.creates.load(Ordering::SeqCst), 1, "first flush must POST");
+        assert_eq!(conn.writes.load(Ordering::SeqCst), 0, "no PATCH on first flush");
+
+        // Second write + flush → must PATCH (write_resource), not create again
+        vfs.write(node_id, 0, b"# Updated\n").unwrap();
+        vfs.flush(&handle, node_id).unwrap();
+
+        assert_eq!(conn.creates.load(Ordering::SeqCst), 1, "create_resource must not fire again");
+        assert_eq!(conn.writes.load(Ordering::SeqCst), 1, "second flush must PATCH");
+    }
+
+    /// Writing to a resource that already exists in the API must PATCH, never POST.
+    /// The resource is identified by its _id in the frontmatter template, which is
+    /// populated at create() time from the listing cache.
+    #[test]
+    fn flush_existing_resource_patches_not_posts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = Arc::new(WritableConnector::new());
+        let vfs = build_vfs(tmp.path(), conn.clone() as Arc<dyn Connector>);
+        let rt = make_rt();
+        let handle = rt.handle().clone();
+
+        let mock_id = vfs.lookup(&handle, 1, "mock").unwrap().id;
+        let issues_id = vfs.lookup(&handle, mock_id, "issues").unwrap().id;
+
+        // Simulate the resource already fetched from the API by pre-populating both
+        // the resource cache and the listing cache (with matching API id).
+        vfs.cache.put_resource(
+            "mock/issues/existing",
+            crate::cache::store::Resource {
+                data: bytes::Bytes::from("# Old\n"),
+                raw_json: None,
+            },
+        );
+        vfs.cache.put_metadata(
+            "mock/issues",
+            vec![ResourceMeta {
+                id: "existing-api-id".into(),
+                slug: "existing".into(),
+                title: None,
+                updated_at: None,
+                content_type: None,
+            }],
+        );
+
+        let attr = vfs.create(issues_id, "existing.md").unwrap();
+        vfs.write(attr.id, 0, b"# Edited\n").unwrap();
+        vfs.flush(&handle, attr.id).unwrap();
+
+        assert_eq!(conn.creates.load(Ordering::SeqCst), 0, "must not POST for existing resource");
+        assert_eq!(conn.writes.load(Ordering::SeqCst), 1, "must PATCH existing resource");
     }
 }
