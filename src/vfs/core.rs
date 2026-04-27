@@ -171,61 +171,122 @@ fn inject_tapfs_fields(data: &[u8], id: &str, version: u32) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// SlugMap — api_id → user_slug persistence
+// SlugMap — bidirectional api_id ↔ user_slug persistence
 // ---------------------------------------------------------------------------
 
-/// Maps api_id → user_slug for readdir display. Persisted to disk.
+/// Maps api_id ↔ user_slug for readdir display and slug resolution.
+/// Persisted to disk as `{data_dir}/slug-map.json` (forward map only;
+/// reverse is rebuilt on load).
 struct SlugMap {
-    /// key: "connector/collection/api_id" → user_slug filename stem
-    inner: DashMap<String, String>,
+    /// "connector/collection/api_id" → user_slug
+    forward: DashMap<String, String>,
+    /// "connector/collection/user_slug" → api_id  (rebuilt from forward on load)
+    reverse: DashMap<String, String>,
     path: PathBuf,
 }
 
 impl SlugMap {
     fn load(path: PathBuf) -> Self {
-        let inner = DashMap::new();
+        let forward = DashMap::new();
+        let reverse = DashMap::new();
         if path.exists() {
             if let Ok(bytes) = std::fs::read(&path) {
                 if let Ok(map) =
                     serde_json::from_slice::<std::collections::HashMap<String, String>>(&bytes)
                 {
                     for (k, v) in map {
-                        inner.insert(k, v);
+                        // k = "connector/collection/api_id", v = user_slug
+                        // Rebuild reverse: "connector/collection/user_slug" → api_id
+                        if let Some(prefix) = k.rsplitn(2, '/').nth(1) {
+                            reverse.insert(format!("{}/{}", prefix, v), {
+                                k.rsplitn(2, '/').next().unwrap_or("").to_string()
+                            });
+                        }
+                        forward.insert(k, v);
                     }
                 }
             }
         }
-        Self { inner, path }
+        Self {
+            forward,
+            reverse,
+            path,
+        }
     }
 
     fn insert(&self, connector: &str, collection: &str, api_id: &str, user_slug: &str) {
-        self.inner.insert(
-            format!("{}/{}/{}", connector, collection, api_id),
-            user_slug.to_string(),
-        );
+        let fwd_key = format!("{}/{}/{}", connector, collection, api_id);
+        let rev_key = format!("{}/{}/{}", connector, collection, user_slug);
+        // Remove stale reverse entry if api_id previously had a different slug
+        if let Some(old_slug) = self.forward.get(&fwd_key) {
+            let old_rev = format!("{}/{}/{}", connector, collection, old_slug.value());
+            self.reverse.remove(&old_rev);
+        }
+        self.forward.insert(fwd_key, user_slug.to_string());
+        self.reverse.insert(rev_key, api_id.to_string());
         self.save();
     }
 
     fn get_user_slug(&self, connector: &str, collection: &str, api_id: &str) -> Option<String> {
-        self.inner
+        self.forward
             .get(&format!("{}/{}/{}", connector, collection, api_id))
             .map(|v| v.clone())
     }
 
+    /// Resolve a user-visible slug back to its API id.
+    fn get_api_id(&self, connector: &str, collection: &str, user_slug: &str) -> Option<String> {
+        self.reverse
+            .get(&format!("{}/{}/{}", connector, collection, user_slug))
+            .map(|v| v.clone())
+    }
+
+    /// Returns true if `user_slug` is already claimed by a *different* api_id.
+    fn slug_taken(&self, connector: &str, collection: &str, user_slug: &str, api_id: &str) -> bool {
+        match self
+            .reverse
+            .get(&format!("{}/{}/{}", connector, collection, user_slug))
+        {
+            Some(existing_id) => existing_id.value() != api_id,
+            None => false,
+        }
+    }
+
     fn save(&self) {
         let map: std::collections::HashMap<String, String> = self
-            .inner
+            .forward
             .iter()
             .map(|entry| (entry.key().clone(), entry.value().clone()))
             .collect();
         if let Ok(json) = serde_json::to_string(&map) {
-            // Atomic write: temp file then rename
             let tmp = self.path.with_extension("tmp");
             if std::fs::write(&tmp, &json).is_ok() {
                 let _ = std::fs::rename(&tmp, &self.path);
             }
         }
     }
+}
+
+/// Convert a human-readable title to a URL-safe slug.
+/// "Fix Login Bug!" → "fix-login-bug"
+fn title_to_slug(title: &str) -> String {
+    let mut result = String::new();
+    let mut prev_dash = false;
+    for c in title.chars() {
+        if c.is_ascii_alphanumeric() {
+            result.push(c.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !result.is_empty() {
+            if !prev_dash {
+                result.push('-');
+            }
+            prev_dash = true;
+        }
+    }
+    // Trim trailing dash
+    if result.ends_with('-') {
+        result.pop();
+    }
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -1671,11 +1732,23 @@ impl VirtualFs {
         // Live resource -- check cache first, then API.
         let resources = self.get_resources_cached(rt, connector, collection)?;
 
-        if let Some(meta) = resources.iter().find(|r| r.slug == slug || r.id == slug) {
+        // Resolve slug: direct match OR via slug map (title-derived or user-created)
+        let api_slug = self
+            .slug_map
+            .get_api_id(connector, collection, &slug)
+            .unwrap_or_else(|| slug.clone());
+
+        if let Some(meta) = resources
+            .iter()
+            .find(|r| r.slug == api_slug || r.id == api_slug)
+        {
+            // Use the API's own slug as the internal resource identifier so
+            // connector calls use the correct id (not the user-visible slug).
+            let resource_key = meta.slug.clone();
             let kind = NodeKind::Resource {
                 connector: connector.to_string(),
                 collection: collection.to_string(),
-                resource: slug,
+                resource: resource_key,
                 variant: ResourceVariant::Live,
             };
             // Store mtime from API metadata so getattr can report it.
@@ -1866,11 +1939,32 @@ impl VirtualFs {
         let resources = self.get_resources_cached(rt, connector, collection)?;
 
         for res in &resources {
-            // Use user slug from slug map if available (set after first flush)
+            // Display slug priority:
+            // 1. Slug map entry (user-created file or previously derived title slug)
+            // 2. Title-derived slug (e.g. "Fix Login Bug" → "fix-login-bug")
+            // 3. Fall back to API slug (e.g. "26")
             let display_slug = self
                 .slug_map
                 .get_user_slug(connector, collection, &res.id)
-                .unwrap_or_else(|| res.slug.clone());
+                .unwrap_or_else(|| {
+                    if let Some(ref title) = res.title {
+                        let ts = title_to_slug(title);
+                        if !ts.is_empty() {
+                            let unique = if self
+                                .slug_map
+                                .slug_taken(connector, collection, &ts, &res.id)
+                            {
+                                format!("{}-{}", ts, res.id)
+                            } else {
+                                ts
+                            };
+                            self.slug_map
+                                .insert(connector, collection, &res.id, &unique);
+                            return unique;
+                        }
+                    }
+                    res.slug.clone()
+                });
             let filename = format!("{}.md", display_slug);
             let kind = NodeKind::Resource {
                 connector: connector.to_string(),
