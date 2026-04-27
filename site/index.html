@@ -472,9 +472,9 @@
 
 <!-- ─── Hero ─────────────────────────────────────────── -->
 <div class="hero">
-  <div class="hero-badge"><span>v0.1</span> &mdash; Now with Google Workspace connector</div>
-  <h1>Enterprise APIs as files.</h1>
-  <p>An open-source virtual filesystem that turns REST APIs into a local directory tree. Read with <code>cat</code>, write with <code>echo</code>, search with <code>grep</code>. Every change is versioned, reversible, and audit-logged &mdash; no SDKs, no wrappers.</p>
+  <div class="hero-badge"><span>v0.1</span> &mdash; GitHub, Jira, Slack, and any REST API</div>
+  <h1>Give agents a filesystem.</h1>
+  <p>Agents work best with human interfaces. tapfs puts a virtual filesystem in front of any REST API &mdash; so agents read with <code>cat</code>, write with <code>echo</code>, search with <code>grep</code>. Every change is versioned, reversible, and audit-logged. No SDKs. No wrappers.</p>
   <div class="hero-ctas">
     <a href="#install" class="btn btn-primary">Get Started</a>
     <a href="https://github.com/tapfs/tap" class="btn btn-secondary">
@@ -483,6 +483,22 @@
     </a>
   </div>
 </div>
+
+<!-- ─── Human Interfaces ─────────────────────────────── -->
+<section style="padding: 48px 24px; max-width: 680px; margin: 0 auto;">
+  <p style="text-align: center; font-size: 15px; color: var(--text-muted); margin-bottom: 8px;">LLMs are more like humans than software.</p>
+  <p style="text-align: center; font-size: 15px; color: var(--text-dim); margin-bottom: 32px;">Give them the same interfaces you'd give a human.</p>
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 13.5px;">
+    <div style="padding: 12px 20px; background: var(--surface); color: var(--text-dim); font-weight: 600; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border);">For humans</div>
+    <div style="padding: 12px 20px; background: var(--surface); color: var(--text-dim); font-weight: 600; border-bottom: 1px solid var(--border);">For agents</div>
+    <div style="padding: 12px 20px; color: var(--text-muted); border-bottom: 1px solid var(--border); border-right: 1px solid var(--border);">a full browser</div>
+    <div style="padding: 12px 20px; color: var(--text-muted); border-bottom: 1px solid var(--border);">not headless scraper</div>
+    <div style="padding: 12px 20px; background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--accent); border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); font-weight: 500;">a filesystem &nbsp;<span style="opacity:0.6; font-size:12px;">← tapfs</span></div>
+    <div style="padding: 12px 20px; background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--text-muted); border-bottom: 1px solid var(--border);">not vector DB or custom SDK</div>
+    <div style="padding: 12px 20px; color: var(--text-muted); border-right: 1px solid var(--border);">a real machine</div>
+    <div style="padding: 12px 20px; color: var(--text-muted);">not a sandbox proxy</div>
+  </div>
+</section>
 
 <!-- ─── Terminal Demo ────────────────────────────────── -->
 <div class="terminal-section">
@@ -494,31 +510,31 @@
       <div class="terminal-title">tap &mdash; /mnt/tap</div>
     </div>
     <div class="terminal-body">
-      <span class="line"><span class="prompt">$</span> <span class="cmd">ls /mnt/tap/google/</span></span>
-      <span class="line"><span class="dir">drive/</span>    <span class="dir">gmail/</span>    <span class="dir">calendar/</span>    <span class="file">agent.md</span></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">ls /mnt/tap/</span></span>
+      <span class="line"><span class="dir">github/</span>    <span class="dir">jira/</span>    <span class="dir">slack/</span>    <span class="file">agent.md</span></span>
       <span class="line"></span>
-      <span class="line"><span class="prompt">$</span> <span class="cmd">ls /mnt/tap/google/drive/</span></span>
-      <span class="line"><span class="file">Q3 Strategy.md</span>    <span class="file">Design Spec.md</span>    <span class="file">Budget.md</span>    <span class="file">agent.md</span></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">ls /mnt/tap/github/issues/</span></span>
+      <span class="line"><span class="file">fix-auth-bug.md</span>    <span class="file">add-dark-mode.md</span>    <span class="file">api-rate-limit.md</span>    <span class="file">agent.md</span></span>
       <span class="line"></span>
-      <span class="line"><span class="prompt">$</span> <span class="cmd">cat "/mnt/tap/google/drive/Q3 Strategy.md"</span></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">cat /mnt/tap/github/issues/fix-auth-bug.md</span></span>
       <span class="line"><span class="output">---</span></span>
-      <span class="line"><span class="output">id: "1kUm7HSO..."</span></span>
-      <span class="line"><span class="output">name: "Q3 Strategy"</span></span>
-      <span class="line"><span class="output">mimeType: "application/vnd.google-apps.document"</span></span>
-      <span class="line"><span class="output">operations: [read, write, draft, lock]</span></span>
+      <span class="line"><span class="output">id: 1234</span></span>
+      <span class="line"><span class="output">title: "Fix auth bug"</span></span>
+      <span class="line"><span class="output">state: open</span></span>
+      <span class="line"><span class="output">operations: [read, write, draft]</span></span>
       <span class="line"><span class="output">---</span></span>
-      <span class="line"><span class="output">Our Q3 priorities focus on three areas...</span></span>
+      <span class="line"><span class="output">Users report intermittent 401 errors on token refresh...</span></span>
       <span class="line"></span>
-      <span class="line"><span class="prompt">$</span> <span class="cmd">echo "Updated revenue target: $52M" >> "/mnt/tap/google/drive/Q3 Strategy.md"</span></span>
-      <span class="line"><span class="comment"># auto-promoted to Google Drive API on close</span></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">echo "Root cause: token expiry not handled." >> /mnt/tap/github/issues/fix-auth-bug.md</span></span>
+      <span class="line"><span class="comment"># auto-promoted to GitHub API on close</span></span>
       <span class="line"></span>
-      <span class="line"><span class="prompt">$</span> <span class="cmd">cat "/mnt/tap/google/drive/Q3 Strategy@v1.md"</span></span>
-      <span class="line"><span class="comment"># read the previous version (auto-snapshot)</span></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">ls /mnt/tap/jira/tickets/</span></span>
+      <span class="line"><span class="file">PROJ-101_migrate-db.md</span>    <span class="file">PROJ-102_add-tests.md</span>    <span class="file">agent.md</span></span>
       <span class="line"></span>
       <span class="line"><span class="prompt">$</span> <span class="cmd">tap log</span></span>
-      <span class="line"><span class="output">2026-03-26 08:02:34 [<span class="highlight">success</span>] google drive/Q3 Strategy <span class="highlight">auto-promote</span> 847 bytes</span></span>
-      <span class="line"><span class="output">2026-03-26 08:02:29 [<span class="highlight">success</span>] google drive/Q3 Strategy write 42 bytes</span></span>
-      <span class="line"><span class="output">2026-03-26 08:02:24 [<span class="highlight">success</span>] google drive/- list 154 resources</span></span>
+      <span class="line"><span class="output">2026-04-27 09:12:01 [<span class="highlight">success</span>] github issues/fix-auth-bug <span class="highlight">auto-promote</span> 312 bytes</span></span>
+      <span class="line"><span class="output">2026-04-27 09:12:00 [<span class="highlight">success</span>] github issues/fix-auth-bug write 42 bytes</span></span>
+      <span class="line"><span class="output">2026-04-27 09:11:55 [<span class="highlight">success</span>] jira tickets/- list 48 resources</span></span>
     </div>
   </div>
 </div>
@@ -529,7 +545,6 @@
   <div style="display: flex; justify-content: center; gap: 24px; flex-wrap: wrap; opacity: 0.7;">
     <span style="color: var(--text-muted); font-size: 14px;">Rust</span>
     <span style="color: var(--text-muted); font-size: 14px;">NFS</span>
-    <span style="color: var(--text-muted); font-size: 14px;">FUSE</span>
     <span style="color: var(--text-muted); font-size: 14px;">Apache 2.0</span>
   </div>
 </section>
@@ -564,7 +579,7 @@
     <div class="feature-card">
       <div class="feature-icon">&oplus;</div>
       <h3>Connector ecosystem</h3>
-      <p>Google Workspace ships built-in. Install more from GitHub: <code>tap install tapfs/jira</code>. Or build your own with a YAML spec.</p>
+      <p>Any REST API becomes a filesystem with a YAML connector spec. Install community connectors: <code>tap install tapfs/github</code>. Or build your own.</p>
     </div>
     <div class="feature-card">
       <div class="feature-icon">&equiv;</div>
@@ -585,19 +600,20 @@
     </div>
     <div class="file-tree">
 <span class="dir">/mnt/tap/</span>
-  <span class="file">agent.md</span>                <span class="annotation">&larr; how to use tapfs</span>
-  <span class="dir">google/</span>
-    <span class="file">agent.md</span>              <span class="annotation">&larr; Google Workspace guide</span>
-    <span class="dir">drive/</span>
-      <span class="file">agent.md</span>            <span class="annotation">&larr; collection overview</span>
-      <span class="file">Q3 Strategy.md</span>      <span class="annotation">&larr; live (GET on read)</span>
-      <span class="draft">Q3 Strategy.draft.md</span> <span class="annotation">&larr; sandboxed edits</span>
-      <span class="version">Q3 Strategy@v3.md</span>    <span class="annotation">&larr; immutable snapshot</span>
-      <span class="lock">Q3 Strategy.lock</span>     <span class="annotation">&larr; concurrency lock</span>
-    <span class="dir">gmail/</span>
-      <span class="file">re-deployment-plan.md</span>
-    <span class="dir">calendar/</span>
-      <span class="file">standup-10am.md</span>
+  <span class="file">agent.md</span>                    <span class="annotation">&larr; how to use tapfs</span>
+  <span class="dir">github/</span>
+    <span class="file">agent.md</span>                  <span class="annotation">&larr; GitHub connector guide</span>
+    <span class="dir">issues/</span>
+      <span class="file">agent.md</span>              <span class="annotation">&larr; collection overview</span>
+      <span class="file">fix-auth-bug.md</span>       <span class="annotation">&larr; live (GET on read)</span>
+      <span class="draft">fix-auth-bug.draft.md</span> <span class="annotation">&larr; sandboxed edits</span>
+      <span class="version">fix-auth-bug@v3.md</span>    <span class="annotation">&larr; immutable snapshot</span>
+      <span class="lock">fix-auth-bug.lock</span>     <span class="annotation">&larr; concurrency lock</span>
+    <span class="dir">pull-requests/</span>
+      <span class="file">add-dark-mode.md</span>
+  <span class="dir">jira/</span>
+    <span class="dir">tickets/</span>
+      <span class="file">PROJ-101_migrate-db.md</span>
     </div>
   </div>
 </section>
@@ -612,7 +628,7 @@
     <div class="tree-text">
       <h2>Write YAML, get a filesystem</h2>
       <p>Define endpoints, describe your collections, and add agent tips. tapfs resolves slugs, paginates, caches, and auto-generates an <code>agent.md</code> that teaches agents how to navigate your API.</p>
-      <p>Google Workspace ships built-in. Community connector specs available for GitHub, Jira, Slack, and more. Install from GitHub or drop a YAML file in your connectors directory.</p>
+      <p>Community connector specs available for GitHub, Jira, Slack, Salesforce, and more. Install from GitHub or drop a YAML file in your connectors directory.</p>
       <div style="margin-top: 24px; display: flex; gap: 10px; flex-wrap: wrap;">
         <span style="padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; color: var(--text-muted);">github</span>
         <span style="padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; color: var(--text-muted);">jira</span>
@@ -708,7 +724,7 @@ Rate limit: 5000 requests/min
     &#9474;    path parser &middot; cache &middot; drafts &middot; audit   &#9474;
     &#9500;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9508;
     &#9474;          <span class="layer">Connector Layer</span>              &#9474;
-    &#9474;   <span class="component">Google</span>   <span class="component">REST</span>   <span class="component">Jira</span>  <span class="component">Salesforce</span>  ... &#9474;
+    &#9474;   <span class="component">GitHub</span>   <span class="component">REST</span>   <span class="component">Jira</span>  <span class="component">Salesforce</span>  ... &#9474;
     &#9492;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9496;
                          &darr;
               <span class="layer">Enterprise APIs</span>
@@ -891,14 +907,14 @@ Rate limit: 5000 requests/min
       <div class="terminal-title">tap CLI</div>
     </div>
     <div class="terminal-body">
-      <span class="line"><span class="prompt">$</span> <span class="cmd">tap mount google</span>           <span class="comment"># mount Google Workspace</span></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">tap mount github</span>            <span class="comment"># mount GitHub connector</span></span>
       <span class="line"><span class="prompt">$</span> <span class="cmd">tap status</span>                  <span class="comment"># connection health</span></span>
       <span class="line"><span class="prompt">$</span> <span class="cmd">tap log</span>                     <span class="comment"># audit trail</span></span>
-      <span class="line"><span class="prompt">$</span> <span class="cmd">tap versions /mnt/tap/g/drive/file.md</span>   <span class="comment"># version history</span></span>
-      <span class="line"><span class="prompt">$</span> <span class="cmd">tap rollback /mnt/tap/g/drive/file@v3.md</span> <span class="comment"># restore version</span></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">tap versions /mnt/tap/github/issues/fix-auth-bug.md</span>   <span class="comment"># version history</span></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">tap rollback /mnt/tap/github/issues/fix-auth-bug@v3.md</span> <span class="comment"># restore version</span></span>
       <span class="line"><span class="prompt">$</span> <span class="cmd">tap install tapfs/jira</span>      <span class="comment"># install connector from GitHub</span></span>
       <span class="line"><span class="prompt">$</span> <span class="cmd">tap connectors</span>              <span class="comment"># list installed</span></span>
-      <span class="line"><span class="prompt">$</span> <span class="cmd">tap unmount google</span>          <span class="comment"># clean unmount</span></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">tap unmount github</span>          <span class="comment"># clean unmount</span></span>
     </div>
   </div>
 </section>
