@@ -121,6 +121,10 @@ pub struct CollectionSpec {
     /// When set, resources are shown under synthetic group directories instead
     /// of directly in the collection directory.
     pub group_by: Option<String>,
+    /// When true, the collection appears as a single aggregated `.md` file
+    /// rather than a directory of individual resource files.
+    /// Appending to the file creates a new resource (POST).
+    pub aggregate: Option<bool>,
 }
 
 /// Controls how a JSON API response is rendered into a readable markdown file.

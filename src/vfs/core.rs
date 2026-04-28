@@ -635,7 +635,12 @@ impl VirtualFs {
             NodeKind::Collection {
                 connector,
                 collection,
-            } => self.readdir_collection(rt, id, connector, collection),
+            } => {
+                if self.is_aggregate_collection(connector, collection) {
+                    return Err(VfsError::NotDirectory);
+                }
+                self.readdir_collection(rt, id, connector, collection)
+            }
             NodeKind::TxDir {
                 connector,
                 collection,
@@ -738,6 +743,13 @@ impl VirtualFs {
                         .ok_or(VfsError::NotFound)?,
                 )
             }
+            NodeKind::Collection {
+                connector,
+                collection,
+            } if self.is_aggregate_collection(connector, collection) => bytes::Bytes::from(
+                self.read_aggregate_collection(rt, connector, collection)?
+                    .into_bytes(),
+            ),
             _ => return Err(VfsError::IsDirectory),
         };
 
@@ -816,6 +828,16 @@ impl VirtualFs {
                     )),
                 );
 
+                Ok(data.len() as u32)
+            }
+            NodeKind::Collection {
+                connector,
+                collection,
+            } => {
+                if !self.is_aggregate_collection(connector, collection) {
+                    return Err(VfsError::PermissionDenied);
+                }
+                self.buffer_write(id, connector, collection, "__aggregate__", offset, data)?;
                 Ok(data.len() as u32)
             }
             _ => Err(VfsError::PermissionDenied),
@@ -1429,6 +1451,54 @@ impl VirtualFs {
                 );
             }
         }
+
+        // Aggregate collection flush: detect appended suffix and POST as new resource.
+        if let NodeKind::Collection {
+            connector,
+            collection,
+        } = &kind
+        {
+            if self.is_aggregate_collection(connector, collection) {
+                if let Some((_, buf)) = self.write_buffers.remove(&id) {
+                    let written =
+                        std::str::from_utf8(&buf).map_err(|e| VfsError::IoError(e.to_string()))?;
+                    let canonical = self.read_aggregate_collection(rt, connector, collection)?;
+                    // Only act if content grew past the canonical prefix.
+                    if written.len() > canonical.len()
+                        && written.starts_with(canonical.trim_end_matches('\n'))
+                    {
+                        let suffix = written[canonical.trim_end_matches('\n').len()..]
+                            .trim()
+                            .to_string();
+                        if !suffix.is_empty() {
+                            let conn = self.registry.get(connector).ok_or(VfsError::NotFound)?;
+                            match rt.block_on(conn.create_resource(collection, suffix.as_bytes())) {
+                                Ok(_) => {
+                                    self.cache
+                                        .invalidate(&format!("{}/{}", connector, collection));
+                                    let _ = self.audit.record(
+                                        "create",
+                                        connector,
+                                        Some(collection),
+                                        None,
+                                        "success",
+                                        Some(format!(
+                                            "{} bytes appended to aggregate",
+                                            suffix.len()
+                                        )),
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::error!("aggregate append error: {}", e);
+                                    return Err(VfsError::IoError(e.to_string()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -1529,15 +1599,45 @@ impl VirtualFs {
         Ok(())
     }
 
+    fn is_aggregate_collection(&self, connector: &str, collection: &str) -> bool {
+        self.registry
+            .get_spec(connector)
+            .and_then(|s| find_collection_spec_in(&s.collections, collection).cloned())
+            .and_then(|c| c.aggregate)
+            .unwrap_or(false)
+    }
+
     fn kind_to_attr(&self, id: u64, kind: &NodeKind) -> VfsAttr {
         match kind {
-            NodeKind::Root | NodeKind::Connector { .. } | NodeKind::Collection { .. } => VfsAttr {
+            NodeKind::Root | NodeKind::Connector { .. } => VfsAttr {
                 id,
                 size: 0,
                 file_type: VfsFileType::Directory,
                 perm: 0o755,
                 mtime: None,
             },
+            NodeKind::Collection {
+                connector,
+                collection,
+            } => {
+                if self.is_aggregate_collection(connector, collection) {
+                    VfsAttr {
+                        id,
+                        size: 4096,
+                        file_type: VfsFileType::RegularFile,
+                        perm: 0o644,
+                        mtime: None,
+                    }
+                } else {
+                    VfsAttr {
+                        id,
+                        size: 0,
+                        file_type: VfsFileType::Directory,
+                        perm: 0o755,
+                        mtime: None,
+                    }
+                }
+            }
             NodeKind::TxDir { .. } | NodeKind::Transaction { .. } => VfsAttr {
                 id,
                 size: 0,
@@ -1919,12 +2019,26 @@ impl VirtualFs {
             find_collection_spec_in(&spec.collections, collection).ok_or(VfsError::NotFound)?;
 
         let subs = parent_spec.subcollections.as_deref().unwrap_or(&[]);
-        if subs.iter().any(|c| c.name == name) {
-            let nested_collection = format!("{}/{}/{}", collection, resource, name);
+
+        // Check bare name (non-aggregate directory subcollection).
+        if let Some(sub) = subs.iter().find(|c| c.name == name && !c.aggregate.unwrap_or(false)) {
+            let nested_collection = format!("{}/{}/{}", collection, resource, sub.name);
             return Ok(NodeKind::Collection {
                 connector: connector.to_string(),
                 collection: nested_collection,
             });
+        }
+
+        // Check `{name}.md` for aggregate subcollections.
+        if let Some(base) = name.strip_suffix(".md") {
+            if let Some(sub) = subs.iter().find(|c| c.name == base && c.aggregate.unwrap_or(false))
+            {
+                let nested_collection = format!("{}/{}/{}", collection, resource, sub.name);
+                return Ok(NodeKind::Collection {
+                    connector: connector.to_string(),
+                    collection: nested_collection,
+                });
+            }
         }
 
         Err(VfsError::NotFound)
@@ -1969,14 +2083,23 @@ impl VirtualFs {
                     let nested_collection = format!("{}/{}/{}", collection, resource, sub.name);
                     let kind = NodeKind::Collection {
                         connector: connector.to_string(),
-                        collection: nested_collection,
+                        collection: nested_collection.clone(),
                     };
                     let id = self.nodes.allocate(kind);
-                    entries.push(VfsDirEntry {
-                        name: sub.name.clone(),
-                        id,
-                        file_type: VfsFileType::Directory,
-                    });
+                    if sub.aggregate.unwrap_or(false) {
+                        // Aggregate collections appear as a single .md file.
+                        entries.push(VfsDirEntry {
+                            name: format!("{}.md", sub.name),
+                            id,
+                            file_type: VfsFileType::RegularFile,
+                        });
+                    } else {
+                        entries.push(VfsDirEntry {
+                            name: sub.name.clone(),
+                            id,
+                            file_type: VfsFileType::Directory,
+                        });
+                    }
                 }
             }
         }
@@ -2498,6 +2621,33 @@ impl VirtualFs {
         });
 
         Ok(entries)
+    }
+
+    /// Read all resources in an aggregate collection, concatenated with `---` separators.
+    fn read_aggregate_collection(
+        &self,
+        rt: &tokio::runtime::Handle,
+        connector: &str,
+        collection: &str,
+    ) -> Result<String, VfsError> {
+        let resources = self.get_resources_cached(rt, connector, collection)?;
+        let conn = self.registry.get(connector).ok_or(VfsError::NotFound)?;
+        let mut out = String::new();
+
+        for (i, meta) in resources.iter().enumerate() {
+            if i > 0 {
+                out.push_str("\n---\n\n");
+            }
+            let result = rt
+                .block_on(conn.read_resource(collection, &meta.id))
+                .map_err(|e| VfsError::IoError(e.to_string()))?;
+            out.push_str(std::str::from_utf8(&result.content).unwrap_or(""));
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+
+        Ok(out)
     }
 
     fn generate_root_agent_md(&self) -> String {
