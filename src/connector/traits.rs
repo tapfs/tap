@@ -51,6 +51,9 @@ pub struct ResourceMeta {
     pub title: Option<String>,
     pub updated_at: Option<String>,
     pub content_type: Option<String>,
+    /// Value of the `group_by` field from the spec (e.g. "tapfs" for owner.login).
+    /// Used by the VFS to build synthetic group directories.
+    pub group: Option<String>,
 }
 
 #[derive(Debug, Clone)]

@@ -11,6 +11,7 @@ use dashmap::DashMap;
 use crate::cache::disk::{DiskCache, DiskEntry, DiskMeta};
 use crate::cache::store::Cache;
 use crate::connector::registry::ConnectorRegistry;
+use crate::connector::spec::CollectionSpec;
 use crate::connector::traits::{CollectionInfo, ResourceMeta};
 use crate::draft::store::DraftStore;
 use crate::governance::audit::AuditLogger;
@@ -416,6 +417,45 @@ impl Default for NodeTable {
 }
 
 // ---------------------------------------------------------------------------
+// Spec helpers
+// ---------------------------------------------------------------------------
+
+/// Walk a spec's collection tree (including nested subcollections) to find
+/// a CollectionSpec by path-encoded name.
+///
+/// For a flat name like `"repos"`, finds the top-level collection directly.
+/// For a path-encoded name like `"repos/tap/issues"`, walks:
+///   repos (top-level) → skip "tap" (resource id) → issues (subcollection)
+fn find_collection_spec_in<'a>(
+    cols: &'a [CollectionSpec],
+    name: &str,
+) -> Option<&'a CollectionSpec> {
+    let segments: Vec<&str> = name.split('/').collect();
+    if segments.is_empty() {
+        return None;
+    }
+
+    let mut current = cols.iter().find(|c| c.name == segments[0])?;
+    let mut i = 1;
+
+    while i < segments.len() {
+        i += 1; // skip resource-id segment
+        if i >= segments.len() {
+            break;
+        }
+        let sub_name = segments[i];
+        i += 1;
+        current = current
+            .subcollections
+            .as_deref()?
+            .iter()
+            .find(|c| c.name == sub_name)?;
+    }
+
+    Some(current)
+}
+
+// ---------------------------------------------------------------------------
 // VirtualFs
 // ---------------------------------------------------------------------------
 
@@ -550,6 +590,16 @@ impl VirtualFs {
                     return Err(VfsError::NotFound);
                 }
             }
+            NodeKind::GroupDir {
+                connector,
+                collection,
+                group_value,
+            } => self.resolve_group_dir_child(rt, connector, collection, group_value, name)?,
+            NodeKind::ResourceDir {
+                connector,
+                collection,
+                resource,
+            } => self.resolve_resource_dir_child(connector, collection, resource, name)?,
             _ => return Err(VfsError::NotDirectory),
         };
 
@@ -595,6 +645,16 @@ impl VirtualFs {
                 collection,
                 tx_name,
             } => self.readdir_transaction(id, connector, collection, tx_name),
+            NodeKind::GroupDir {
+                connector,
+                collection,
+                group_value,
+            } => self.readdir_group_dir(rt, id, connector, collection, group_value),
+            NodeKind::ResourceDir {
+                connector,
+                collection,
+                resource,
+            } => self.readdir_resource_dir(id, connector, collection, resource),
             _ => Err(VfsError::NotDirectory),
         }
     }
@@ -1478,6 +1538,13 @@ impl VirtualFs {
                 perm: 0o755,
                 mtime: None,
             },
+            NodeKind::GroupDir { .. } | NodeKind::ResourceDir { .. } => VfsAttr {
+                id,
+                size: 0,
+                file_type: VfsFileType::Directory,
+                perm: 0o755,
+                mtime: None,
+            },
             NodeKind::AgentMd => VfsAttr {
                 id,
                 size: 4096, // dynamic content, actual size known on read
@@ -1598,13 +1665,45 @@ impl VirtualFs {
                 connector: connector.to_string(),
             });
         }
+
+        // Check flat (non-grouped) collections first.
+        let spec = self.registry.get_spec(connector);
         let collections = self.get_collections_cached(rt, connector)?;
-        if collections.iter().any(|c| c.name == name) {
-            return Ok(NodeKind::Collection {
-                connector: connector.to_string(),
-                collection: name.to_string(),
-            });
+        for col in &collections {
+            let col_spec = spec
+                .as_ref()
+                .and_then(|s| s.collections.iter().find(|c| c.name == col.name));
+            if col_spec.and_then(|c| c.group_by.as_ref()).is_some() {
+                continue; // hoisted — groups appear at connector level, not as collection dirs
+            }
+            if col.name == name {
+                return Ok(NodeKind::Collection {
+                    connector: connector.to_string(),
+                    collection: name.to_string(),
+                });
+            }
         }
+
+        // Check if name matches a group value from any grouped collection.
+        if let Some(ref s) = spec {
+            for col_spec in &s.collections {
+                if col_spec.group_by.is_none() {
+                    continue;
+                }
+                let resources = match self.get_resources_cached(rt, connector, &col_spec.name) {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
+                if resources.iter().any(|r| r.group.as_deref() == Some(name)) {
+                    return Ok(NodeKind::GroupDir {
+                        connector: connector.to_string(),
+                        collection: col_spec.name.clone(),
+                        group_value: name.to_string(),
+                    });
+                }
+            }
+        }
+
         Err(VfsError::NotFound)
     }
 
@@ -1654,6 +1753,7 @@ impl VirtualFs {
                 title: c.description.clone(),
                 updated_at: None,
                 content_type: None,
+            group: None,
             })
             .collect();
         self.cache.put_metadata(&cache_key, meta);
@@ -1745,11 +1845,29 @@ impl VirtualFs {
             // Use the API's own slug as the internal resource identifier so
             // connector calls use the correct id (not the user-visible slug).
             let resource_key = meta.slug.clone();
-            let kind = NodeKind::Resource {
-                connector: connector.to_string(),
-                collection: collection.to_string(),
-                resource: resource_key,
-                variant: ResourceVariant::Live,
+
+            // If this collection has subcollections, the resource acts as a directory.
+            let has_subs = self
+                .registry
+                .get_spec(connector)
+                .and_then(|s| find_collection_spec_in(&s.collections, collection).cloned())
+                .and_then(|c| c.subcollections)
+                .map(|s| !s.is_empty())
+                .unwrap_or(false);
+
+            let kind = if has_subs {
+                NodeKind::ResourceDir {
+                    connector: connector.to_string(),
+                    collection: collection.to_string(),
+                    resource: resource_key,
+                }
+            } else {
+                NodeKind::Resource {
+                    connector: connector.to_string(),
+                    collection: collection.to_string(),
+                    resource: resource_key,
+                    variant: ResourceVariant::Live,
+                }
             };
             // Store mtime from API metadata so getattr can report it.
             if let Some(ts) = &meta.updated_at {
@@ -1771,6 +1889,214 @@ impl VirtualFs {
         }
 
         Err(VfsError::NotFound)
+    }
+
+    /// Look up a child of a `ResourceDir` node (e.g. `github/repos/tap/`).
+    ///
+    /// Valid children are: subcollection names from the spec.
+    fn resolve_resource_dir_child(
+        &self,
+        connector: &str,
+        collection: &str,
+        resource: &str,
+        name: &str,
+    ) -> Result<NodeKind, VfsError> {
+        let spec = self
+            .registry
+            .get_spec(connector)
+            .ok_or(VfsError::NotFound)?;
+        let parent_spec =
+            find_collection_spec_in(&spec.collections, collection).ok_or(VfsError::NotFound)?;
+
+        let subs = parent_spec.subcollections.as_deref().unwrap_or(&[]);
+        if subs.iter().any(|c| c.name == name) {
+            let nested_collection = format!("{}/{}/{}", collection, resource, name);
+            return Ok(NodeKind::Collection {
+                connector: connector.to_string(),
+                collection: nested_collection,
+            });
+        }
+
+        Err(VfsError::NotFound)
+    }
+
+    /// List the contents of a `ResourceDir` node (e.g. `github/repos/tap/`).
+    ///
+    /// Returns subcollection directories from the spec — no API call.
+    fn readdir_resource_dir(
+        &self,
+        self_id: u64,
+        connector: &str,
+        collection: &str,
+        resource: &str,
+    ) -> Result<Vec<VfsDirEntry>, VfsError> {
+        let parent_kind = NodeKind::Collection {
+            connector: connector.to_string(),
+            collection: collection.to_string(),
+        };
+        let parent_id = self.nodes.lookup(&parent_kind).unwrap_or(1);
+
+        let mut entries = vec![
+            VfsDirEntry {
+                name: ".".to_string(),
+                id: self_id,
+                file_type: VfsFileType::Directory,
+            },
+            VfsDirEntry {
+                name: "..".to_string(),
+                id: parent_id,
+                file_type: VfsFileType::Directory,
+            },
+        ];
+
+        let spec = self
+            .registry
+            .get_spec(connector)
+            .ok_or(VfsError::NotFound)?;
+        if let Some(parent_spec) = find_collection_spec_in(&spec.collections, collection) {
+            if let Some(subs) = &parent_spec.subcollections {
+                for sub in subs {
+                    let nested_collection = format!("{}/{}/{}", collection, resource, sub.name);
+                    let kind = NodeKind::Collection {
+                        connector: connector.to_string(),
+                        collection: nested_collection,
+                    };
+                    let id = self.nodes.allocate(kind);
+                    entries.push(VfsDirEntry {
+                        name: sub.name.clone(),
+                        id,
+                        file_type: VfsFileType::Directory,
+                    });
+                }
+            }
+        }
+
+        Ok(entries)
+    }
+
+    /// Look up a child of a `GroupDir` node (e.g. `github/tapfs/`).
+    ///
+    /// Children are individual resources within the group, shown as `ResourceDir`
+    /// (when the collection has subcollections) or `Resource`.
+    fn resolve_group_dir_child(
+        &self,
+        rt: &tokio::runtime::Handle,
+        connector: &str,
+        collection: &str,
+        group_value: &str,
+        name: &str,
+    ) -> Result<NodeKind, VfsError> {
+        let resources = self.get_resources_cached(rt, connector, collection)?;
+        let filtered: Vec<_> = resources
+            .iter()
+            .filter(|r| r.group.as_deref() == Some(group_value))
+            .collect();
+
+        let spec = self.registry.get_spec(connector);
+        let has_subs = spec
+            .as_ref()
+            .and_then(|s| s.collections.iter().find(|c| c.name == collection))
+            .and_then(|c| c.subcollections.as_ref())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+
+        for meta in &filtered {
+            if meta.slug == name {
+                let kind = if has_subs {
+                    NodeKind::ResourceDir {
+                        connector: connector.to_string(),
+                        collection: collection.to_string(),
+                        resource: meta.slug.clone(),
+                    }
+                } else {
+                    NodeKind::Resource {
+                        connector: connector.to_string(),
+                        collection: collection.to_string(),
+                        resource: meta.slug.clone(),
+                        variant: ResourceVariant::Live,
+                    }
+                };
+                if let Some(ts) = &meta.updated_at {
+                    let id = self.nodes.allocate(kind.clone());
+                    self.resource_mtimes.insert(id, ts.clone());
+                }
+                return Ok(kind);
+            }
+        }
+
+        Err(VfsError::NotFound)
+    }
+
+    /// List the contents of a `GroupDir` node (e.g. `github/tapfs/`).
+    ///
+    /// Returns resources from the collection filtered to those in this group.
+    fn readdir_group_dir(
+        &self,
+        rt: &tokio::runtime::Handle,
+        self_id: u64,
+        connector: &str,
+        collection: &str,
+        group_value: &str,
+    ) -> Result<Vec<VfsDirEntry>, VfsError> {
+        let parent_kind = NodeKind::Connector {
+            name: connector.to_string(),
+        };
+        let parent_id = self.nodes.lookup(&parent_kind).unwrap_or(1);
+
+        let mut entries = vec![
+            VfsDirEntry {
+                name: ".".to_string(),
+                id: self_id,
+                file_type: VfsFileType::Directory,
+            },
+            VfsDirEntry {
+                name: "..".to_string(),
+                id: parent_id,
+                file_type: VfsFileType::Directory,
+            },
+        ];
+
+        let resources = self.get_resources_cached(rt, connector, collection)?;
+        let spec = self.registry.get_spec(connector);
+        let has_subs = spec
+            .as_ref()
+            .and_then(|s| s.collections.iter().find(|c| c.name == collection))
+            .and_then(|c| c.subcollections.as_ref())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+
+        for meta in resources
+            .iter()
+            .filter(|r| r.group.as_deref() == Some(group_value))
+        {
+            let kind = if has_subs {
+                NodeKind::ResourceDir {
+                    connector: connector.to_string(),
+                    collection: collection.to_string(),
+                    resource: meta.slug.clone(),
+                }
+            } else {
+                NodeKind::Resource {
+                    connector: connector.to_string(),
+                    collection: collection.to_string(),
+                    resource: meta.slug.clone(),
+                    variant: ResourceVariant::Live,
+                }
+            };
+            let id = self.nodes.allocate(kind);
+            let file_type = if has_subs {
+                VfsFileType::Directory
+            } else {
+                VfsFileType::RegularFile
+            };
+            entries.push(VfsDirEntry {
+                name: meta.slug.clone(),
+                id,
+                file_type,
+            });
+        }
+
+        Ok(entries)
     }
 
     fn resource_size(
@@ -1878,19 +2204,48 @@ impl VirtualFs {
             file_type: VfsFileType::RegularFile,
         });
 
+        let spec = self.registry.get_spec(connector);
         let collections = self.get_collections_cached(rt, connector)?;
 
-        for col in collections {
-            let kind = NodeKind::Collection {
-                connector: connector.to_string(),
-                collection: col.name.clone(),
-            };
-            let id = self.nodes.allocate(kind);
-            entries.push(VfsDirEntry {
-                name: col.name,
-                id,
-                file_type: VfsFileType::Directory,
-            });
+        for col in &collections {
+            let col_spec = spec
+                .as_ref()
+                .and_then(|s| s.collections.iter().find(|c| c.name == col.name));
+
+            if col_spec.and_then(|c| c.group_by.as_ref()).is_some() {
+                // Hoisted collection: show unique group values as directories here,
+                // not the collection itself.
+                let resources = self.get_resources_cached(rt, connector, &col.name)?;
+                let mut seen = std::collections::HashSet::new();
+                for res in &resources {
+                    if let Some(ref gv) = res.group {
+                        if seen.insert(gv.clone()) {
+                            let kind = NodeKind::GroupDir {
+                                connector: connector.to_string(),
+                                collection: col.name.clone(),
+                                group_value: gv.clone(),
+                            };
+                            let id = self.nodes.allocate(kind);
+                            entries.push(VfsDirEntry {
+                                name: gv.clone(),
+                                id,
+                                file_type: VfsFileType::Directory,
+                            });
+                        }
+                    }
+                }
+            } else {
+                let kind = NodeKind::Collection {
+                    connector: connector.to_string(),
+                    collection: col.name.clone(),
+                };
+                let id = self.nodes.allocate(kind);
+                entries.push(VfsDirEntry {
+                    name: col.name.clone(),
+                    id,
+                    file_type: VfsFileType::Directory,
+                });
+            }
         }
 
         Ok(entries)
@@ -1938,6 +2293,15 @@ impl VirtualFs {
         // Fetch live resources (cached).
         let resources = self.get_resources_cached(rt, connector, collection)?;
 
+        // Check once if this collection's resources are directories (have subcollections).
+        let has_subs = self
+            .registry
+            .get_spec(connector)
+            .and_then(|s| find_collection_spec_in(&s.collections, collection).cloned())
+            .and_then(|c| c.subcollections)
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+
         for res in &resources {
             // Display slug priority:
             // 1. Slug map entry (user-created file or previously derived title slug)
@@ -1965,6 +2329,22 @@ impl VirtualFs {
                     }
                     res.slug.clone()
                 });
+
+            if has_subs {
+                let kind = NodeKind::ResourceDir {
+                    connector: connector.to_string(),
+                    collection: collection.to_string(),
+                    resource: res.slug.clone(),
+                };
+                let id = self.nodes.allocate(kind);
+                entries.push(VfsDirEntry {
+                    name: display_slug,
+                    id,
+                    file_type: VfsFileType::Directory,
+                });
+                continue;
+            }
+
             let filename = format!("{}.md", display_slug);
             let kind = NodeKind::Resource {
                 connector: connector.to_string(),
@@ -3003,6 +3383,7 @@ mod disk_cache_integration {
                 title: None,
                 updated_at: Some(self.updated_at()),
                 content_type: None,
+            group: None,
             }])
         }
         async fn read_resource(&self, _: &str, _: &str) -> anyhow::Result<ConnResource> {
@@ -3014,6 +3395,7 @@ mod disk_cache_integration {
                     title: None,
                     updated_at: Some(self.updated_at()),
                     content_type: None,
+                group: None,
                 },
                 content: b"hello world".to_vec(),
                 raw_json: None,
@@ -3055,6 +3437,7 @@ mod disk_cache_integration {
                 title: None,
                 updated_at: Some(updated_at.into()),
                 content_type: None,
+            group: None,
             }],
         );
     }
@@ -3235,6 +3618,7 @@ mod flush_promotion {
                 title: None,
                 updated_at: None,
                 content_type: None,
+            group: None,
             })
         }
         async fn resource_versions(&self, _: &str, _: &str) -> anyhow::Result<Vec<VersionInfo>> {
@@ -3344,6 +3728,7 @@ mod flush_promotion {
                 title: None,
                 updated_at: None,
                 content_type: None,
+            group: None,
             }],
         );
 

@@ -112,6 +112,15 @@ pub struct CollectionSpec {
     pub operations_spec: Option<Vec<OperationSpec>>,
     /// Declared relationships to other collections.
     pub relationships: Option<Vec<RelationshipSpec>>,
+    /// URL placeholder name the parent resource fills in this subcollection's endpoints.
+    /// e.g. for list_endpoint "/repos/{repo}/issues", parent_param = "repo".
+    pub parent_param: Option<String>,
+    /// Nested collections available under each resource of this collection.
+    pub subcollections: Option<Vec<CollectionSpec>>,
+    /// JSON dotpath to group resources by in the VFS (e.g. "owner.login").
+    /// When set, resources are shown under synthetic group directories instead
+    /// of directly in the collection directory.
+    pub group_by: Option<String>,
 }
 
 /// Controls how a JSON API response is rendered into a readable markdown file.
