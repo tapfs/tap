@@ -1320,14 +1320,21 @@ impl VirtualFs {
                 let conn = self.registry.get(connector).ok_or(VfsError::NotFound)?;
                 let clean_data = strip_tapfs_fields(&data);
 
-                // is_new: _id absent/empty means never been to the API
-                let is_new = tapfs_meta
-                    .id
-                    .as_ref()
-                    .map(|s| s.trim().is_empty())
-                    .unwrap_or(true);
+                // is_new: _id absent/empty means never been to the API.
+                // "__creating__" is a sentinel written below to prevent concurrent
+                // double-POSTs when NFS delivers two WRITE calls in rapid succession.
+                let id_value = tapfs_meta.id.as_deref().unwrap_or("").trim();
+                if id_value == "__creating__" {
+                    return Ok(());
+                }
+                let is_new = id_value.is_empty();
 
                 let api_id = if is_new {
+                    // Write sentinel before the API call so a concurrent flush
+                    // skips the create instead of sending a duplicate POST.
+                    let sentinel = inject_tapfs_fields(&data, "__creating__", 0);
+                    let _ = self.drafts.write_draft(connector, collection, resource, &sentinel);
+
                     match rt.block_on(conn.create_resource(collection, &clean_data)) {
                         Ok(meta) => {
                             let _ = self.audit.record(
@@ -3175,6 +3182,10 @@ fn lock_slug(slug: &str) -> String {
 
 /// Parse a filename into (resource_slug, ResourceVariant).
 fn parse_resource_filename(name: &str) -> Result<(String, ResourceVariant), VfsError> {
+    // Reject hidden/temp files (vim .swp, macOS .DS_Store, etc.)
+    if name.starts_with('.') {
+        return Err(VfsError::PermissionDenied);
+    }
     if let Some(base) = name.strip_suffix(".lock") {
         if base.is_empty() {
             return Err(VfsError::NotFound);
