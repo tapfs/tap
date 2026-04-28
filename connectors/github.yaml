@@ -107,9 +107,10 @@ collections:
         subcollections:
           - name: comments
             parent_param: issue
+            aggregate: true
             description: "Comments on a GitHub issue"
             slug_hint: "comment ID"
-            operations: [read, write, create]
+            operations: [read, create]
             list_endpoint: "/repos/{repo}/issues/{issue}/comments"
             get_endpoint: "/repos/{repo}/issues/{issue}/comments/{id}"
             create_endpoint: "/repos/{repo}/issues/{issue}/comments"

@@ -1064,6 +1064,7 @@ mod tests {
             parent_param: None,
             subcollections: None,
             group_by: None,
+            aggregate: None,
         }
     }
 
