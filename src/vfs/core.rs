@@ -1862,7 +1862,10 @@ impl VirtualFs {
                 .map(|s| !s.is_empty())
                 .unwrap_or(false);
 
-            let kind = if has_subs {
+            // A bare name (no .md) resolves to the directory when the
+            // collection has subcollections; a .md name always gives the file.
+            let want_dir = has_subs && !name.ends_with(".md");
+            let kind = if want_dir {
                 NodeKind::ResourceDir {
                     connector: connector.to_string(),
                     collection: collection.to_string(),
@@ -2007,9 +2010,16 @@ impl VirtualFs {
             .map(|s| !s.is_empty())
             .unwrap_or(false);
 
+        let want_dir = has_subs && !name.ends_with(".md");
+        let lookup_slug = if has_subs && name.ends_with(".md") {
+            name.strip_suffix(".md").unwrap_or(name)
+        } else {
+            name
+        };
+
         for meta in &filtered {
-            if meta.slug == name {
-                let kind = if has_subs {
+            if meta.slug == lookup_slug {
+                let kind = if want_dir {
                     NodeKind::ResourceDir {
                         connector: connector.to_string(),
                         collection: collection.to_string(),
@@ -2076,31 +2086,44 @@ impl VirtualFs {
             .iter()
             .filter(|r| r.group.as_deref() == Some(group_value))
         {
-            let kind = if has_subs {
-                NodeKind::ResourceDir {
+            if has_subs {
+                let dir_kind = NodeKind::ResourceDir {
                     connector: connector.to_string(),
                     collection: collection.to_string(),
                     resource: meta.slug.clone(),
-                }
-            } else {
-                NodeKind::Resource {
+                };
+                let dir_id = self.nodes.allocate(dir_kind);
+                entries.push(VfsDirEntry {
+                    name: meta.slug.clone(),
+                    id: dir_id,
+                    file_type: VfsFileType::Directory,
+                });
+                let file_kind = NodeKind::Resource {
                     connector: connector.to_string(),
                     collection: collection.to_string(),
                     resource: meta.slug.clone(),
                     variant: ResourceVariant::Live,
-                }
-            };
-            let id = self.nodes.allocate(kind);
-            let file_type = if has_subs {
-                VfsFileType::Directory
+                };
+                let file_id = self.nodes.allocate(file_kind);
+                entries.push(VfsDirEntry {
+                    name: format!("{}.md", meta.slug),
+                    id: file_id,
+                    file_type: VfsFileType::RegularFile,
+                });
             } else {
-                VfsFileType::RegularFile
-            };
-            entries.push(VfsDirEntry {
-                name: meta.slug.clone(),
-                id,
-                file_type,
-            });
+                let kind = NodeKind::Resource {
+                    connector: connector.to_string(),
+                    collection: collection.to_string(),
+                    resource: meta.slug.clone(),
+                    variant: ResourceVariant::Live,
+                };
+                let id = self.nodes.allocate(kind);
+                entries.push(VfsDirEntry {
+                    name: format!("{}.md", meta.slug),
+                    id,
+                    file_type: VfsFileType::RegularFile,
+                });
+            }
         }
 
         Ok(entries)
@@ -2338,16 +2361,30 @@ impl VirtualFs {
                 });
 
             if has_subs {
-                let kind = NodeKind::ResourceDir {
+                // Directory entry for subcollection navigation.
+                let dir_kind = NodeKind::ResourceDir {
                     connector: connector.to_string(),
                     collection: collection.to_string(),
                     resource: res.slug.clone(),
                 };
-                let id = self.nodes.allocate(kind);
+                let dir_id = self.nodes.allocate(dir_kind);
                 entries.push(VfsDirEntry {
-                    name: display_slug,
-                    id,
+                    name: display_slug.clone(),
+                    id: dir_id,
                     file_type: VfsFileType::Directory,
+                });
+                // Also expose the resource content as a .md file.
+                let file_kind = NodeKind::Resource {
+                    connector: connector.to_string(),
+                    collection: collection.to_string(),
+                    resource: res.slug.clone(),
+                    variant: ResourceVariant::Live,
+                };
+                let file_id = self.nodes.allocate(file_kind);
+                entries.push(VfsDirEntry {
+                    name: format!("{}.md", display_slug),
+                    id: file_id,
+                    file_type: VfsFileType::RegularFile,
                 });
                 continue;
             }
