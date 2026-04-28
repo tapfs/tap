@@ -184,19 +184,90 @@ impl RestConnector {
         endpoint.replace("{id}", id)
     }
 
-    /// Find the CollectionSpec by name.
-    fn find_collection(&self, name: &str) -> Result<&CollectionSpec> {
-        self.spec
+    /// Find the CollectionSpec by name, handling path-encoded nested collection paths.
+    ///
+    /// For flat collections like `"issues"`, does a direct match.
+    /// For path-encoded names like `"repos/tap/issues"`, walks the spec
+    /// subcollection tree and substitutes parent resource IDs into endpoints.
+    fn find_collection(&self, name: &str) -> Result<CollectionSpec> {
+        if let Some(c) = self.spec.collections.iter().find(|c| c.name == name) {
+            return Ok(c.clone());
+        }
+        self.resolve_nested_collection(name)
+    }
+
+    /// Walk a path-encoded collection name like `"repos/tap/issues"` through the
+    /// spec's subcollection tree, resolving slugs to API IDs and substituting
+    /// them into endpoint placeholders.
+    fn resolve_nested_collection(&self, path: &str) -> Result<CollectionSpec> {
+        let segments: Vec<&str> = path.split('/').collect();
+        if segments.is_empty() {
+            return Err(anyhow!(
+                "empty collection path in spec '{}'",
+                self.spec.name
+            ));
+        }
+
+        let mut current = self
+            .spec
             .collections
             .iter()
-            .find(|c| c.name == name)
+            .find(|c| c.name == segments[0])
+            .cloned()
             .ok_or_else(|| {
                 anyhow!(
                     "collection '{}' not found in spec '{}'",
-                    name,
+                    segments[0],
                     self.spec.name
                 )
-            })
+            })?;
+
+        let mut params: Vec<(String, String)> = Vec::new();
+        let mut current_collection_path = segments[0].to_string();
+        let mut i = 1;
+
+        while i < segments.len() {
+            let resource_slug = segments[i];
+            i += 1;
+
+            // Resolve user-visible slug to API id (populated by list_resources).
+            let key = format!("{}/{}", current_collection_path, resource_slug);
+            let api_id = self
+                .slug_to_id
+                .get(&key)
+                .map(|v| v.clone())
+                .unwrap_or_else(|| resource_slug.to_string());
+
+            if i >= segments.len() {
+                break;
+            }
+
+            let sub_name = segments[i];
+            i += 1;
+
+            let subs = current.subcollections.as_deref().unwrap_or(&[]);
+            let sub = subs
+                .iter()
+                .find(|c| c.name == sub_name)
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "subcollection '{}' not found under '{}'",
+                        sub_name,
+                        current.name
+                    )
+                })?;
+
+            if let Some(ref param) = sub.parent_param {
+                params.push((param.clone(), api_id));
+            }
+
+            current_collection_path =
+                format!("{}/{}/{}", current_collection_path, resource_slug, sub_name);
+            current = sub;
+        }
+
+        Ok(substitute_params(current, &params))
     }
 
     /// Send a request with retry + exponential backoff for transient errors.
@@ -386,12 +457,19 @@ impl RestConnector {
             .or_else(|| item.get("LastModifiedDate"))
             .map(json_value_to_string);
 
+        let group = coll
+            .group_by
+            .as_deref()
+            .and_then(|field| get_nested(item, field))
+            .map(json_value_to_string);
+
         ResourceMeta {
             id,
             slug,
             title,
             updated_at,
             content_type: Some("application/json".to_string()),
+            group,
         }
     }
 
@@ -574,6 +652,25 @@ impl RestConnector {
     }
 }
 
+/// Replace `{key}` placeholders in all endpoint fields of a CollectionSpec.
+fn substitute_params(mut coll: CollectionSpec, params: &[(String, String)]) -> CollectionSpec {
+    for (key, val) in params {
+        let placeholder = format!("{{{}}}", key);
+        coll.list_endpoint = coll.list_endpoint.replace(&placeholder, val);
+        coll.get_endpoint = coll.get_endpoint.replace(&placeholder, val);
+        if let Some(ref mut ep) = coll.update_endpoint {
+            *ep = ep.replace(&placeholder, val);
+        }
+        if let Some(ref mut ep) = coll.create_endpoint {
+            *ep = ep.replace(&placeholder, val);
+        }
+        if let Some(ref mut ep) = coll.delete_endpoint {
+            *ep = ep.replace(&placeholder, val);
+        }
+    }
+    coll
+}
+
 /// Parse "user.login as author" into ("user.login", "author").
 /// Plain "title" returns ("title", "title").
 fn parse_field_alias(expr: &str) -> (&str, &str) {
@@ -723,7 +820,7 @@ impl Connector for RestConnector {
 
         let metas: Vec<ResourceMeta> = items
             .iter()
-            .map(|item| Self::extract_meta(item, coll))
+            .map(|item| Self::extract_meta(item, &coll))
             .collect();
 
         // Cache slug → ID mappings for read/write resolution
@@ -764,7 +861,7 @@ impl Connector for RestConnector {
             .await
             .context("failed to parse resource response as JSON")?;
 
-        let meta = Self::extract_meta(&json, coll);
+        let meta = Self::extract_meta(&json, &coll);
         let mut content = Self::render_markdown(&meta, &json, coll.render.as_ref());
 
         // Compose: fetch sub-resources and append as sections.
@@ -824,7 +921,7 @@ impl Connector for RestConnector {
         let path = Self::substitute_id(endpoint, &resolved_id);
         let url = self.url(&path);
 
-        let body_json = markdown_to_json(content, coll)?;
+        let body_json = markdown_to_json(content, &coll)?;
 
         let response = self
             .send_with_retry(|| self.client.patch(&url).json(&body_json))
@@ -853,7 +950,7 @@ impl Connector for RestConnector {
         let clean_endpoint = endpoint.split('?').next().unwrap_or(endpoint);
         let url = self.url(clean_endpoint);
 
-        let body_json = markdown_to_json(content, coll)?;
+        let body_json = markdown_to_json(content, &coll)?;
 
         let response = self
             .send_with_retry(|| self.client.post(&url).json(&body_json))
@@ -874,7 +971,7 @@ impl Connector for RestConnector {
             .await
             .context("failed to parse create response as JSON")?;
 
-        let meta = Self::extract_meta(&json, coll);
+        let meta = Self::extract_meta(&json, &coll);
 
         // Cache the new slug → ID mapping.
         if meta.slug != meta.id {
@@ -964,6 +1061,9 @@ mod tests {
             compose: None,
             operations_spec: None,
             relationships: None,
+            parent_param: None,
+            subcollections: None,
+            group_by: None,
         }
     }
 
@@ -974,6 +1074,7 @@ mod tests {
             title: Some("Test Title".to_string()),
             updated_at: None,
             content_type: Some("application/json".to_string()),
+        group: None,
         }
     }
 
