@@ -124,12 +124,29 @@ impl AuditLogger {
             outcome: outcome.to_string(),
             detail,
         };
-        tracing::info!(
-            op = %entry.operation,
-            connector = %entry.connector,
-            outcome = %entry.outcome,
-            "audit"
-        );
+        match (&entry.collection, &entry.resource) {
+            (Some(col), Some(res)) => tracing::info!(
+                op = %entry.operation,
+                connector = %entry.connector,
+                collection = %col,
+                resource = %res,
+                outcome = %entry.outcome,
+                "audit"
+            ),
+            (Some(col), None) => tracing::info!(
+                op = %entry.operation,
+                connector = %entry.connector,
+                collection = %col,
+                outcome = %entry.outcome,
+                "audit"
+            ),
+            _ => tracing::info!(
+                op = %entry.operation,
+                connector = %entry.connector,
+                outcome = %entry.outcome,
+                "audit"
+            ),
+        };
         self.log(entry)
     }
 

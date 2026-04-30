@@ -80,6 +80,13 @@ impl Connector for AuditedConnector {
         }
     }
 
+    async fn list_resources_with_content(
+        &self,
+        collection: &str,
+    ) -> Result<Vec<(ResourceMeta, Vec<u8>)>> {
+        self.inner.list_resources_with_content(collection).await
+    }
+
     async fn read_resource(&self, collection: &str, id: &str) -> Result<Resource> {
         let connector_name = self.inner.name().to_string();
         match self.inner.read_resource(collection, id).await {

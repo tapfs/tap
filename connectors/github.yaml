@@ -112,7 +112,7 @@ collections:
             slug_hint: "comment ID"
             operations: [read, create]
             list_endpoint: "/repos/{repo}/issues/{issue}/comments"
-            get_endpoint: "/repos/{repo}/issues/{issue}/comments/{id}"
+            get_endpoint: "/repos/{repo}/issues/comments/{id}"
             create_endpoint: "/repos/{repo}/issues/{issue}/comments"
             update_endpoint: "/repos/{repo}/issues/{issue}/comments/{id}"
             id_field: "id"

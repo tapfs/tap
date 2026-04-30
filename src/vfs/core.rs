@@ -2630,18 +2630,24 @@ impl VirtualFs {
         connector: &str,
         collection: &str,
     ) -> Result<String, VfsError> {
-        let resources = self.get_resources_cached(rt, connector, collection)?;
         let conn = self.registry.get(connector).ok_or(VfsError::NotFound)?;
-        let mut out = String::new();
+        let items = rt
+            .block_on(conn.list_resources_with_content(collection))
+            .map_err(|e| VfsError::IoError(e.to_string()))?;
 
-        for (i, meta) in resources.iter().enumerate() {
+        // Populate metadata cache so readdir can use it without a second request.
+        let cache_key = format!("{}/{}", connector, collection);
+        if self.cache.get_metadata(&cache_key).is_none() {
+            let metas: Vec<_> = items.iter().map(|(m, _)| m.clone()).collect();
+            self.cache.put_metadata(&cache_key, metas);
+        }
+
+        let mut out = String::new();
+        for (i, (_, content)) in items.iter().enumerate() {
             if i > 0 {
                 out.push_str("\n---\n\n");
             }
-            let result = rt
-                .block_on(conn.read_resource(collection, &meta.id))
-                .map_err(|e| VfsError::IoError(e.to_string()))?;
-            out.push_str(std::str::from_utf8(&result.content).unwrap_or(""));
+            out.push_str(std::str::from_utf8(content).unwrap_or(""));
             if !out.ends_with('\n') {
                 out.push('\n');
             }
