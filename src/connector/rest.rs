@@ -834,6 +834,45 @@ impl Connector for RestConnector {
         Ok(metas)
     }
 
+    async fn list_resources_with_content(
+        &self,
+        collection: &str,
+    ) -> Result<Vec<(ResourceMeta, Vec<u8>)>> {
+        let coll = self.find_collection(collection)?;
+        let url = self.url(&coll.list_endpoint);
+
+        let response = self.send_with_retry(|| self.client.get(&url)).await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "list_resources_with_content failed: HTTP {} — {}",
+                status,
+                truncate_error_body(&body)
+            ));
+        }
+
+        let json: Value = response
+            .json()
+            .await
+            .context("failed to parse list response as JSON")?;
+
+        let items = Self::extract_list(&json, coll.list_root.as_deref())?;
+        let mut out = Vec::with_capacity(items.len());
+
+        for item in items {
+            let meta = Self::extract_meta(item, &coll);
+            if meta.slug != meta.id {
+                let key = format!("{}/{}", collection, meta.slug);
+                self.slug_to_id.insert(key, meta.id.clone());
+            }
+            let content = Self::render_markdown(&meta, item, coll.render.as_ref());
+            out.push((meta, content));
+        }
+
+        Ok(out)
+    }
+
     async fn read_resource(&self, collection: &str, id: &str) -> Result<Resource> {
         let coll = self.find_collection(collection)?;
         let resolved_id = self

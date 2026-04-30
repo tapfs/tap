@@ -81,6 +81,25 @@ pub trait Connector: Send + Sync {
 
     /// Create a new resource in the given collection.
     /// Returns metadata for the newly created resource.
+    /// List resources with their rendered content in one pass.
+    /// Default implementation makes individual `read_resource` calls;
+    /// connectors that already have full data in the listing response
+    /// (e.g. REST comments) should override to avoid N+1 API calls.
+    async fn list_resources_with_content(
+        &self,
+        collection: &str,
+    ) -> Result<Vec<(ResourceMeta, Vec<u8>)>> {
+        let metas = self.list_resources(collection).await?;
+        let mut out = Vec::with_capacity(metas.len());
+        for meta in metas {
+            match self.read_resource(collection, &meta.id).await {
+                Ok(r) => out.push((meta, r.content)),
+                Err(_) => out.push((meta, Vec::new())),
+            }
+        }
+        Ok(out)
+    }
+
     async fn create_resource(&self, collection: &str, _content: &[u8]) -> Result<ResourceMeta> {
         Err(ConnectorError::NotSupported(format!(
             "create not supported for collection '{}'",
