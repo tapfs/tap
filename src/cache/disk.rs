@@ -98,12 +98,7 @@ impl DiskCache {
         }
     }
 
-    fn paths(
-        &self,
-        connector: &str,
-        collection: &str,
-        id: &str,
-    ) -> (PathBuf, PathBuf, PathBuf) {
+    fn paths(&self, connector: &str, collection: &str, id: &str) -> (PathBuf, PathBuf, PathBuf) {
         let hash = stable_hash(id);
         let dir = self.root.join(safe(connector)).join(safe(collection));
         let bin = dir.join(format!("{:016x}.bin", hash));

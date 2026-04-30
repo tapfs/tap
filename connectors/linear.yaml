@@ -12,6 +12,8 @@ auth:
 capabilities:
   read: true
   write: true
+  create: true
+  delete: false
   pagination: cursor
 
 agent:
@@ -28,10 +30,11 @@ collections:
   - name: issues
     description: "Linear issues with status, priority, and assignees"
     slug_hint: "issue identifier (e.g. ENG-42)"
-    operations: [read, write, draft]
+    operations: [read, write, create, draft]
     list_endpoint: "/rest/v2/issues?limit=50&sort=updatedAt"
     get_endpoint: "/rest/v2/issues/{id}"
     update_endpoint: "/rest/v2/issues/{id}"
+    create_endpoint: "/rest/v2/issues"
     id_field: "id"
     slug_field: "identifier"
     title_field: "title"

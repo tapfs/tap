@@ -449,6 +449,7 @@ impl GoogleWorkspaceConnector {
                         title: Some(name.to_string()),
                         updated_at: modified.map(|s| s.to_string()),
                         content_type,
+                        group: None,
                     });
                 }
             }
@@ -492,6 +493,7 @@ impl GoogleWorkspaceConnector {
             title: Some(name.to_string()),
             updated_at: Some(modified.to_string()),
             content_type: Some(mime.to_string()),
+        group: None,
         };
 
         // Determine how to fetch content
@@ -709,6 +711,7 @@ impl GoogleWorkspaceConnector {
                             title: Some(subject),
                             updated_at: Some(date),
                             content_type: Some("message/rfc822".to_string()),
+                        group: None,
                         });
                     }
                     Err(e) => {
@@ -761,6 +764,7 @@ impl GoogleWorkspaceConnector {
             title: Some(subject.clone()),
             updated_at: Some(date.clone()),
             content_type: Some("message/rfc822".to_string()),
+        group: None,
         };
 
         // Extract body
@@ -873,6 +877,7 @@ impl GoogleWorkspaceConnector {
                 title: Some(summary.to_string()),
                 updated_at: updated.map(|s| s.to_string()),
                 content_type: Some("text/calendar".to_string()),
+            group: None,
             });
         }
 
@@ -908,6 +913,7 @@ impl GoogleWorkspaceConnector {
             title: Some(summary.to_string()),
             updated_at: updated.map(|s| s.to_string()),
             content_type: Some("text/calendar".to_string()),
+        group: None,
         };
 
         // Extract attendees
@@ -1184,6 +1190,7 @@ impl Connector for GoogleWorkspaceConnector {
                     title: Some(name.to_string()),
                     updated_at: Some(modified.to_string()),
                     content_type: Some(mime.to_string()),
+                group: None,
                 };
 
                 let mut out = String::new();
@@ -1471,7 +1478,7 @@ fn base64_url_encode(input: &[u8]) -> String {
     static ENCODE_TABLE: &[u8; 64] =
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-    let mut output = String::with_capacity((input.len() + 2) / 3 * 4);
+    let mut output = String::with_capacity(input.len().div_ceil(3) * 4);
 
     for chunk in input.chunks(3) {
         let b0 = chunk[0] as u32;

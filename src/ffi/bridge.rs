@@ -538,7 +538,7 @@ pub unsafe extern "C" fn tapfs_unlink(
         None => return -1,
     };
 
-    match handle.vfs.unlink(parent_id, name) {
+    match handle.vfs.unlink(handle.rt.handle(), parent_id, name) {
         Ok(()) => 0,
         Err(_) => -1,
     }

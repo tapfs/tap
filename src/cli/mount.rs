@@ -25,13 +25,11 @@ pub async fn run(config: TapConfig) -> Result<()> {
         let data_dir = config.data_dir();
 
         // Check if daemon is already running
-        let daemon_running = crate::ipc::send_request(
-            &socket_path,
-            &serde_json::json!({"cmd": "status"}),
-        )
-        .await
-        .map(|r| r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false))
-        .unwrap_or(false);
+        let daemon_running =
+            crate::ipc::send_request(&socket_path, &serde_json::json!({"cmd": "status"}))
+                .await
+                .map(|r| r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false))
+                .unwrap_or(false);
 
         if daemon_running {
             // Hot-add via IPC
@@ -60,9 +58,8 @@ pub async fn run(config: TapConfig) -> Result<()> {
                 if std::io::stdin().is_terminal() {
                     // Get auth config from spec, or fall back to built-in defaults
                     // for native connectors (google, etc.)
-                    let default_auth = crate::cli::auth::default_oauth2_config(
-                        &auth_err.connector_name,
-                    );
+                    let default_auth =
+                        crate::cli::auth::default_oauth2_config(&auth_err.connector_name);
                     let auth = auth_err
                         .spec
                         .as_ref()
@@ -126,10 +123,8 @@ pub async fn run(config: TapConfig) -> Result<()> {
                 .await
                 {
                     if let Some(connectors) = resp.get("connectors").and_then(|v| v.as_array()) {
-                        let names: Vec<&str> = connectors
-                            .iter()
-                            .filter_map(|v| v.as_str())
-                            .collect();
+                        let names: Vec<&str> =
+                            connectors.iter().filter_map(|v| v.as_str()).collect();
                         println!("tapfs running in background");
                         println!("Mounted: {}", names.join(", "));
                         println!("Mount point: {}", config.mount_point.display());
@@ -242,14 +237,10 @@ pub async fn run(config: TapConfig) -> Result<()> {
                                 .map(|a| a.auth_type.as_str())
                                 .unwrap_or("bearer");
 
-                            let auth_spec = auth_err
-                                .spec
-                                .as_ref()
-                                .and_then(|s| s.auth.as_ref());
+                            let auth_spec = auth_err.spec.as_ref().and_then(|s| s.auth.as_ref());
 
-                            let has_device_flow = auth_spec
-                                .and_then(|a| a.device_code_url.as_ref())
-                                .is_some();
+                            let has_device_flow =
+                                auth_spec.and_then(|a| a.device_code_url.as_ref()).is_some();
                             let has_browser_oauth = auth_type == "oauth2" && !has_device_flow;
 
                             if has_device_flow {
@@ -288,8 +279,8 @@ pub async fn run(config: TapConfig) -> Result<()> {
                         } else {
                             // Non-interactive (CI, daemon) — fall back to spec path or bare connector
                             let spec = if let Some(ref spec_path) = config.connector_spec {
-                                let yaml = std::fs::read_to_string(spec_path)
-                                    .with_context(|| {
+                                let yaml =
+                                    std::fs::read_to_string(spec_path).with_context(|| {
                                         format!("reading spec file {:?}", spec_path)
                                     })?;
                                 let mut spec = ConnectorSpec::from_yaml(&yaml)?;
@@ -311,8 +302,7 @@ pub async fn run(config: TapConfig) -> Result<()> {
                                 .build()?;
 
                             let token = creds.token(&spec.name);
-                            let rest =
-                                RestConnector::new_with_token(spec.clone(), client, token);
+                            let rest = RestConnector::new_with_token(spec.clone(), client, token);
                             let inner: Arc<dyn crate::connector::traits::Connector> =
                                 Arc::new(rest);
                             let audited: Arc<dyn crate::connector::traits::Connector> =
@@ -389,9 +379,8 @@ pub async fn run(config: TapConfig) -> Result<()> {
     let drafts = Arc::new(DraftStore::new(config.drafts_dir()).context("creating draft store")?);
     let versions =
         Arc::new(VersionStore::new(config.versions_dir()).context("creating version store")?);
-    let disk_cache = Arc::new(
-        DiskCache::new(config.cache_dir()).context("creating on-disk resource cache")?,
-    );
+    let disk_cache =
+        Arc::new(DiskCache::new(config.cache_dir()).context("creating on-disk resource cache")?);
 
     // 9. Ensure mount point directory exists
     std::fs::create_dir_all(&config.mount_point)
@@ -426,9 +415,11 @@ pub async fn run(config: TapConfig) -> Result<()> {
     // 11. Build VirtualFs
     let cache_for_ipc = cache.clone();
     let disk_for_ipc = disk_cache.clone();
+    let slug_map_path = data_dir.join("slug-map.json");
     let vfs = Arc::new(
         VirtualFs::new(registry.clone(), cache, drafts, versions, audit.clone())
-            .with_disk_cache(disk_cache),
+            .with_disk_cache(disk_cache)
+            .with_slug_map(slug_map_path),
     );
 
     // 12. Start IPC socket for CLI commands (inspect, status, invalidate, add/remove connector)
@@ -469,6 +460,37 @@ pub async fn run(config: TapConfig) -> Result<()> {
 }
 
 #[cfg(feature = "nfs")]
+/// Kill whatever process holds `port` and force-unmount `mount_point`.
+/// Errors are intentionally swallowed — the point is best-effort cleanup
+/// before we bind, not a hard failure.
+async fn force_cleanup(port: u32, mount_point: &std::path::Path) {
+    // Find PID via lsof and kill it.
+    if let Ok(out) = tokio::process::Command::new("lsof")
+        .args(["-ti", &format!(":{}", port)])
+        .output()
+        .await
+    {
+        let pids = String::from_utf8_lossy(&out.stdout);
+        for pid in pids.split_whitespace() {
+            if let Ok(pid_n) = pid.parse::<u32>() {
+                let _ = tokio::process::Command::new("kill")
+                    .args(["-9", pid])
+                    .status()
+                    .await;
+                tracing::info!(pid = pid_n, "killed stale tapfs process");
+                // Give the OS a moment to release the port.
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        }
+    }
+    // Force-unmount the stale NFS mount.
+    let mp = mount_point.display().to_string();
+    let _ = tokio::process::Command::new("umount")
+        .args(["-f", &mp])
+        .status()
+        .await;
+}
+
 async fn mount_nfs(vfs: Arc<VirtualFs>, config: &TapConfig) -> Result<()> {
     use crate::nfs::server::TapNfs;
     use nfsserve::tcp::{NFSTcp, NFSTcpListener};
@@ -479,6 +501,10 @@ async fn mount_nfs(vfs: Arc<VirtualFs>, config: &TapConfig) -> Result<()> {
         .unwrap_or(11111);
 
     let bind_addr = format!("127.0.0.1:{}", port);
+
+    // Kill any previous tapfs server holding the port and unmount the stale
+    // mount point so the kernel doesn't serve cached NFS3ERR_STALE handles.
+    force_cleanup(port, &config.mount_point).await;
 
     tracing::info!(
         mount_point = %config.mount_point.display(),
@@ -507,6 +533,14 @@ async fn mount_nfs(vfs: Arc<VirtualFs>, config: &TapConfig) -> Result<()> {
             "nolocks,vers=3,tcp,rsize=131072,actimeo=2,port={},mountport={}",
             port, port
         );
+        // Force-unmount any stale mount at this path before remounting.
+        // Without this, a crashed daemon leaves cached NFS handles that cause
+        // NFS3ERR_STALE on every access after the new server starts.
+        let _ = tokio::process::Command::new("umount")
+            .args(["-f", &mount_point.display().to_string()])
+            .status()
+            .await;
+
         tracing::info!(mount_point = %mount_point.display(), "running mount_nfs");
 
         let result = tokio::process::Command::new("mount_nfs")
