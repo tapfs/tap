@@ -1355,7 +1355,9 @@ impl VirtualFs {
                     // Write sentinel before the API call so a concurrent flush
                     // skips the create instead of sending a duplicate POST.
                     let sentinel = inject_tapfs_fields(&data, "__creating__", 0);
-                    let _ = self.drafts.write_draft(connector, collection, resource, &sentinel);
+                    let _ = self
+                        .drafts
+                        .write_draft(connector, collection, resource, &sentinel);
 
                     match rt.block_on(conn.create_resource(collection, &clean_data)) {
                         Ok(meta) => {
@@ -1860,7 +1862,7 @@ impl VirtualFs {
                 title: c.description.clone(),
                 updated_at: None,
                 content_type: None,
-            group: None,
+                group: None,
             })
             .collect();
         self.cache.put_metadata(&cache_key, meta);
@@ -1987,9 +1989,23 @@ impl VirtualFs {
             return Ok(kind);
         }
 
-        // Also surface locally-created resources that have a pending draft
-        // (e.g. _draft: true files not yet pushed to API)
+        // Also surface locally-created resources that have a pending draft.
         if self.drafts.has_draft(connector, collection, &slug) {
+            let has_subs = self
+                .registry
+                .get_spec(connector)
+                .and_then(|s| find_collection_spec_in(&s.collections, collection).cloned())
+                .and_then(|c| c.subcollections)
+                .map(|s| !s.is_empty())
+                .unwrap_or(false);
+            // Bare name + subcollections = ResourceDir (created via mkdir).
+            if has_subs && !name.ends_with(".md") {
+                return Ok(NodeKind::ResourceDir {
+                    connector: connector.to_string(),
+                    collection: collection.to_string(),
+                    resource: slug,
+                });
+            }
             return Ok(NodeKind::Resource {
                 connector: connector.to_string(),
                 collection: collection.to_string(),
@@ -2018,10 +2034,23 @@ impl VirtualFs {
         let parent_spec =
             find_collection_spec_in(&spec.collections, collection).ok_or(VfsError::NotFound)?;
 
+        // index.md is the resource body file inside its own directory.
+        if name == "index.md" {
+            return Ok(NodeKind::Resource {
+                connector: connector.to_string(),
+                collection: collection.to_string(),
+                resource: resource.to_string(),
+                variant: ResourceVariant::Live,
+            });
+        }
+
         let subs = parent_spec.subcollections.as_deref().unwrap_or(&[]);
 
         // Check bare name (non-aggregate directory subcollection).
-        if let Some(sub) = subs.iter().find(|c| c.name == name && !c.aggregate.unwrap_or(false)) {
+        if let Some(sub) = subs
+            .iter()
+            .find(|c| c.name == name && !c.aggregate.unwrap_or(false))
+        {
             let nested_collection = format!("{}/{}/{}", collection, resource, sub.name);
             return Ok(NodeKind::Collection {
                 connector: connector.to_string(),
@@ -2031,7 +2060,9 @@ impl VirtualFs {
 
         // Check `{name}.md` for aggregate subcollections.
         if let Some(base) = name.strip_suffix(".md") {
-            if let Some(sub) = subs.iter().find(|c| c.name == base && c.aggregate.unwrap_or(false))
+            if let Some(sub) = subs
+                .iter()
+                .find(|c| c.name == base && c.aggregate.unwrap_or(false))
             {
                 let nested_collection = format!("{}/{}/{}", collection, resource, sub.name);
                 return Ok(NodeKind::Collection {
@@ -2077,6 +2108,21 @@ impl VirtualFs {
             .registry
             .get_spec(connector)
             .ok_or(VfsError::NotFound)?;
+
+        // index.md — resource body
+        let body_kind = NodeKind::Resource {
+            connector: connector.to_string(),
+            collection: collection.to_string(),
+            resource: resource.to_string(),
+            variant: ResourceVariant::Live,
+        };
+        let body_id = self.nodes.allocate(body_kind);
+        entries.push(VfsDirEntry {
+            name: "index.md".to_string(),
+            id: body_id,
+            file_type: VfsFileType::RegularFile,
+        });
+
         if let Some(parent_spec) = find_collection_spec_in(&spec.collections, collection) {
             if let Some(subs) = &parent_spec.subcollections {
                 for sub in subs {
@@ -2220,18 +2266,6 @@ impl VirtualFs {
                     name: meta.slug.clone(),
                     id: dir_id,
                     file_type: VfsFileType::Directory,
-                });
-                let file_kind = NodeKind::Resource {
-                    connector: connector.to_string(),
-                    collection: collection.to_string(),
-                    resource: meta.slug.clone(),
-                    variant: ResourceVariant::Live,
-                };
-                let file_id = self.nodes.allocate(file_kind);
-                entries.push(VfsDirEntry {
-                    name: format!("{}.md", meta.slug),
-                    id: file_id,
-                    file_type: VfsFileType::RegularFile,
                 });
             } else {
                 let kind = NodeKind::Resource {
@@ -2484,7 +2518,6 @@ impl VirtualFs {
                 });
 
             if has_subs {
-                // Directory entry for subcollection navigation.
                 let dir_kind = NodeKind::ResourceDir {
                     connector: connector.to_string(),
                     collection: collection.to_string(),
@@ -2492,22 +2525,9 @@ impl VirtualFs {
                 };
                 let dir_id = self.nodes.allocate(dir_kind);
                 entries.push(VfsDirEntry {
-                    name: display_slug.clone(),
+                    name: display_slug,
                     id: dir_id,
                     file_type: VfsFileType::Directory,
-                });
-                // Also expose the resource content as a .md file.
-                let file_kind = NodeKind::Resource {
-                    connector: connector.to_string(),
-                    collection: collection.to_string(),
-                    resource: res.slug.clone(),
-                    variant: ResourceVariant::Live,
-                };
-                let file_id = self.nodes.allocate(file_kind);
-                entries.push(VfsDirEntry {
-                    name: format!("{}.md", display_slug),
-                    id: file_id,
-                    file_type: VfsFileType::RegularFile,
                 });
                 continue;
             }
@@ -3029,7 +3049,13 @@ impl VirtualFs {
     // mkdir (for transactions)
     // -----------------------------------------------------------------------
 
-    /// Create a directory. Only supported inside `.tx/` (creating named transactions).
+    /// Create a directory.
+    ///
+    /// Supported in two parent contexts:
+    /// - `.tx/` — creates a named transaction
+    /// - Collection whose resources have subcollections — creates a new resource
+    ///   directory and seeds `index.md` with the draft template so the user can
+    ///   immediately edit and save to POST to the API.
     pub fn mkdir(&self, parent_id: u64, name: &str) -> Result<VfsAttr, VfsError> {
         let parent_kind = self.nodes.get(parent_id).ok_or(VfsError::NotFound)?;
         match &parent_kind {
@@ -3037,7 +3063,6 @@ impl VirtualFs {
                 connector,
                 collection,
             } => {
-                // Creating a named transaction
                 let kind = NodeKind::Transaction {
                     connector: connector.clone(),
                     collection: collection.clone(),
@@ -3051,6 +3076,50 @@ impl VirtualFs {
                     Some(name),
                     "success",
                     None,
+                );
+                Ok(VfsAttr {
+                    id,
+                    size: 0,
+                    file_type: VfsFileType::Directory,
+                    perm: 0o755,
+                    mtime: None,
+                })
+            }
+            NodeKind::Collection {
+                connector,
+                collection,
+            } => {
+                // Only allowed when this collection's resources have subcollections.
+                let has_subs = self
+                    .registry
+                    .get_spec(connector)
+                    .and_then(|s| find_collection_spec_in(&s.collections, collection).cloned())
+                    .and_then(|c| c.subcollections)
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false);
+                if !has_subs {
+                    return Err(VfsError::PermissionDenied);
+                }
+
+                // Seed index.md draft so it appears immediately after mkdir.
+                let template = b"---\n_draft: true\n_id:\n_version:\n---\n\n".to_vec();
+                self.drafts
+                    .create_draft(connector, collection, name, &template)
+                    .map_err(|e| VfsError::IoError(e.to_string()))?;
+
+                let kind = NodeKind::ResourceDir {
+                    connector: connector.clone(),
+                    collection: collection.clone(),
+                    resource: name.to_string(),
+                };
+                let id = self.nodes.allocate(kind);
+                let _ = self.audit.record(
+                    "create_live",
+                    connector,
+                    Some(collection),
+                    Some(name),
+                    "success",
+                    Some("mkdir — draft seeded".to_string()),
                 );
                 Ok(VfsAttr {
                     id,
@@ -3587,7 +3656,7 @@ mod disk_cache_integration {
                 title: None,
                 updated_at: Some(self.updated_at()),
                 content_type: None,
-            group: None,
+                group: None,
             }])
         }
         async fn read_resource(&self, _: &str, _: &str) -> anyhow::Result<ConnResource> {
@@ -3599,7 +3668,7 @@ mod disk_cache_integration {
                     title: None,
                     updated_at: Some(self.updated_at()),
                     content_type: None,
-                group: None,
+                    group: None,
                 },
                 content: b"hello world".to_vec(),
                 raw_json: None,
@@ -3641,7 +3710,7 @@ mod disk_cache_integration {
                 title: None,
                 updated_at: Some(updated_at.into()),
                 content_type: None,
-            group: None,
+                group: None,
             }],
         );
     }
@@ -3822,7 +3891,7 @@ mod flush_promotion {
                 title: None,
                 updated_at: None,
                 content_type: None,
-            group: None,
+                group: None,
             })
         }
         async fn resource_versions(&self, _: &str, _: &str) -> anyhow::Result<Vec<VersionInfo>> {
@@ -3932,7 +4001,7 @@ mod flush_promotion {
                 title: None,
                 updated_at: None,
                 content_type: None,
-            group: None,
+                group: None,
             }],
         );
 
