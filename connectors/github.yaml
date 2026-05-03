@@ -73,6 +73,7 @@ collections:
           frontmatter:
             - title
             - state
+            - "html_url as url"
             - "user.login as author"
             - "assignee.login as assignee"
             - created_at
@@ -120,6 +121,7 @@ collections:
             title_field: "user.login"
             render:
               frontmatter:
+                - "html_url as url"
                 - "user.login as author"
                 - created_at
                 - updated_at
@@ -140,6 +142,7 @@ collections:
           frontmatter:
             - title
             - state
+            - "html_url as url"
             - "user.login as author"
             - "head.ref as branch"
             - "base.ref as target"
