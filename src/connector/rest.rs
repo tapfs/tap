@@ -1114,7 +1114,7 @@ mod tests {
             title: Some("Test Title".to_string()),
             updated_at: None,
             content_type: Some("application/json".to_string()),
-        group: None,
+            group: None,
         }
     }
 

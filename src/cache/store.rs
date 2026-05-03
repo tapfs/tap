@@ -182,7 +182,7 @@ mod tests {
             title: None,
             updated_at: None,
             content_type: None,
-        group: None,
+            group: None,
         }];
         cache.put_metadata("col", meta);
         let m = cache.get_metadata("col").unwrap();
@@ -201,7 +201,7 @@ mod tests {
                 title: None,
                 updated_at: None,
                 content_type: None,
-            group: None,
+                group: None,
             }],
         );
         thread::sleep(Duration::from_millis(30));

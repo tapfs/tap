@@ -37,9 +37,7 @@ pub async fn run(config: TapConfig) -> Result<()> {
             // and launchd restart where mount_nfs failed), we need to restart.
             let mount_active = is_mount_active(&config.mount_point);
             if !mount_active {
-                eprintln!(
-                    "tapfs daemon running but NFS mount is not active — restarting service"
-                );
+                eprintln!("tapfs daemon running but NFS mount is not active — restarting service");
                 let _ = crate::cli::service::stop();
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 // Fall through to the install/start path below.
