@@ -30,5 +30,6 @@ pub mod ipc;
 #[cfg(feature = "nfs")]
 pub mod nfs;
 pub mod path;
+pub mod search;
 pub mod version;
 pub mod vfs;

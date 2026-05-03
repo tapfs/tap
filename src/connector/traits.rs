@@ -77,4 +77,22 @@ pub trait Connector: Send + Sync {
     async fn write_resource(&self, collection: &str, id: &str, content: &[u8]) -> Result<()>;
     async fn resource_versions(&self, collection: &str, id: &str) -> Result<Vec<VersionInfo>>;
     async fn read_version(&self, collection: &str, id: &str, version: u32) -> Result<Resource>;
+
+    /// Search for resources within this connector. The default implementation
+    /// returns [`ConnectorError::NotSupported`]; connectors that proxy a
+    /// searchable API should override it.
+    ///
+    /// Used by the `upstream` search provider in [`crate::search`]. See
+    /// `docs/proposals/search-providers.md`.
+    async fn search_resources(
+        &self,
+        _collection: Option<&str>,
+        _query: &str,
+    ) -> Result<Vec<ResourceMeta>> {
+        Err(ConnectorError::NotSupported(format!(
+            "connector '{}' does not implement search",
+            self.name()
+        ))
+        .into())
+    }
 }
