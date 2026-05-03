@@ -1,38 +1,39 @@
 # tapfs
 
-**Transactions, drafts, versioning, and audit trails for enterprise APIs — through plain filesystem operations.**
+**Mount any REST API as a filesystem. Read with `cat`, write with `echo`, create with `mkdir` — versioned, audited, agent-ready.**
 
 [![CI](https://github.com/tapfs/tap/actions/workflows/ci.yml/badge.svg)](https://github.com/tapfs/tap/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 ```bash
-$ tap mount salesforce
+$ tap mount github
 
-$ ls /mnt/tap/salesforce/accounts/
-acme-corp.md
-globex.md
+$ ls /mnt/tap/github/tapfs/tap/issues/
+fix-auth-bug/   add-dark-mode/   api-rate-limit/
 
-$ cat acme-corp.md                        # GET — live from the API
+$ cat /mnt/tap/github/tapfs/tap/issues/fix-auth-bug/index.md   # GET
 ---
-id: 001xx00001ABC
-type: salesforce/account
-modified: 2026-04-10T14:22:00Z
-owner: jane@acme.com
+_id: 42
+title: Fix auth bug
+state: open
+url: https://github.com/tapfs/tap/issues/42
 ---
-# Acme Corp
-Industry: Technology
-Annual Revenue: $4.2M
-...
+Session tokens expire too early on mobile.
 
-$ cp acme-corp.md acme-corp.draft.md      # sandbox — no API call
-$ vi acme-corp.draft.md                   # edit freely, still no API call
-$ mv acme-corp.draft.md acme-corp.md      # promote — one atomic PATCH
-$ cat acme-corp@v1.md                     # previous version, auto-saved
-$ tap log -n 1                            # every operation audited
-2026-04-24 20:14 [write] salesforce/accounts/acme-corp.md  promote-draft  847→912 bytes
+$ cat /mnt/tap/github/tapfs/tap/issues/fix-auth-bug/comments.md  # all comments
+Found the root cause — clock skew in the token validator.
+---
+PR up: #87
+
+$ mkdir /mnt/tap/github/tapfs/tap/issues/my-new-bug    # draft — no API call yet
+$ vi /mnt/tap/github/tapfs/tap/issues/my-new-bug/index.md  # fill in title, body
+$ # remove _draft: true from frontmatter, save → POST to GitHub
+
+$ tap log -n 1                                         # every operation audited
+2026-04-24 20:14 [create] github/tapfs/tap/issues/my-new-bug  success
 ```
 
-**One flow. Six filesystem operations. You get**: live API reads, sandboxed drafts, atomic writes, automatic versioning, and an audit trail. No SDK. No framework. Any agent or script that can read and write files gets all of this for free.
+**Any REST API becomes a navigable directory tree.** Reads hit the live API. Writes patch it. `mkdir` creates (on connectors that support it) — starting as a local draft until you publish. Every operation is versioned and audit-logged. No SDK. No framework.
 
 ## Install
 
@@ -61,16 +62,17 @@ tapfs mounts REST APIs as a filesystem and adds transactional semantics through 
 
 | Path | What it does |
 |------|-------------|
-| `cat resource.md` | Live read (GET) |
-| `echo "..." > resource.md` | Live write (PATCH) |
-| `cp resource.md resource.draft.md` | Create sandboxed copy — edits stay local |
-| `mv resource.draft.md resource.md` | Promote draft to live ��� atomic API write |
+| `cat resource/index.md` | Live read (GET) |
+| `echo "..." > resource/index.md` | Live write (PATCH) |
+| `mkdir collection/new-resource` | Draft new resource — local until published |
+| `cat resource/comments.md` | Read aggregate subcollection (all items in one file) |
+| `echo "reply" >> comments.md` | Append = POST new item (on supporting connectors) |
 | `cat resource@v3.md` | Read immutable version snapshot |
 | `cat resource.lock` | Check or acquire a transaction lock |
 | `tap log` | Full audit trail of every operation |
 | `tap rollback resource@v1.md` | Roll back to any version |
 
-Drafts are copy-on-write. Versions are automatic on every promote. Audit logging is always on. The agent doesn't need to know any of this — it just reads and writes files, and tapfs handles the rest.
+Drafts start with `_draft: true` in frontmatter — remove it and save to publish to the API. Versions are automatic on every write. Audit logging is always on. Create and delete are per-connector capabilities (`capabilities.create/delete` in the connector spec).
 
 ## Why
 
@@ -144,7 +146,7 @@ docker run --rm -it --privileged \
 ## How it works
 
 ```
-Agent ──read/write──▶ FUSE/NFS ──▶ VirtualFs ──▶ Connector ──▶ REST API
+Agent ──read/write──▶ virtual filesystem ──▶ VirtualFs ──▶ Connector ──▶ REST API
                                        |
                                   DraftStore (copy-on-write sandboxing)
                                   VersionStore (immutable snapshots)
@@ -152,7 +154,7 @@ Agent ──read/write──▶ FUSE/NFS ──▶ VirtualFs ──▶ Connector
                                   Cache (TTL-based, sparse hydration)
 ```
 
-Linux (FUSE) | macOS (NFS) | Docker
+macOS | Linux | Docker (via NFS)
 
 ## Status
 
