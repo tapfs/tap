@@ -1047,7 +1047,38 @@ impl VirtualFs {
             NodeKind::Transaction { .. } | NodeKind::TxDir { .. } => {
                 return self.unlink_tx(parent_id, name);
             }
+            // Deleting a file inside a ResourceDir (index.md, comments.md, ...).
+            NodeKind::ResourceDir {
+                connector,
+                collection,
+                resource,
+            } => {
+                return self.unlink_resource_dir_child(rt, connector, collection, resource, name);
+            }
             _ => {}
+        }
+
+        // Deleting a ResourceDir itself by bare name from a Collection/GroupDir.
+        let is_bare = !name.contains('.');
+        if is_bare
+            && matches!(
+                &parent_kind,
+                NodeKind::Collection { .. } | NodeKind::GroupDir { .. }
+            )
+        {
+            let (connector, collection) = match &parent_kind {
+                NodeKind::Collection {
+                    connector,
+                    collection,
+                } => (connector.clone(), collection.clone()),
+                NodeKind::GroupDir {
+                    connector,
+                    collection,
+                    ..
+                } => (connector.clone(), collection.clone()),
+                _ => unreachable!(),
+            };
+            return self.rmdir_resource_dir(rt, &connector, &collection, name);
         }
 
         let (connector, collection) = match &parent_kind {
@@ -3289,6 +3320,108 @@ impl VirtualFs {
     // -----------------------------------------------------------------------
     // unlink_tx (abort/delete transaction files)
     // -----------------------------------------------------------------------
+
+    /// Delete a file that lives inside a ResourceDir (e.g. `index.md`,
+    /// `comments.md`).  Only draft-only resources can be removed this way;
+    /// virtual children (aggregate .md files, agent.md) are silently accepted
+    /// so that `rm -rf` can empty the directory before removing it.
+    fn unlink_resource_dir_child(
+        &self,
+        _rt: &tokio::runtime::Handle,
+        connector: &str,
+        collection: &str,
+        resource: &str,
+        name: &str,
+    ) -> Result<(), VfsError> {
+        if name == "index.md" {
+            // index.md is the resource body draft.  Only remove it if the
+            // resource has never been pushed to the API (_id is empty).
+            if let Ok(Some(data)) = self.drafts.read_draft(connector, collection, resource) {
+                let meta = parse_tapfs_meta(&data);
+                let is_local_only = meta
+                    .id
+                    .as_ref()
+                    .map(|s| s.trim().is_empty())
+                    .unwrap_or(true);
+                if is_local_only {
+                    let _ = self.drafts.delete_draft(connector, collection, resource);
+                    let kind = NodeKind::Resource {
+                        connector: connector.to_string(),
+                        collection: collection.to_string(),
+                        resource: resource.to_string(),
+                        variant: ResourceVariant::Live,
+                    };
+                    if let Some(id) = self.nodes.lookup(&kind) {
+                        self.nodes.remove(id);
+                    }
+                    return Ok(());
+                }
+            }
+            // Resource already pushed — don't allow removing just the body file.
+            return Err(VfsError::PermissionDenied);
+        }
+        // Virtual children (comments.md, agent.md, etc.) have no persistent
+        // state — accept the unlink so rm -rf can proceed.
+        Ok(())
+    }
+
+    /// Remove a ResourceDir and its underlying draft.  Called when the user
+    /// runs `rm -rf <resource>` from a collection or group directory.
+    fn rmdir_resource_dir(
+        &self,
+        rt: &tokio::runtime::Handle,
+        connector: &str,
+        collection: &str,
+        resource: &str,
+    ) -> Result<(), VfsError> {
+        // Check whether the resource has been pushed to the API.
+        let api_id: Option<String> =
+            if let Ok(Some(data)) = self.drafts.read_draft(connector, collection, resource) {
+                let meta = parse_tapfs_meta(&data);
+                meta.id.filter(|s| !s.trim().is_empty())
+            } else {
+                None
+            };
+
+        if let Some(ref id) = api_id {
+            // Resource exists in the API — delete via connector if supported.
+            let supports_delete = self
+                .registry
+                .get_spec(connector)
+                .as_ref()
+                .and_then(|s| s.capabilities.as_ref())
+                .and_then(|c| c.delete)
+                .unwrap_or(false);
+            if !supports_delete {
+                let _ = self.drafts.delete_draft(connector, collection, resource);
+                return Err(VfsError::PermissionDenied);
+            }
+            let conn = self.registry.get(connector).ok_or(VfsError::NotFound)?;
+            rt.block_on(conn.delete_resource(collection, id))
+                .map_err(|e| VfsError::IoError(e.to_string()))?;
+            self.invalidate_resource_cache(connector, collection, resource);
+        }
+
+        // Remove local draft and node.
+        let _ = self.drafts.delete_draft(connector, collection, resource);
+        let kind = NodeKind::ResourceDir {
+            connector: connector.to_string(),
+            collection: collection.to_string(),
+            resource: resource.to_string(),
+        };
+        if let Some(id) = self.nodes.lookup(&kind) {
+            self.nodes.remove(id);
+        }
+        let _ = self.audit.record(
+            "delete",
+            connector,
+            Some(collection),
+            Some(resource),
+            "success",
+            None,
+        );
+        Ok(())
+    }
 
     /// Delete a file inside a transaction, or abort an entire transaction.
     pub fn unlink_tx(&self, parent_id: u64, name: &str) -> Result<(), VfsError> {
