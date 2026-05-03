@@ -3135,8 +3135,45 @@ impl VirtualFs {
                     return Err(VfsError::PermissionDenied);
                 }
 
-                // Seed index.md draft so it appears immediately after mkdir.
-                let template = b"---\n_draft: true\n_id:\n_version:\n---\n\n".to_vec();
+                // Seed index.md with _draft: true + empty placeholders for the
+                // collection's writable frontmatter fields.  User fills them in,
+                // removes _draft: true, and saves — that triggers auto-promote (POST).
+                let writable_fields: Vec<String> = self
+                    .registry
+                    .get_spec(connector)
+                    .and_then(|s| find_collection_spec_in(&s.collections, collection).cloned())
+                    .and_then(|c| c.render)
+                    .and_then(|r| r.frontmatter)
+                    .map(|fields| {
+                        fields
+                            .into_iter()
+                            .filter_map(|f| {
+                                // "html_url as url" → skip (read-only API fields)
+                                // "user.login as author" → skip (nested/read-only)
+                                // "title" → keep
+                                if f.contains(" as ") || f.contains('.') {
+                                    return None;
+                                }
+                                // Skip state/timestamps — not meaningful for new resources
+                                if matches!(
+                                    f.as_str(),
+                                    "state" | "created_at" | "updated_at" | "url"
+                                ) {
+                                    return None;
+                                }
+                                Some(format!("{}: ", f))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let mut template = "---\n_draft: true\n_id:\n_version:\n".to_string();
+                for field in &writable_fields {
+                    template.push_str(field);
+                    template.push('\n');
+                }
+                template.push_str("---\n\n");
+                let template = template.into_bytes();
                 self.drafts
                     .create_draft(connector, collection, name, &template)
                     .map_err(|e| VfsError::IoError(e.to_string()))?;
