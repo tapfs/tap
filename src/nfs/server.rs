@@ -13,6 +13,13 @@ use nfsserve::vfs::{DirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities};
 use crate::vfs::core::VirtualFs;
 use crate::vfs::types::*;
 
+// libc::S_IFDIR / S_IFREG are u16 on macOS and u32 on Linux.
+// Define u32 constants once so call sites stay lint-free on both platforms.
+#[allow(clippy::unnecessary_cast, clippy::useless_conversion)]
+const MODE_IFDIR: u32 = libc::S_IFDIR as u32;
+#[allow(clippy::unnecessary_cast, clippy::useless_conversion)]
+const MODE_IFREG: u32 = libc::S_IFREG as u32;
+
 /// NFS adapter wrapping VirtualFs.
 pub struct TapNfs {
     pub vfs: Arc<VirtualFs>,
@@ -53,8 +60,8 @@ impl TapNfs {
         fattr3 {
             ftype,
             mode: match attr.file_type {
-                VfsFileType::Directory => u32::from(libc::S_IFDIR) | (attr.perm as u32),
-                VfsFileType::RegularFile => u32::from(libc::S_IFREG) | (attr.perm as u32),
+                VfsFileType::Directory => MODE_IFDIR | (attr.perm as u32),
+                VfsFileType::RegularFile => MODE_IFREG | (attr.perm as u32),
             },
             nlink: if attr.file_type == VfsFileType::Directory {
                 2
@@ -348,7 +355,7 @@ mod tests {
         let fattr = nfs.vfs_attr_to_fattr(&dir_attr);
         assert_eq!(
             fattr.mode,
-            u32::from(libc::S_IFDIR) | 0o755,
+            MODE_IFDIR | 0o755,
             "directory mode must contain S_IFDIR"
         );
 
@@ -362,7 +369,7 @@ mod tests {
         let fattr = nfs.vfs_attr_to_fattr(&file_attr);
         assert_eq!(
             fattr.mode,
-            u32::from(libc::S_IFREG) | 0o644,
+            MODE_IFREG | 0o644,
             "regular file mode must contain S_IFREG"
         );
     }
