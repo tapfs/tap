@@ -56,6 +56,24 @@ pub enum NodeKind {
         connector: String,
         collection: String,
     },
+    /// A synthetic directory that groups resources by a field value (e.g. GitHub org).
+    /// Created when a collection spec has `group_by` set.
+    GroupDir {
+        connector: String,
+        /// Collection whose resources are being grouped (e.g. "repos")
+        collection: String,
+        /// The group field value (e.g. "tapfs" for owner.login = "tapfs")
+        group_value: String,
+    },
+    /// A resource that also acts as a directory because its collection spec has
+    /// subcollections defined. Reading it as a file returns IsDirectory.
+    ResourceDir {
+        connector: String,
+        /// Parent collection name (e.g. "repos")
+        collection: String,
+        /// Resource slug / api id (e.g. "tap")
+        resource: String,
+    },
     /// Transaction directory: `/CONNECTOR/COLLECTION/.tx/`
     TxDir {
         connector: String,

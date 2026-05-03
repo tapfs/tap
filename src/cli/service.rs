@@ -295,11 +295,8 @@ pub async fn status() -> Result<()> {
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".tapfs/tap.sock");
 
-    match crate::ipc::send_request(
-        &socket_path,
-        &serde_json::json!({"cmd": "list_connectors"}),
-    )
-    .await
+    match crate::ipc::send_request(&socket_path, &serde_json::json!({"cmd": "list_connectors"}))
+        .await
     {
         Ok(resp) => {
             println!("tapfs is running");

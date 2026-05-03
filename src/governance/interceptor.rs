@@ -80,6 +80,13 @@ impl Connector for AuditedConnector {
         }
     }
 
+    async fn list_resources_with_content(
+        &self,
+        collection: &str,
+    ) -> Result<Vec<(ResourceMeta, Vec<u8>)>> {
+        self.inner.list_resources_with_content(collection).await
+    }
+
     async fn read_resource(&self, collection: &str, id: &str) -> Result<Resource> {
         let connector_name = self.inner.name().to_string();
         match self.inner.read_resource(collection, id).await {
@@ -97,6 +104,62 @@ impl Connector for AuditedConnector {
             Err(e) => {
                 let _ = self.audit.record(
                     "read",
+                    &connector_name,
+                    Some(collection),
+                    Some(id),
+                    "error",
+                    Some(e.to_string()),
+                );
+                Err(e)
+            }
+        }
+    }
+
+    async fn create_resource(&self, collection: &str, content: &[u8]) -> Result<ResourceMeta> {
+        let connector_name = self.inner.name().to_string();
+        match self.inner.create_resource(collection, content).await {
+            Ok(meta) => {
+                let _ = self.audit.record(
+                    "create",
+                    &connector_name,
+                    Some(collection),
+                    Some(&meta.id),
+                    "success",
+                    Some(format!("{} bytes", content.len())),
+                );
+                Ok(meta)
+            }
+            Err(e) => {
+                let _ = self.audit.record(
+                    "create",
+                    &connector_name,
+                    Some(collection),
+                    None,
+                    "error",
+                    Some(e.to_string()),
+                );
+                Err(e)
+            }
+        }
+    }
+
+    async fn delete_resource(&self, collection: &str, id: &str) -> Result<()> {
+        let connector_name = self.inner.name().to_string();
+        match self.inner.delete_resource(collection, id).await {
+            Ok(()) => {
+                let _ = self.audit.record(
+                    "delete",
+                    &connector_name,
+                    Some(collection),
+                    Some(id),
+                    "success",
+                    None,
+                );
+                Ok(())
+            }
+            Err(e) => {
+                let _ = self.audit.record(
+                    "delete",
                     &connector_name,
                     Some(collection),
                     Some(id),

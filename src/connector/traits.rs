@@ -51,6 +51,9 @@ pub struct ResourceMeta {
     pub title: Option<String>,
     pub updated_at: Option<String>,
     pub content_type: Option<String>,
+    /// Value of the `group_by` field from the spec (e.g. "tapfs" for owner.login).
+    /// Used by the VFS to build synthetic group directories.
+    pub group: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +78,45 @@ pub trait Connector: Send + Sync {
     async fn list_resources(&self, collection: &str) -> Result<Vec<ResourceMeta>>;
     async fn read_resource(&self, collection: &str, id: &str) -> Result<Resource>;
     async fn write_resource(&self, collection: &str, id: &str, content: &[u8]) -> Result<()>;
+
+    /// Create a new resource in the given collection.
+    /// Returns metadata for the newly created resource.
+    /// List resources with their rendered content in one pass.
+    /// Default implementation makes individual `read_resource` calls;
+    /// connectors that already have full data in the listing response
+    /// (e.g. REST comments) should override to avoid N+1 API calls.
+    async fn list_resources_with_content(
+        &self,
+        collection: &str,
+    ) -> Result<Vec<(ResourceMeta, Vec<u8>)>> {
+        let metas = self.list_resources(collection).await?;
+        let mut out = Vec::with_capacity(metas.len());
+        for meta in metas {
+            match self.read_resource(collection, &meta.id).await {
+                Ok(r) => out.push((meta, r.content)),
+                Err(_) => out.push((meta, Vec::new())),
+            }
+        }
+        Ok(out)
+    }
+
+    async fn create_resource(&self, collection: &str, _content: &[u8]) -> Result<ResourceMeta> {
+        Err(ConnectorError::NotSupported(format!(
+            "create not supported for collection '{}'",
+            collection
+        ))
+        .into())
+    }
+
+    /// Delete a resource from the given collection.
+    async fn delete_resource(&self, collection: &str, _id: &str) -> Result<()> {
+        Err(ConnectorError::NotSupported(format!(
+            "delete not supported for collection '{}'",
+            collection
+        ))
+        .into())
+    }
+
     async fn resource_versions(&self, collection: &str, id: &str) -> Result<Vec<VersionInfo>>;
     async fn read_version(&self, collection: &str, id: &str, version: u32) -> Result<Resource>;
 }

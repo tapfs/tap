@@ -49,9 +49,7 @@ impl ConnectorRegistry {
 
     /// Get the spec for a connector, if one was registered.
     pub fn get_spec(&self, name: &str) -> Option<ConnectorSpec> {
-        self.connectors
-            .get(name)
-            .and_then(|r| r.spec.clone())
+        self.connectors.get(name).and_then(|r| r.spec.clone())
     }
 
     /// Remove a connector by name.

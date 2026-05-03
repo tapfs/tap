@@ -38,7 +38,9 @@ async fn smoke_test_connector(name: &str, token: Option<String>) {
     let connector = make_connector(name, token);
 
     // 1. list_collections
-    let collections = connector.list_collections().await
+    let collections = connector
+        .list_collections()
+        .await
         .unwrap_or_else(|e| panic!("[{name}] list_collections failed: {e}"));
     assert!(!collections.is_empty(), "[{name}] no collections returned");
     println!("  [OK] list_collections: {} collections", collections.len());
@@ -61,20 +63,29 @@ async fn smoke_test_connector(name: &str, token: Option<String>) {
             panic!("[{name}] list_resources({first_coll}) failed: {e}");
         }
     };
-    println!("  [OK] list_resources({first_coll}): {} resources", resources.len());
+    println!(
+        "  [OK] list_resources({first_coll}): {} resources",
+        resources.len()
+    );
 
     // 3. Read first resource (if any exist)
     if let Some(first) = resources.first() {
-        println!("        first resource: id={}, slug={}, title={:?}",
-            first.id, first.slug, first.title);
+        println!(
+            "        first resource: id={}, slug={}, title={:?}",
+            first.id, first.slug, first.title
+        );
 
         match connector.read_resource(first_coll, &first.slug).await {
             Ok(resource) => {
                 let content = String::from_utf8_lossy(&resource.content);
                 let lines: Vec<&str> = content.lines().collect();
                 let preview_lines = lines.len().min(15);
-                println!("  [OK] read_resource({first_coll}, {}): {} bytes, {} lines",
-                    first.slug, resource.content.len(), lines.len());
+                println!(
+                    "  [OK] read_resource({first_coll}, {}): {} bytes, {} lines",
+                    first.slug,
+                    resource.content.len(),
+                    lines.len()
+                );
                 println!("        --- preview ---");
                 for line in &lines[..preview_lines] {
                     println!("        {line}");
@@ -85,14 +96,21 @@ async fn smoke_test_connector(name: &str, token: Option<String>) {
                 println!("        --- end preview ---");
 
                 // Verify content has frontmatter
-                assert!(content.starts_with("---\n"),
-                    "[{name}] rendered content should start with YAML frontmatter");
+                assert!(
+                    content.starts_with("---\n"),
+                    "[{name}] rendered content should start with YAML frontmatter"
+                );
                 // Verify raw_json is populated
-                assert!(resource.raw_json.is_some(),
-                    "[{name}] raw_json should be populated");
+                assert!(
+                    resource.raw_json.is_some(),
+                    "[{name}] raw_json should be populated"
+                );
             }
             Err(e) => {
-                println!("  [WARN] read_resource({first_coll}, {}) failed: {e}", first.slug);
+                println!(
+                    "  [WARN] read_resource({first_coll}, {}) failed: {e}",
+                    first.slug
+                );
             }
         }
     } else {
