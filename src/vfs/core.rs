@@ -160,7 +160,7 @@ fn inject_tapfs_fields(data: &[u8], id: &str, version: u32) -> Vec<u8> {
         })
         .collect();
 
-    lines.push(&""); // placeholder to trigger join separator trick
+    lines.push(""); // placeholder to trigger join separator trick
     let mut new_fm = lines[..lines.len() - 1].join("\n");
     if !new_fm.is_empty() && !new_fm.ends_with('\n') {
         new_fm.push('\n');
@@ -198,10 +198,8 @@ impl SlugMap {
                     for (k, v) in map {
                         // k = "connector/collection/api_id", v = user_slug
                         // Rebuild reverse: "connector/collection/user_slug" → api_id
-                        if let Some(prefix) = k.rsplitn(2, '/').nth(1) {
-                            reverse.insert(format!("{}/{}", prefix, v), {
-                                k.rsplitn(2, '/').next().unwrap_or("").to_string()
-                            });
+                        if let Some((prefix, api_id)) = k.rsplit_once('/') {
+                            reverse.insert(format!("{}/{}", prefix, v), api_id.to_string());
                         }
                         forward.insert(k, v);
                     }

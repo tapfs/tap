@@ -53,8 +53,8 @@ impl TapNfs {
         fattr3 {
             ftype,
             mode: match attr.file_type {
-                VfsFileType::Directory => (libc::S_IFDIR as u32) | (attr.perm as u32),
-                VfsFileType::RegularFile => (libc::S_IFREG as u32) | (attr.perm as u32),
+                VfsFileType::Directory => u32::from(libc::S_IFDIR) | (attr.perm as u32),
+                VfsFileType::RegularFile => u32::from(libc::S_IFREG) | (attr.perm as u32),
             },
             nlink: if attr.file_type == VfsFileType::Directory {
                 2
@@ -348,7 +348,7 @@ mod tests {
         let fattr = nfs.vfs_attr_to_fattr(&dir_attr);
         assert_eq!(
             fattr.mode,
-            (libc::S_IFDIR as u32) | 0o755,
+            u32::from(libc::S_IFDIR) | 0o755,
             "directory mode must contain S_IFDIR"
         );
 
@@ -362,7 +362,7 @@ mod tests {
         let fattr = nfs.vfs_attr_to_fattr(&file_attr);
         assert_eq!(
             fattr.mode,
-            (libc::S_IFREG as u32) | 0o644,
+            u32::from(libc::S_IFREG) | 0o644,
             "regular file mode must contain S_IFREG"
         );
     }

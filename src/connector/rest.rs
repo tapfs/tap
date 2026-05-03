@@ -40,9 +40,8 @@ fn markdown_to_json(content: &[u8], coll: &CollectionSpec) -> Result<Value> {
 
     let mut map = serde_json::Map::new();
 
-    if text.starts_with("---") {
+    if let Some(after_open) = text.strip_prefix("---") {
         // YAML frontmatter
-        let after_open = &text[3..];
         let (fm_text, body_text) = if let Some(pos) = after_open.find("\n---") {
             (
                 &after_open[..pos],
