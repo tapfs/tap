@@ -32,18 +32,31 @@ pub async fn run(config: TapConfig) -> Result<()> {
                 .unwrap_or(false);
 
         if daemon_running {
-            // Hot-add via IPC
-            let resp = crate::ipc::send_request(
-                &socket_path,
-                &serde_json::json!({"cmd": "add_connector", "name": config.connector_name}),
-            )
-            .await?;
-            if let Some(msg) = resp.get("message").and_then(|v| v.as_str()) {
-                println!("{}", msg);
-            } else if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
-                anyhow::bail!("{}", err);
+            // Check if the NFS mount is actually active before hot-adding.
+            // If the daemon is alive but the mount is dead (e.g. after a crash
+            // and launchd restart where mount_nfs failed), we need to restart.
+            let mount_active = is_mount_active(&config.mount_point);
+            if !mount_active {
+                eprintln!(
+                    "tapfs daemon running but NFS mount is not active — restarting service"
+                );
+                let _ = crate::cli::service::stop();
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                // Fall through to the install/start path below.
+            } else {
+                // Hot-add via IPC
+                let resp = crate::ipc::send_request(
+                    &socket_path,
+                    &serde_json::json!({"cmd": "add_connector", "name": config.connector_name}),
+                )
+                .await?;
+                if let Some(msg) = resp.get("message").and_then(|v| v.as_str()) {
+                    println!("{}", msg);
+                } else if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+                    anyhow::bail!("{}", err);
+                }
+                return Ok(());
             }
-            return Ok(());
         }
 
         // No daemon running — handle auth, update service.yaml, start service
@@ -457,6 +470,19 @@ pub async fn run(config: TapConfig) -> Result<()> {
 
     #[cfg(not(any(feature = "fuse", feature = "nfs")))]
     anyhow::bail!("No transport available. Build with --features fuse or --features nfs");
+}
+
+/// Returns true if `path` is currently an active filesystem mount point.
+fn is_mount_active(path: &std::path::Path) -> bool {
+    let path_str = path.display().to_string();
+    std::process::Command::new("mount")
+        .output()
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .any(|line| line.contains(&path_str))
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(feature = "nfs")]
