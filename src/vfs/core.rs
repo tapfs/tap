@@ -4092,3 +4092,410 @@ mod flush_promotion {
         );
     }
 }
+
+/// Tests for nested collections, GroupDir hoisting, aggregate mode,
+/// mkdir template seeding, and draft visibility in readdir.
+#[cfg(test)]
+mod nested_collections {
+    use super::*;
+    use crate::cache::disk::DiskCache;
+    use crate::connector::spec::{CollectionSpec, ConnectorSpec, RenderSpec};
+    use crate::connector::traits::{
+        CollectionInfo, Connector, Resource as ConnResource, ResourceMeta, VersionInfo,
+    };
+    use crate::draft::store::DraftStore;
+    use crate::governance::audit::AuditLogger;
+    use crate::version::store::VersionStore;
+    use std::time::Duration;
+
+    /// Minimal connector whose list returns a caller-supplied set of metas.
+    /// `fail_list_with_content` lets us simulate a 404 on aggregate reads.
+    struct StubConnector {
+        resources: Vec<ResourceMeta>,
+        fail_list_with_content: bool,
+    }
+
+    impl StubConnector {
+        fn with_resources(resources: Vec<ResourceMeta>) -> Self {
+            Self {
+                resources,
+                fail_list_with_content: false,
+            }
+        }
+        fn failing_aggregate() -> Self {
+            Self {
+                resources: vec![],
+                fail_list_with_content: true,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Connector for StubConnector {
+        fn name(&self) -> &str {
+            "mock"
+        }
+        async fn list_collections(&self) -> anyhow::Result<Vec<CollectionInfo>> {
+            Ok(vec![CollectionInfo {
+                name: "repos".into(),
+                description: None,
+            }])
+        }
+        async fn list_resources(&self, _: &str) -> anyhow::Result<Vec<ResourceMeta>> {
+            Ok(self.resources.clone())
+        }
+        async fn list_resources_with_content(
+            &self,
+            _: &str,
+        ) -> anyhow::Result<Vec<(ResourceMeta, Vec<u8>)>> {
+            if self.fail_list_with_content {
+                anyhow::bail!("404 not found")
+            } else {
+                Ok(vec![])
+            }
+        }
+        async fn read_resource(&self, _: &str, _: &str) -> anyhow::Result<ConnResource> {
+            Err(anyhow::anyhow!("not found"))
+        }
+        async fn write_resource(&self, _: &str, _: &str, _: &[u8]) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn create_resource(&self, _: &str, _: &[u8]) -> anyhow::Result<ResourceMeta> {
+            Ok(ResourceMeta {
+                id: "new-1".into(),
+                slug: "new-1".into(),
+                title: None,
+                updated_at: None,
+                content_type: None,
+                group: None,
+            })
+        }
+        async fn resource_versions(&self, _: &str, _: &str) -> anyhow::Result<Vec<VersionInfo>> {
+            Ok(vec![])
+        }
+        async fn read_version(&self, _: &str, _: &str, _: u32) -> anyhow::Result<ConnResource> {
+            unimplemented!()
+        }
+    }
+
+    fn meta(id: &str, group: Option<&str>) -> ResourceMeta {
+        ResourceMeta {
+            id: id.into(),
+            slug: id.into(),
+            title: None,
+            updated_at: None,
+            content_type: None,
+            group: group.map(|s| s.into()),
+        }
+    }
+
+    /// Build a spec with:
+    ///   repos [group_by=owner if set] → subcollections: [issues → subcollections: [comments (aggregate)]]
+    fn make_spec(group_by: Option<&str>) -> ConnectorSpec {
+        let comments = CollectionSpec {
+            name: "comments".into(),
+            description: None,
+            slug_hint: None,
+            operations: None,
+            list_endpoint: "/repos/{repo}/issues/{issue}/comments".into(),
+            get_endpoint: "/repos/{repo}/issues/{issue}/comments/{id}".into(),
+            update_endpoint: None,
+            create_endpoint: Some("/repos/{repo}/issues/{issue}/comments".into()),
+            delete_endpoint: None,
+            id_field: None,
+            slug_field: None,
+            title_field: None,
+            list_root: None,
+            render: None,
+            compose: None,
+            operations_spec: None,
+            relationships: None,
+            parent_param: Some("issue".into()),
+            subcollections: None,
+            group_by: None,
+            aggregate: Some(true),
+        };
+        let issues = CollectionSpec {
+            name: "issues".into(),
+            description: None,
+            slug_hint: None,
+            operations: None,
+            list_endpoint: "/repos/{repo}/issues".into(),
+            get_endpoint: "/repos/{repo}/issues/{id}".into(),
+            update_endpoint: None,
+            create_endpoint: Some("/repos/{repo}/issues".into()),
+            delete_endpoint: None,
+            id_field: None,
+            slug_field: None,
+            title_field: Some("title".into()),
+            list_root: None,
+            render: Some(RenderSpec {
+                frontmatter: Some(vec!["title".into()]),
+                body: Some("body".into()),
+                sections: None,
+                exclude: None,
+            }),
+            compose: None,
+            operations_spec: None,
+            relationships: None,
+            parent_param: Some("repo".into()),
+            subcollections: Some(vec![comments]),
+            group_by: None,
+            aggregate: None,
+        };
+        let repos = CollectionSpec {
+            name: "repos".into(),
+            description: None,
+            slug_hint: None,
+            operations: None,
+            list_endpoint: "/repos".into(),
+            get_endpoint: "/repos/{id}".into(),
+            update_endpoint: None,
+            create_endpoint: None,
+            delete_endpoint: None,
+            id_field: None,
+            slug_field: None,
+            title_field: Some("name".into()),
+            list_root: None,
+            render: Some(RenderSpec {
+                frontmatter: Some(vec!["title".into()]),
+                body: None,
+                sections: None,
+                exclude: None,
+            }),
+            compose: None,
+            operations_spec: None,
+            relationships: None,
+            parent_param: None,
+            subcollections: Some(vec![issues]),
+            group_by: group_by.map(|s| s.into()),
+            aggregate: None,
+        };
+        ConnectorSpec {
+            spec_version: None,
+            version: None,
+            description: None,
+            name: "mock".into(),
+            base_url: "http://test".into(),
+            auth: None,
+            transport: None,
+            capabilities: None,
+            agent: None,
+            collections: vec![repos],
+        }
+    }
+
+    fn build_vfs(
+        dir: &std::path::Path,
+        conn: Arc<dyn Connector>,
+        spec: ConnectorSpec,
+    ) -> Arc<VirtualFs> {
+        let registry = ConnectorRegistry::new();
+        registry.register_with_spec(conn, spec);
+        let registry = Arc::new(registry);
+        let cache = Arc::new(Cache::new(Duration::from_secs(60)));
+        let drafts = Arc::new(DraftStore::new(dir.join("drafts")).unwrap());
+        let versions = Arc::new(VersionStore::new(dir.join("versions")).unwrap());
+        let audit = Arc::new(AuditLogger::new(dir.join("audit.log")).unwrap());
+        let disk = Arc::new(DiskCache::new(dir.join("cache")).unwrap());
+        Arc::new(VirtualFs::new(registry, cache, drafts, versions, audit).with_disk_cache(disk))
+    }
+
+    fn make_rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// Resources with subcollections must appear as directories in readdir,
+    /// never as .md files.
+    #[test]
+    fn readdir_collection_has_subs_shows_dirs_not_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rt = make_rt();
+        let conn = Arc::new(StubConnector::with_resources(vec![meta("tap", None)]));
+        let vfs = build_vfs(tmp.path(), conn as Arc<dyn Connector>, make_spec(None));
+        let handle = rt.handle().clone();
+
+        let conn_id = vfs.lookup(&handle, 1, "mock").unwrap().id;
+        let repos_id = vfs.lookup(&handle, conn_id, "repos").unwrap().id;
+        let entries = vfs.readdir(&handle, repos_id).unwrap();
+
+        let tap = entries
+            .iter()
+            .find(|e| e.name == "tap")
+            .expect("tap not in listing");
+        assert_eq!(
+            tap.file_type,
+            VfsFileType::Directory,
+            "resource with subcollections must be a directory"
+        );
+        assert!(
+            entries.iter().all(|e| e.name != "tap.md"),
+            "resource with subcollections must not appear as .md file"
+        );
+    }
+
+    /// Collections with group_by must be hoisted: the connector directory shows
+    /// unique group values as GroupDir entries, not the collection itself.
+    #[test]
+    fn readdir_connector_group_by_hoists_to_group_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rt = make_rt();
+        let conn = Arc::new(StubConnector::with_resources(vec![
+            meta("tap", Some("acme")),
+            meta("api", Some("acme")),
+            meta("cli", Some("other-org")),
+        ]));
+        let vfs = build_vfs(
+            tmp.path(),
+            conn as Arc<dyn Connector>,
+            make_spec(Some("owner")),
+        );
+        let handle = rt.handle().clone();
+
+        let conn_id = vfs.lookup(&handle, 1, "mock").unwrap().id;
+        let entries = vfs.readdir(&handle, conn_id).unwrap();
+
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.name == "acme" && e.file_type == VfsFileType::Directory),
+            "group 'acme' must appear as a directory"
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.name == "other-org" && e.file_type == VfsFileType::Directory),
+            "group 'other-org' must appear as a directory"
+        );
+        assert!(
+            entries.iter().all(|e| e.name != "repos"),
+            "repos collection must not appear directly when group_by is set"
+        );
+    }
+
+    /// A ResourceDir's readdir must list index.md (resource body), agent.md,
+    /// and one entry per subcollection from the spec.
+    #[test]
+    fn readdir_resource_dir_shows_index_and_subcollections() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rt = make_rt();
+        let conn = Arc::new(StubConnector::with_resources(vec![meta("tap", None)]));
+        let vfs = build_vfs(tmp.path(), conn as Arc<dyn Connector>, make_spec(None));
+        let handle = rt.handle().clone();
+
+        let conn_id = vfs.lookup(&handle, 1, "mock").unwrap().id;
+        let repos_id = vfs.lookup(&handle, conn_id, "repos").unwrap().id;
+        let tap_id = vfs.lookup(&handle, repos_id, "tap").unwrap().id;
+        let entries = vfs.readdir(&handle, tap_id).unwrap();
+
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.name == "index.md" && e.file_type == VfsFileType::RegularFile),
+            "index.md must be present"
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.name == "issues" && e.file_type == VfsFileType::Directory),
+            "issues subcollection must be a directory"
+        );
+    }
+
+    /// After mkdir on a collection with subcollections, readdir must immediately
+    /// include the new entry as a directory (even before it's pushed to the API).
+    #[test]
+    fn readdir_shows_draft_only_resource_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rt = make_rt();
+        let conn = Arc::new(StubConnector::with_resources(vec![]));
+        let vfs = build_vfs(tmp.path(), conn as Arc<dyn Connector>, make_spec(None));
+        let handle = rt.handle().clone();
+
+        let conn_id = vfs.lookup(&handle, 1, "mock").unwrap().id;
+        let repos_id = vfs.lookup(&handle, conn_id, "repos").unwrap().id;
+
+        vfs.mkdir(repos_id, "my-repo").unwrap();
+
+        let entries = vfs.readdir(&handle, repos_id).unwrap();
+        let entry = entries
+            .iter()
+            .find(|e| e.name == "my-repo")
+            .expect("mkdir'd resource must appear in readdir");
+        assert_eq!(
+            entry.file_type,
+            VfsFileType::Directory,
+            "draft-only resource with subcollections must be a directory"
+        );
+    }
+
+    /// Reading an aggregate subcollection (.md file) for a resource that doesn't
+    /// exist in the API yet (draft-only parent) must return empty content, not
+    /// an I/O error.
+    #[test]
+    fn aggregate_collection_empty_for_draft_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rt = make_rt();
+        // Connector fails list_resources_with_content — simulates API 404 for
+        // a draft-only parent resource.
+        let conn = Arc::new(StubConnector::failing_aggregate());
+        let vfs = build_vfs(tmp.path(), conn as Arc<dyn Connector>, make_spec(None));
+        let handle = rt.handle().clone();
+
+        // Directly build a Collection node for an aggregate path that would fail
+        // the API call (no real resource backing it).
+        let agg_kind = NodeKind::Collection {
+            connector: "mock".into(),
+            collection: "repos/draft-repo/issues/draft-issue/comments".into(),
+        };
+        let agg_id = vfs.nodes.allocate(agg_kind);
+
+        let data = vfs
+            .read(&handle, agg_id, 0, u32::MAX)
+            .expect("read must not error for draft parent");
+        assert!(
+            data.is_empty(),
+            "aggregate read of draft parent must return empty bytes"
+        );
+    }
+
+    /// mkdir on a collection seeds index.md with frontmatter field placeholders
+    /// taken from the collection spec's render.frontmatter list.
+    #[test]
+    fn mkdir_seeds_template_with_spec_frontmatter_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rt = make_rt();
+        let conn = Arc::new(StubConnector::with_resources(vec![meta("tap", None)]));
+        let vfs = build_vfs(tmp.path(), conn as Arc<dyn Connector>, make_spec(None));
+        let handle = rt.handle().clone();
+
+        // Navigate into repos/tap/issues/ and mkdir a new issue.
+        let conn_id = vfs.lookup(&handle, 1, "mock").unwrap().id;
+        let repos_id = vfs.lookup(&handle, conn_id, "repos").unwrap().id;
+        let tap_id = vfs.lookup(&handle, repos_id, "tap").unwrap().id;
+        let issues_id = vfs.lookup(&handle, tap_id, "issues").unwrap().id;
+
+        vfs.mkdir(issues_id, "new-bug").unwrap();
+
+        // The seeded draft should contain "title: " from the issues spec.
+        // Collection path for issues under tap is "repos/tap/issues".
+        let draft = vfs
+            .drafts
+            .read_draft("mock", "repos/tap/issues", "new-bug")
+            .unwrap()
+            .expect("draft must exist after mkdir");
+
+        let content = std::str::from_utf8(&draft).unwrap();
+        assert!(
+            content.contains("_draft: true"),
+            "template must include _draft: true"
+        );
+        assert!(
+            content.contains("title: "),
+            "template must include title placeholder from spec"
+        );
+    }
+}
