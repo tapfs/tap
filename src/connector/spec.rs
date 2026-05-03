@@ -100,6 +100,8 @@ pub struct CollectionSpec {
     pub list_endpoint: String, // e.g. "/api/items"
     pub get_endpoint: String,  // e.g. "/api/items/{id}"
     pub update_endpoint: Option<String>,
+    pub create_endpoint: Option<String>,
+    pub delete_endpoint: Option<String>,
     pub id_field: Option<String>,   // field name for ID, default "id"
     pub slug_field: Option<String>, // field for slug, default "slug" or "id"
     pub title_field: Option<String>,
@@ -110,6 +112,19 @@ pub struct CollectionSpec {
     pub operations_spec: Option<Vec<OperationSpec>>,
     /// Declared relationships to other collections.
     pub relationships: Option<Vec<RelationshipSpec>>,
+    /// URL placeholder name the parent resource fills in this subcollection's endpoints.
+    /// e.g. for list_endpoint "/repos/{repo}/issues", parent_param = "repo".
+    pub parent_param: Option<String>,
+    /// Nested collections available under each resource of this collection.
+    pub subcollections: Option<Vec<CollectionSpec>>,
+    /// JSON dotpath to group resources by in the VFS (e.g. "owner.login").
+    /// When set, resources are shown under synthetic group directories instead
+    /// of directly in the collection directory.
+    pub group_by: Option<String>,
+    /// When true, the collection appears as a single aggregated `.md` file
+    /// rather than a directory of individual resource files.
+    /// Appending to the file creates a new resource (POST).
+    pub aggregate: Option<bool>,
 }
 
 /// Controls how a JSON API response is rendered into a readable markdown file.
@@ -191,7 +206,9 @@ mod tests {
     #[test]
     fn all_builtin_specs_parse() {
         for name in builtin_names() {
-            let Some(yaml) = builtin_spec(name) else { continue }; // skip native connectors
+            let Some(yaml) = builtin_spec(name) else {
+                continue;
+            }; // skip native connectors
             ConnectorSpec::from_yaml(yaml)
                 .unwrap_or_else(|e| panic!("failed to parse spec '{name}': {e}"));
         }
@@ -200,7 +217,9 @@ mod tests {
     #[test]
     fn all_specs_have_required_fields() {
         for name in builtin_names() {
-            let Some(yaml) = builtin_spec(name) else { continue };
+            let Some(yaml) = builtin_spec(name) else {
+                continue;
+            };
             let spec = ConnectorSpec::from_yaml(yaml).unwrap();
 
             assert!(!spec.name.is_empty(), "spec '{name}' has empty name");
@@ -235,7 +254,9 @@ mod tests {
     #[test]
     fn spec_name_matches_builtin_key() {
         for key in builtin_names() {
-            let Some(yaml) = builtin_spec(key) else { continue };
+            let Some(yaml) = builtin_spec(key) else {
+                continue;
+            };
             let spec = ConnectorSpec::from_yaml(yaml).unwrap();
             assert_eq!(
                 spec.name, *key,
@@ -248,7 +269,9 @@ mod tests {
     #[test]
     fn get_endpoints_contain_id_placeholder() {
         for name in builtin_names() {
-            let Some(yaml) = builtin_spec(name) else { continue };
+            let Some(yaml) = builtin_spec(name) else {
+                continue;
+            };
             let spec = ConnectorSpec::from_yaml(yaml).unwrap();
 
             for col in &spec.collections {
@@ -265,7 +288,9 @@ mod tests {
     #[test]
     fn compose_endpoints_contain_id_placeholder() {
         for name in builtin_names() {
-            let Some(yaml) = builtin_spec(name) else { continue };
+            let Some(yaml) = builtin_spec(name) else {
+                continue;
+            };
             let spec = ConnectorSpec::from_yaml(yaml).unwrap();
 
             for col in &spec.collections {

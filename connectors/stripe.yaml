@@ -12,6 +12,8 @@ auth:
 capabilities:
   read: true
   write: true
+  create: true
+  delete: true
 
 agent:
   tips:
@@ -27,10 +29,12 @@ collections:
   - name: customers
     description: "Stripe customers with payment info and metadata"
     slug_hint: "Stripe customer ID (e.g. cus_ABC123)"
-    operations: [read, write, draft]
+    operations: [read, write, create, draft]
     list_endpoint: "/v1/customers?limit=100"
     get_endpoint: "/v1/customers/{id}"
     update_endpoint: "/v1/customers/{id}"
+    create_endpoint: "/v1/customers"
+    delete_endpoint: "/v1/customers/{id}"
     id_field: "id"
     slug_field: "id"
     title_field: "email"

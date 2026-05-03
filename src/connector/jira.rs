@@ -92,6 +92,7 @@ impl JiraConnector {
                 title: Some(format!("{}: {}", key, summary)),
                 updated_at: updated,
                 content_type: Some("text/markdown".to_string()),
+                group: None,
             });
         }
 
@@ -195,6 +196,7 @@ impl JiraConnector {
             title: Some(format!("{}: {}", key, summary)),
             updated_at: Some(updated.to_string()),
             content_type: Some("text/markdown".to_string()),
+            group: None,
         };
 
         Ok(Resource {
@@ -397,6 +399,7 @@ impl JiraConnector {
                 title: Some(format!("{} ({})", name, key)),
                 updated_at: None,
                 content_type: Some("text/markdown".to_string()),
+                group: None,
             });
         }
 
@@ -500,6 +503,7 @@ impl JiraConnector {
             title: Some(format!("{} ({})", name, project_key)),
             updated_at: None,
             content_type: Some("text/markdown".to_string()),
+            group: None,
         };
 
         Ok(Resource {
@@ -548,6 +552,7 @@ impl JiraConnector {
                 title: Some(format!("{} ({})", name, board_type)),
                 updated_at: None,
                 content_type: Some("text/markdown".to_string()),
+                group: None,
             });
         }
 
@@ -684,6 +689,7 @@ impl JiraConnector {
             title: Some(format!("{} ({})", name, board_type)),
             updated_at: None,
             content_type: Some("text/markdown".to_string()),
+            group: None,
         };
 
         Ok(Resource {

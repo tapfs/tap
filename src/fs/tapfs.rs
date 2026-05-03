@@ -271,7 +271,7 @@ impl Filesystem for TapFs {
                 return;
             }
         };
-        match self.vfs.unlink(parent, name_str) {
+        match self.vfs.unlink(&self.rt, parent, name_str) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(to_errno(e)),
         }

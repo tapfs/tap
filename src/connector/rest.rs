@@ -10,6 +10,73 @@ use crate::connector::traits::{CollectionInfo, Connector, Resource, ResourceMeta
 
 const MAX_ERROR_BODY_LEN: usize = 512;
 
+/// Convert user-written markdown into the JSON object expected by the API.
+///
+/// Uses the collection spec to know which field is the title and which is the
+/// body, so field names are never hardcoded (GitHub uses "body", others use
+/// "description", "content", etc.).
+///
+/// Supported input formats:
+///   1. YAML frontmatter (`---` … `---`) — each key/value becomes a JSON field;
+///      text after the closing `---` goes into `render.body` field.
+///   2. Plain markdown — a leading `# Heading` line becomes `title_field`;
+///      everything else becomes `render.body` field.
+///   3. Raw JSON — returned as-is so callers that already produce JSON keep working.
+fn markdown_to_json(content: &[u8], coll: &CollectionSpec) -> Result<Value> {
+    let body_field = coll
+        .render
+        .as_ref()
+        .and_then(|r| r.body.as_deref())
+        .unwrap_or("body");
+    let title_field = coll.title_field.as_deref().unwrap_or("title");
+
+    let text = std::str::from_utf8(content).context("content is not valid UTF-8")?;
+
+    // Raw JSON — pass through.
+    let trimmed = text.trim_start();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        return serde_json::from_str(trimmed).context("failed to parse content as JSON");
+    }
+
+    let mut map = serde_json::Map::new();
+
+    if let Some(after_open) = text.strip_prefix("---") {
+        // YAML frontmatter
+        let (fm_text, body_text) = if let Some(pos) = after_open.find("\n---") {
+            (
+                &after_open[..pos],
+                after_open[pos + 4..].trim_start_matches('\n'),
+            )
+        } else {
+            (after_open, "")
+        };
+        let fm: serde_json::Map<String, Value> =
+            serde_yaml::from_str(fm_text).context("failed to parse YAML frontmatter")?;
+        map.extend(fm);
+        // Strip tapfs-managed fields (_draft, _id, _version) — never send to API
+        map.retain(|k, _| !k.starts_with('_'));
+        if !body_text.is_empty() {
+            map.insert(body_field.to_string(), Value::String(body_text.to_string()));
+        }
+    } else {
+        // Plain markdown — first `# ` line is title, rest is body.
+        let mut lines = text.splitn(2, '\n');
+        let first = lines.next().unwrap_or("").trim();
+        let rest = lines.next().unwrap_or("").trim_start_matches('\n');
+        let title = first.trim_start_matches('#').trim();
+        if !title.is_empty() {
+            map.insert(title_field.to_string(), Value::String(title.to_string()));
+        }
+        if !rest.is_empty() {
+            map.insert(body_field.to_string(), Value::String(rest.to_string()));
+        }
+        // Strip tapfs-managed fields (_draft, _id, _version) — never send to API
+        map.retain(|k, _| !k.starts_with('_'));
+    }
+
+    Ok(Value::Object(map))
+}
+
 fn truncate_error_body(body: &str) -> &str {
     if body.len() <= MAX_ERROR_BODY_LEN {
         body
@@ -116,19 +183,90 @@ impl RestConnector {
         endpoint.replace("{id}", id)
     }
 
-    /// Find the CollectionSpec by name.
-    fn find_collection(&self, name: &str) -> Result<&CollectionSpec> {
-        self.spec
+    /// Find the CollectionSpec by name, handling path-encoded nested collection paths.
+    ///
+    /// For flat collections like `"issues"`, does a direct match.
+    /// For path-encoded names like `"repos/tap/issues"`, walks the spec
+    /// subcollection tree and substitutes parent resource IDs into endpoints.
+    fn find_collection(&self, name: &str) -> Result<CollectionSpec> {
+        if let Some(c) = self.spec.collections.iter().find(|c| c.name == name) {
+            return Ok(c.clone());
+        }
+        self.resolve_nested_collection(name)
+    }
+
+    /// Walk a path-encoded collection name like `"repos/tap/issues"` through the
+    /// spec's subcollection tree, resolving slugs to API IDs and substituting
+    /// them into endpoint placeholders.
+    fn resolve_nested_collection(&self, path: &str) -> Result<CollectionSpec> {
+        let segments: Vec<&str> = path.split('/').collect();
+        if segments.is_empty() {
+            return Err(anyhow!(
+                "empty collection path in spec '{}'",
+                self.spec.name
+            ));
+        }
+
+        let mut current = self
+            .spec
             .collections
             .iter()
-            .find(|c| c.name == name)
+            .find(|c| c.name == segments[0])
+            .cloned()
             .ok_or_else(|| {
                 anyhow!(
                     "collection '{}' not found in spec '{}'",
-                    name,
+                    segments[0],
                     self.spec.name
                 )
-            })
+            })?;
+
+        let mut params: Vec<(String, String)> = Vec::new();
+        let mut current_collection_path = segments[0].to_string();
+        let mut i = 1;
+
+        while i < segments.len() {
+            let resource_slug = segments[i];
+            i += 1;
+
+            // Resolve user-visible slug to API id (populated by list_resources).
+            let key = format!("{}/{}", current_collection_path, resource_slug);
+            let api_id = self
+                .slug_to_id
+                .get(&key)
+                .map(|v| v.clone())
+                .unwrap_or_else(|| resource_slug.to_string());
+
+            if i >= segments.len() {
+                break;
+            }
+
+            let sub_name = segments[i];
+            i += 1;
+
+            let subs = current.subcollections.as_deref().unwrap_or(&[]);
+            let sub = subs
+                .iter()
+                .find(|c| c.name == sub_name)
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "subcollection '{}' not found under '{}'",
+                        sub_name,
+                        current.name
+                    )
+                })?;
+
+            if let Some(ref param) = sub.parent_param {
+                params.push((param.clone(), api_id));
+            }
+
+            current_collection_path =
+                format!("{}/{}/{}", current_collection_path, resource_slug, sub_name);
+            current = sub;
+        }
+
+        Ok(substitute_params(current, &params))
     }
 
     /// Send a request with retry + exponential backoff for transient errors.
@@ -242,8 +380,7 @@ impl RestConnector {
                         let expires_in = json["expires_in"].as_u64().unwrap_or(3600);
                         // Refresh at 80% of TTL to avoid edge-case expiry
                         *config.expiry.write().unwrap() = Some(
-                            Instant::now()
-                                + std::time::Duration::from_secs(expires_in * 4 / 5),
+                            Instant::now() + std::time::Duration::from_secs(expires_in * 4 / 5),
                         );
                     }
                 }
@@ -319,12 +456,19 @@ impl RestConnector {
             .or_else(|| item.get("LastModifiedDate"))
             .map(json_value_to_string);
 
+        let group = coll
+            .group_by
+            .as_deref()
+            .and_then(|field| get_nested(item, field))
+            .map(json_value_to_string);
+
         ResourceMeta {
             id,
             slug,
             title,
             updated_at,
             content_type: Some("application/json".to_string()),
+            group,
         }
     }
 
@@ -507,6 +651,25 @@ impl RestConnector {
     }
 }
 
+/// Replace `{key}` placeholders in all endpoint fields of a CollectionSpec.
+fn substitute_params(mut coll: CollectionSpec, params: &[(String, String)]) -> CollectionSpec {
+    for (key, val) in params {
+        let placeholder = format!("{{{}}}", key);
+        coll.list_endpoint = coll.list_endpoint.replace(&placeholder, val);
+        coll.get_endpoint = coll.get_endpoint.replace(&placeholder, val);
+        if let Some(ref mut ep) = coll.update_endpoint {
+            *ep = ep.replace(&placeholder, val);
+        }
+        if let Some(ref mut ep) = coll.create_endpoint {
+            *ep = ep.replace(&placeholder, val);
+        }
+        if let Some(ref mut ep) = coll.delete_endpoint {
+            *ep = ep.replace(&placeholder, val);
+        }
+    }
+    coll
+}
+
 /// Parse "user.login as author" into ("user.login", "author").
 /// Plain "title" returns ("title", "title").
 fn parse_field_alias(expr: &str) -> (&str, &str) {
@@ -656,7 +819,7 @@ impl Connector for RestConnector {
 
         let metas: Vec<ResourceMeta> = items
             .iter()
-            .map(|item| Self::extract_meta(item, coll))
+            .map(|item| Self::extract_meta(item, &coll))
             .collect();
 
         // Cache slug → ID mappings for read/write resolution
@@ -668,6 +831,45 @@ impl Connector for RestConnector {
         }
 
         Ok(metas)
+    }
+
+    async fn list_resources_with_content(
+        &self,
+        collection: &str,
+    ) -> Result<Vec<(ResourceMeta, Vec<u8>)>> {
+        let coll = self.find_collection(collection)?;
+        let url = self.url(&coll.list_endpoint);
+
+        let response = self.send_with_retry(|| self.client.get(&url)).await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "list_resources_with_content failed: HTTP {} — {}",
+                status,
+                truncate_error_body(&body)
+            ));
+        }
+
+        let json: Value = response
+            .json()
+            .await
+            .context("failed to parse list response as JSON")?;
+
+        let items = Self::extract_list(&json, coll.list_root.as_deref())?;
+        let mut out = Vec::with_capacity(items.len());
+
+        for item in items {
+            let meta = Self::extract_meta(item, &coll);
+            if meta.slug != meta.id {
+                let key = format!("{}/{}", collection, meta.slug);
+                self.slug_to_id.insert(key, meta.id.clone());
+            }
+            let content = Self::render_markdown(&meta, item, coll.render.as_ref());
+            out.push((meta, content));
+        }
+
+        Ok(out)
     }
 
     async fn read_resource(&self, collection: &str, id: &str) -> Result<Resource> {
@@ -697,7 +899,7 @@ impl Connector for RestConnector {
             .await
             .context("failed to parse resource response as JSON")?;
 
-        let meta = Self::extract_meta(&json, coll);
+        let meta = Self::extract_meta(&json, &coll);
         let mut content = Self::render_markdown(&meta, &json, coll.render.as_ref());
 
         // Compose: fetch sub-resources and append as sections.
@@ -757,22 +959,7 @@ impl Connector for RestConnector {
         let path = Self::substitute_id(endpoint, &resolved_id);
         let url = self.url(&path);
 
-        // Parse the incoming content as JSON.  If the content looks like
-        // Markdown with YAML frontmatter (starts with "---"), attempt to
-        // extract the JSON code block; otherwise treat the whole body as JSON.
-        let body_json: Value = if content.starts_with(b"---") {
-            // Try to find a ```json code block and parse that
-            let text = std::str::from_utf8(content).context("content is not valid UTF-8")?;
-            let json_block = text
-                .split("```json")
-                .nth(1)
-                .and_then(|after| after.split("```").next())
-                .unwrap_or(text);
-            serde_json::from_str(json_block.trim())
-                .context("failed to parse JSON from markdown content")?
-        } else {
-            serde_json::from_slice(content).context("failed to parse content as JSON")?
-        };
+        let body_json = markdown_to_json(content, &coll)?;
 
         let response = self
             .send_with_retry(|| self.client.patch(&url).json(&body_json))
@@ -787,6 +974,80 @@ impl Connector for RestConnector {
                 truncate_error_body(&body)
             ));
         }
+
+        Ok(())
+    }
+
+    async fn create_resource(&self, collection: &str, content: &[u8]) -> Result<ResourceMeta> {
+        let coll = self.find_collection(collection)?;
+        let endpoint = coll
+            .create_endpoint
+            .as_deref()
+            .unwrap_or(&coll.list_endpoint);
+        // Strip query parameters from the endpoint for POST requests.
+        let clean_endpoint = endpoint.split('?').next().unwrap_or(endpoint);
+        let url = self.url(clean_endpoint);
+
+        let body_json = markdown_to_json(content, &coll)?;
+
+        let response = self
+            .send_with_retry(|| self.client.post(&url).json(&body_json))
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "create_resource failed: HTTP {} — {}",
+                status,
+                truncate_error_body(&body)
+            ));
+        }
+
+        let json: Value = response
+            .json()
+            .await
+            .context("failed to parse create response as JSON")?;
+
+        let meta = Self::extract_meta(&json, &coll);
+
+        // Cache the new slug → ID mapping.
+        if meta.slug != meta.id {
+            let key = format!("{}/{}", collection, meta.slug);
+            self.slug_to_id.insert(key, meta.id.clone());
+        }
+
+        Ok(meta)
+    }
+
+    async fn delete_resource(&self, collection: &str, id: &str) -> Result<()> {
+        let coll = self.find_collection(collection)?;
+        let resolved_id = self
+            .slug_to_id
+            .get(&format!("{}/{}", collection, id))
+            .map(|v| v.clone())
+            .unwrap_or_else(|| id.to_string());
+        let endpoint = coll
+            .delete_endpoint
+            .as_deref()
+            .unwrap_or(&coll.get_endpoint);
+        let path = Self::substitute_id(endpoint, &resolved_id);
+        let url = self.url(&path);
+
+        let response = self.send_with_retry(|| self.client.delete(&url)).await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "delete_resource failed: HTTP {} — {}",
+                status,
+                truncate_error_body(&body)
+            ));
+        }
+
+        // Remove the slug → ID mapping.
+        self.slug_to_id.remove(&format!("{}/{}", collection, id));
 
         Ok(())
     }
@@ -828,6 +1089,8 @@ mod tests {
             list_endpoint: "/items".to_string(),
             get_endpoint: "/items/{id}".to_string(),
             update_endpoint: None,
+            create_endpoint: None,
+            delete_endpoint: None,
             id_field: None,
             slug_field: None,
             title_field: None,
@@ -836,6 +1099,10 @@ mod tests {
             compose: None,
             operations_spec: None,
             relationships: None,
+            parent_param: None,
+            subcollections: None,
+            group_by: None,
+            aggregate: None,
         }
     }
 
@@ -846,6 +1113,7 @@ mod tests {
             title: Some("Test Title".to_string()),
             updated_at: None,
             content_type: Some("application/json".to_string()),
+            group: None,
         }
     }
 
