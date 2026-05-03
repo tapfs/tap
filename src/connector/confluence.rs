@@ -76,7 +76,7 @@ impl ConfluenceConnector {
                         title: Some(name.to_string()),
                         updated_at: None,
                         content_type: Some("confluence/space".to_string()),
-                    group: None,
+                        group: None,
                     });
                 }
             }
@@ -170,7 +170,7 @@ impl ConfluenceConnector {
             title: Some(name.to_string()),
             updated_at: None,
             content_type: Some("confluence/space".to_string()),
-        group: None,
+            group: None,
         };
 
         Ok(Resource {
@@ -311,7 +311,7 @@ impl ConfluenceConnector {
             title: Some(title.to_string()),
             updated_at: Some(modified.to_string()),
             content_type: Some("confluence/page".to_string()),
-        group: None,
+            group: None,
         };
 
         Ok(Resource {
@@ -430,7 +430,7 @@ impl ConfluenceConnector {
             title: Some(title.to_string()),
             updated_at: None,
             content_type: Some("confluence/page".to_string()),
-        group: None,
+            group: None,
         };
 
         Ok(Resource {

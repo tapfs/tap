@@ -493,7 +493,7 @@ impl GoogleWorkspaceConnector {
             title: Some(name.to_string()),
             updated_at: Some(modified.to_string()),
             content_type: Some(mime.to_string()),
-        group: None,
+            group: None,
         };
 
         // Determine how to fetch content
@@ -711,7 +711,7 @@ impl GoogleWorkspaceConnector {
                             title: Some(subject),
                             updated_at: Some(date),
                             content_type: Some("message/rfc822".to_string()),
-                        group: None,
+                            group: None,
                         });
                     }
                     Err(e) => {
@@ -764,7 +764,7 @@ impl GoogleWorkspaceConnector {
             title: Some(subject.clone()),
             updated_at: Some(date.clone()),
             content_type: Some("message/rfc822".to_string()),
-        group: None,
+            group: None,
         };
 
         // Extract body
@@ -877,7 +877,7 @@ impl GoogleWorkspaceConnector {
                 title: Some(summary.to_string()),
                 updated_at: updated.map(|s| s.to_string()),
                 content_type: Some("text/calendar".to_string()),
-            group: None,
+                group: None,
             });
         }
 
@@ -913,7 +913,7 @@ impl GoogleWorkspaceConnector {
             title: Some(summary.to_string()),
             updated_at: updated.map(|s| s.to_string()),
             content_type: Some("text/calendar".to_string()),
-        group: None,
+            group: None,
         };
 
         // Extract attendees
@@ -1190,7 +1190,7 @@ impl Connector for GoogleWorkspaceConnector {
                     title: Some(name.to_string()),
                     updated_at: Some(modified.to_string()),
                     content_type: Some(mime.to_string()),
-                group: None,
+                    group: None,
                 };
 
                 let mut out = String::new();
