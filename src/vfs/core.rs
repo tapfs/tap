@@ -2681,9 +2681,13 @@ impl VirtualFs {
         collection: &str,
     ) -> Result<String, VfsError> {
         let conn = self.registry.get(connector).ok_or(VfsError::NotFound)?;
-        let items = rt
-            .block_on(conn.list_resources_with_content(collection))
-            .map_err(|e| VfsError::IoError(e.to_string()))?;
+        let items = match rt.block_on(conn.list_resources_with_content(collection)) {
+            Ok(items) => items,
+            Err(_) => {
+                // Parent resource may not exist in the API yet (draft-only).
+                return Ok(String::new());
+            }
+        };
 
         // Populate metadata cache so readdir can use it without a second request.
         let cache_key = format!("{}/{}", connector, collection);
