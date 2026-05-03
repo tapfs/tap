@@ -3322,9 +3322,9 @@ impl VirtualFs {
     // -----------------------------------------------------------------------
 
     /// Delete a file that lives inside a ResourceDir (e.g. `index.md`,
-    /// `comments.md`).  Only draft-only resources can be removed this way;
-    /// virtual children (aggregate .md files, agent.md) are silently accepted
-    /// so that `rm -rf` can empty the directory before removing it.
+    /// `comments.md`).  All files are accepted so `rm -rf` can empty the
+    /// directory; the actual API deletion (if any) happens in `rmdir_resource_dir`
+    /// when the directory itself is removed.
     fn unlink_resource_dir_child(
         &self,
         _rt: &tokio::runtime::Handle,
@@ -3334,8 +3334,8 @@ impl VirtualFs {
         name: &str,
     ) -> Result<(), VfsError> {
         if name == "index.md" {
-            // index.md is the resource body draft.  Only remove it if the
-            // resource has never been pushed to the API (_id is empty).
+            // Clean up a local-only draft if present; for API-backed resources
+            // the draft (with _id) is left so rmdir_resource_dir can use it.
             if let Ok(Some(data)) = self.drafts.read_draft(connector, collection, resource) {
                 let meta = parse_tapfs_meta(&data);
                 let is_local_only = meta
@@ -3354,14 +3354,11 @@ impl VirtualFs {
                     if let Some(id) = self.nodes.lookup(&kind) {
                         self.nodes.remove(id);
                     }
-                    return Ok(());
                 }
             }
-            // Resource already pushed — don't allow removing just the body file.
-            return Err(VfsError::PermissionDenied);
         }
-        // Virtual children (comments.md, agent.md, etc.) have no persistent
-        // state — accept the unlink so rm -rf can proceed.
+        // All virtual children (index.md, comments.md, agent.md, …) accept
+        // removal — rm -rf needs to unlink them before it can rmdir the parent.
         Ok(())
     }
 
@@ -4630,5 +4627,28 @@ mod nested_collections {
             content.contains("title: "),
             "template must include title placeholder from spec"
         );
+    }
+
+    /// `rm -rf <resource>` on an API-backed ResourceDir (no local draft) must
+    /// succeed for virtual file removal so the directory can be emptied before
+    /// the final rmdir (which is where the API-delete gating happens).
+    #[test]
+    fn unlink_resource_dir_child_api_backed_returns_ok() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rt = make_rt();
+        let conn = Arc::new(StubConnector::with_resources(vec![meta("tap", None)]));
+        let vfs = build_vfs(tmp.path(), conn as Arc<dyn Connector>, make_spec(None));
+        let handle = rt.handle().clone();
+
+        let conn_id = vfs.lookup(&handle, 1, "mock").unwrap().id;
+        let repos_id = vfs.lookup(&handle, conn_id, "repos").unwrap().id;
+        // "tap" is API-backed — no local draft.
+        let tap_id = vfs.lookup(&handle, repos_id, "tap").unwrap().id;
+
+        // All virtual children must accept unlink so rm -rf can proceed.
+        vfs.unlink(&handle, tap_id, "index.md")
+            .expect("unlink index.md on API-backed resource dir must succeed");
+        vfs.unlink(&handle, tap_id, "issues")
+            .expect("unlink subcollection dir on API-backed resource dir must succeed");
     }
 }
