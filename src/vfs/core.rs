@@ -1647,13 +1647,23 @@ impl VirtualFs {
                 perm: 0o755,
                 mtime: None,
             },
-            NodeKind::GroupDir { .. } | NodeKind::ResourceDir { .. } => VfsAttr {
+            NodeKind::GroupDir { .. } => VfsAttr {
                 id,
                 size: 0,
                 file_type: VfsFileType::Directory,
                 perm: 0o755,
                 mtime: None,
             },
+            NodeKind::ResourceDir { .. } => {
+                let mtime = self.resource_mtimes.get(&id).map(|v| v.clone());
+                VfsAttr {
+                    id,
+                    size: 0,
+                    file_type: VfsFileType::Directory,
+                    perm: 0o755,
+                    mtime,
+                }
+            }
             NodeKind::AgentMd => VfsAttr {
                 id,
                 size: 4096, // dynamic content, actual size known on read
@@ -2262,6 +2272,9 @@ impl VirtualFs {
                     resource: meta.slug.clone(),
                 };
                 let dir_id = self.nodes.allocate(dir_kind);
+                if let Some(ts) = &meta.updated_at {
+                    self.resource_mtimes.insert(dir_id, ts.clone());
+                }
                 entries.push(VfsDirEntry {
                     name: meta.slug.clone(),
                     id: dir_id,
@@ -2524,6 +2537,9 @@ impl VirtualFs {
                     resource: res.slug.clone(),
                 };
                 let dir_id = self.nodes.allocate(dir_kind);
+                if let Some(ts) = &res.updated_at {
+                    self.resource_mtimes.insert(dir_id, ts.clone());
+                }
                 entries.push(VfsDirEntry {
                     name: display_slug,
                     id: dir_id,
@@ -2611,18 +2627,32 @@ impl VirtualFs {
                             .map(|s| s.trim().is_empty())
                             .unwrap_or(true)
                     {
-                        let kind = NodeKind::Resource {
-                            connector: connector.to_string(),
-                            collection: collection.to_string(),
-                            resource: slug.clone(),
-                            variant: ResourceVariant::Live,
-                        };
-                        let id = self.nodes.allocate(kind);
-                        entries.push(VfsDirEntry {
-                            name: format!("{}.md", slug),
-                            id,
-                            file_type: VfsFileType::RegularFile,
-                        });
+                        if has_subs {
+                            let kind = NodeKind::ResourceDir {
+                                connector: connector.to_string(),
+                                collection: collection.to_string(),
+                                resource: slug.clone(),
+                            };
+                            let id = self.nodes.allocate(kind);
+                            entries.push(VfsDirEntry {
+                                name: slug,
+                                id,
+                                file_type: VfsFileType::Directory,
+                            });
+                        } else {
+                            let kind = NodeKind::Resource {
+                                connector: connector.to_string(),
+                                collection: collection.to_string(),
+                                resource: slug.clone(),
+                                variant: ResourceVariant::Live,
+                            };
+                            let id = self.nodes.allocate(kind);
+                            entries.push(VfsDirEntry {
+                                name: format!("{}.md", slug),
+                                id,
+                                file_type: VfsFileType::RegularFile,
+                            });
+                        }
                     }
                 }
             }
