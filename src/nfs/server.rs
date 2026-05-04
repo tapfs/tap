@@ -103,6 +103,19 @@ impl TapNfs {
             VfsError::AlreadyExists => nfsstat3::NFS3ERR_EXIST,
             VfsError::CrossDevice => nfsstat3::NFS3ERR_XDEV,
             VfsError::NotSupported => nfsstat3::NFS3ERR_NOTSUPP,
+            // JUKEBOX is the NFSv3 protocol's "transient, retry me" code.
+            // Both Busy (in-flight POST) and RateLimited (upstream 429) are
+            // surfaced as JUKEBOX so a Linux/macOS NFS client backs off
+            // instead of treating them as hard failures.
+            VfsError::Busy => nfsstat3::NFS3ERR_JUKEBOX,
+            VfsError::RateLimited(_) => nfsstat3::NFS3ERR_JUKEBOX,
+            VfsError::StaleHandle => nfsstat3::NFS3ERR_STALE,
+            VfsError::NoSpace => nfsstat3::NFS3ERR_NOSPC,
+            // PartialFlush and DraftCorrupted both indicate something is
+            // genuinely wrong (data is in an inconsistent state). Surface as
+            // EIO so the client doesn't loop on retries.
+            VfsError::PartialFlush(_) => nfsstat3::NFS3ERR_IO,
+            VfsError::DraftCorrupted(_) => nfsstat3::NFS3ERR_IO,
             VfsError::IoError(_) => nfsstat3::NFS3ERR_IO,
         }
     }
@@ -372,6 +385,59 @@ mod tests {
             MODE_IFREG | 0o644,
             "regular file mode must contain S_IFREG"
         );
+    }
+
+    #[test]
+    fn typed_vfs_errors_map_to_correct_nfsstat3() {
+        // The kernel uses the nfsstat3 code to decide whether to retry,
+        // back off, surface to the user, etc. Mapping these correctly is
+        // the whole point of typed VfsError variants.
+        use std::time::Duration;
+        assert!(matches!(
+            TapNfs::vfs_err_to_nfs(VfsError::Busy),
+            nfsstat3::NFS3ERR_JUKEBOX
+        ));
+        assert!(matches!(
+            TapNfs::vfs_err_to_nfs(VfsError::RateLimited(Duration::from_secs(5))),
+            nfsstat3::NFS3ERR_JUKEBOX
+        ));
+        assert!(matches!(
+            TapNfs::vfs_err_to_nfs(VfsError::StaleHandle),
+            nfsstat3::NFS3ERR_STALE
+        ));
+        assert!(matches!(
+            TapNfs::vfs_err_to_nfs(VfsError::NoSpace),
+            nfsstat3::NFS3ERR_NOSPC
+        ));
+        assert!(matches!(
+            TapNfs::vfs_err_to_nfs(VfsError::PartialFlush("upstream timed out".into())),
+            nfsstat3::NFS3ERR_IO
+        ));
+        assert!(matches!(
+            TapNfs::vfs_err_to_nfs(VfsError::DraftCorrupted("bad frontmatter".into())),
+            nfsstat3::NFS3ERR_IO
+        ));
+    }
+
+    #[test]
+    fn connector_rate_limited_propagates_through_vfs_error() {
+        // When a connector returns ConnectorError::RateLimited, the
+        // From<anyhow::Error> impl on VfsError needs to preserve it as
+        // RateLimited (not collapse to IoError). Otherwise the NFS layer
+        // can't tell the kernel to back off via JUKEBOX.
+        use crate::connector::traits::ConnectorError;
+        use std::time::Duration;
+
+        let upstream: anyhow::Error = ConnectorError::RateLimited {
+            message: "429".into(),
+            retry_after: Some(Duration::from_secs(7)),
+        }
+        .into();
+        let vfs_err: VfsError = upstream.into();
+        match vfs_err {
+            VfsError::RateLimited(d) => assert_eq!(d, Duration::from_secs(7)),
+            other => panic!("expected RateLimited, got {:?}", other),
+        }
     }
 
     /// Nodes with no real mtime must emit epoch-0, not the current wall clock.
