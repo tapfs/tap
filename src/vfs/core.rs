@@ -1409,18 +1409,39 @@ impl VirtualFs {
                 let clean_data = strip_tapfs_fields(&data);
 
                 // is_new: _id absent/empty means never been to the API.
-                // "__creating__" is a sentinel written below to prevent concurrent
-                // double-POSTs when NFS delivers two WRITE calls in rapid succession.
+                // "__creating__@<ts>" is a sentinel written below to prevent
+                // concurrent double-POSTs when NFS delivers two WRITE calls in
+                // rapid succession. The embedded timestamp lets us distinguish
+                // a still-in-flight POST (skip) from one whose daemon died
+                // (retry — safe when the connector has idempotency_key_header
+                // configured, otherwise risks a duplicate).
                 let id_value = tapfs_meta.id.as_deref().unwrap_or("").trim();
-                if id_value == "__creating__" {
-                    return Ok(());
+                let sentinel_state = classify_sentinel(id_value);
+                match sentinel_state {
+                    SentinelState::Fresh => return Ok(()),
+                    SentinelState::Stale | SentinelState::Legacy => {
+                        tracing::warn!(
+                            connector = %connector,
+                            collection = %collection,
+                            resource = %resource,
+                            sentinel = %id_value,
+                            "stale __creating__ sentinel — daemon likely crashed mid-POST. \
+                             Retrying create_resource. Configure idempotency_key_header in \
+                             the connector spec to make this retry safe against duplication."
+                        );
+                    }
+                    SentinelState::NotSentinel => {}
                 }
-                let is_new = id_value.is_empty();
+                let is_new = id_value.is_empty()
+                    || matches!(
+                        sentinel_state,
+                        SentinelState::Stale | SentinelState::Legacy
+                    );
 
                 let api_id = if is_new {
                     // Write sentinel before the API call so a concurrent flush
                     // skips the create instead of sending a duplicate POST.
-                    let sentinel = inject_tapfs_fields(&data, "__creating__", 0);
+                    let sentinel = inject_tapfs_fields(&data, &make_sentinel(), 0);
                     let _ = self
                         .drafts
                         .write_draft(connector, collection, resource, &sentinel);
@@ -3733,6 +3754,64 @@ pub(crate) fn generate_idempotency_key() -> String {
     format!("tapfs-{:016x}-{:08x}", nanos, counter)
 }
 
+/// How long a `__creating__` sentinel is considered "in flight" before flush
+/// will retry the POST despite seeing it. Tuned for: a normal POST takes
+/// hundreds of ms; if it's been minutes, the daemon almost certainly crashed
+/// or the upstream is permanently wedged. The retry is safe **only** when
+/// the connector has an `idempotency_key_header` configured (otherwise a
+/// successful-but-lost-response POST will be duplicated).
+pub(crate) const SENTINEL_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+const SENTINEL_PREFIX: &str = "__creating__";
+
+/// Build a fresh in-flight sentinel string. Format: `__creating__@<unix_seconds>`.
+/// The timestamp lets crash-recovery code distinguish a still-in-flight POST
+/// from one whose daemon died midway.
+pub(crate) fn make_sentinel() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{}@{}", SENTINEL_PREFIX, now)
+}
+
+/// Classify an `_id` value:
+///   - `Fresh`: a sentinel within TTL — skip flush, another writer is on it.
+///   - `Stale`: a sentinel older than TTL — daemon probably crashed; retry.
+///   - `Legacy`: bare `__creating__` from before the timestamp format —
+///     no way to tell its age, so treat as stale.
+///   - `NotSentinel`: not a sentinel at all (real id, empty, etc.).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SentinelState {
+    Fresh,
+    Stale,
+    Legacy,
+    NotSentinel,
+}
+
+pub(crate) fn classify_sentinel(id_value: &str) -> SentinelState {
+    if id_value == SENTINEL_PREFIX {
+        return SentinelState::Legacy;
+    }
+    let Some(ts_str) = id_value.strip_prefix(&format!("{}@", SENTINEL_PREFIX)) else {
+        return SentinelState::NotSentinel;
+    };
+    let Ok(ts_secs) = ts_str.parse::<u64>() else {
+        // Malformed timestamp — treat as stale; don't get stuck on a
+        // sentinel we can't parse.
+        return SentinelState::Stale;
+    };
+    let sentinel_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(ts_secs);
+    let now = std::time::SystemTime::now();
+    match now.duration_since(sentinel_time) {
+        Ok(age) if age < SENTINEL_TTL => SentinelState::Fresh,
+        Ok(_) => SentinelState::Stale,
+        // Sentinel timestamp is in the future (clock skew). Treat as fresh
+        // to be safe — better to wait an extra TTL than to dup-POST.
+        Err(_) => SentinelState::Fresh,
+    }
+}
+
 /// The slug used to store a lock in the DraftStore.
 fn lock_slug(slug: &str) -> String {
     format!("{}.lock", slug)
@@ -3769,6 +3848,83 @@ fn parse_resource_filename(name: &str) -> Result<(String, ResourceVariant), VfsE
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod sentinel_tests {
+    use super::*;
+
+    #[test]
+    fn make_sentinel_has_expected_prefix_and_numeric_timestamp() {
+        let s = make_sentinel();
+        assert!(s.starts_with("__creating__@"), "got: {}", s);
+        let ts: u64 = s
+            .trim_start_matches("__creating__@")
+            .parse()
+            .expect("timestamp portion must parse as u64");
+        // Should be in the modern era (post-2020). If this fails, the
+        // SystemTime::now() is wildly off.
+        assert!(ts > 1_577_836_800, "ts {} looks pre-2020", ts);
+    }
+
+    #[test]
+    fn classify_real_id_is_not_sentinel() {
+        assert_eq!(classify_sentinel("12345"), SentinelState::NotSentinel);
+        assert_eq!(classify_sentinel("abc-def-ghi"), SentinelState::NotSentinel);
+        assert_eq!(classify_sentinel(""), SentinelState::NotSentinel);
+    }
+
+    #[test]
+    fn classify_legacy_bare_sentinel() {
+        // From before the timestamp was added — no way to tell its age, so
+        // treated as stale (i.e. retry on next flush).
+        assert_eq!(classify_sentinel("__creating__"), SentinelState::Legacy);
+    }
+
+    #[test]
+    fn classify_fresh_sentinel_within_ttl() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let s = format!("__creating__@{}", now);
+        assert_eq!(classify_sentinel(&s), SentinelState::Fresh);
+    }
+
+    #[test]
+    fn classify_stale_sentinel_past_ttl() {
+        // 1 hour ago — well past SENTINEL_TTL of 5 minutes.
+        let stale_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .saturating_sub(3600);
+        let s = format!("__creating__@{}", stale_ts);
+        assert_eq!(classify_sentinel(&s), SentinelState::Stale);
+    }
+
+    #[test]
+    fn classify_malformed_sentinel_treated_as_stale() {
+        // Non-numeric "timestamp" — can't gauge age, so treat as stale to
+        // avoid getting permanently stuck.
+        assert_eq!(
+            classify_sentinel("__creating__@notanumber"),
+            SentinelState::Stale
+        );
+    }
+
+    #[test]
+    fn classify_future_timestamp_treated_as_fresh() {
+        // Clock skew can put a sentinel "in the future" — be conservative
+        // and skip rather than risk a duplicate POST.
+        let future_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600;
+        let s = format!("__creating__@{}", future_ts);
+        assert_eq!(classify_sentinel(&s), SentinelState::Fresh);
+    }
+}
 
 #[cfg(test)]
 mod tests {
