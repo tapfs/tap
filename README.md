@@ -51,8 +51,8 @@ tap mount rest -s connectors/rest.yaml
 ls /mnt/tap/rest/items/
 cat /mnt/tap/rest/items/1.md
 
-# Then connect a real API
-export GITHUB_TOKEN="ghp_..."
+# Then connect a real API — opens a browser / device flow on first run,
+# then stores the token in the OS keychain.
 tap mount github
 ```
 
@@ -72,7 +72,7 @@ tapfs mounts REST APIs as a filesystem and adds transactional semantics through 
 | `tap log` | Full audit trail of every operation |
 | `tap rollback resource@v1.md` | Roll back to any version |
 
-Drafts start with `_draft: true` in frontmatter — remove it and save to publish to the API. Versions are automatic on every write. Audit logging is always on. Create and delete are per-connector capabilities (`capabilities.create/delete` in the connector spec).
+Drafts start with `_draft: true` in frontmatter — remove it and save to publish to the API. Versions are automatic on every write. Audit logging is always on. Create and delete are per-connector capabilities (`capabilities.create/delete` plus `delete_endpoint` per collection); today GitHub labels, Linear issues, Notion pages (archive), and Stripe customers can be deleted via `rm -rf`.
 
 ## Why
 
@@ -91,15 +91,25 @@ tapfs sits at the OS layer — below MCP, below LangChain, below orchestrators. 
 
 ## Connectors
 
-14 connectors ship out of the box. Each is a YAML file — no code.
+20 connectors ship out of the box. Most are a YAML file — no code.
 
-GitHub | Google Workspace | Salesforce | Jira | Slack | Notion | Stripe | HubSpot | Linear | Zendesk | PagerDuty | ServiceNow | + generic REST template
+GitHub | GitLab | Google Workspace | Salesforce | Jira | Confluence | Slack | Discord | Notion | Stripe | Shopify | HubSpot | Linear | Asana | ClickUp | Zendesk | PagerDuty | ServiceNow | Mailchimp | SendGrid | Cloudflare | + generic REST template
 
 ```bash
 tap connectors              # list available
 tap mount salesforce        # mount one
 tap mount github jira       # mount several
 ```
+
+### Authentication
+
+`tap mount <connector>` checks for credentials in this order:
+
+1. The connector's environment variable (e.g. `GITHUB_TOKEN`, `LINEAR_API_TOKEN`).
+2. The OS keychain (macOS Keychain, Linux Secret Service, Windows Credential Manager).
+3. An interactive prompt — OAuth2 device flow / browser flow when the connector supports it, or an API-key prompt when it doesn't. Whatever you enter is saved to the keychain for next time.
+
+Set `TAPFS_NO_KEYCHAIN=1` to use a plaintext `~/.tapfs/credentials.yaml` instead — useful in CI or headless containers.
 
 ### Add your own
 
