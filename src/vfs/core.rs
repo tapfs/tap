@@ -2,6 +2,22 @@
 //!
 //! Contains ALL the filesystem logic previously in `fs/ops.rs`, but using
 //! VFS types instead of fuser types.  This module has ZERO dependency on fuser.
+//!
+//! ## Lock discipline
+//!
+//! `write_buffers`, `nodes`, `slug_map`, `resource_mtimes`, and `content_lengths`
+//! are `DashMap`s — fine-grained per-shard locking, lock-free reads. Two rules
+//! apply throughout this file:
+//!
+//! 1. **Never hold a `DashMap` entry / `Ref` / `RefMut` across a `block_on(...)`
+//!    or any I/O call.** A held shard lock blocks every unrelated key that
+//!    hashes to the same shard. The `flush()` path uses `write_buffers.remove`
+//!    deliberately — `remove` returns the value by ownership and drops the
+//!    lock before the network call to the connector.
+//!
+//! 2. **Snapshot before mutate.** When seeding a buffer from disk, read the
+//!    disk first (no shard lock), then take the entry only for the in-memory
+//!    mutation. See `buffer_write` for the canonical shape.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1624,15 +1640,32 @@ impl VirtualFs {
         offset: u64,
         data: &[u8],
     ) -> Result<(), VfsError> {
-        let mut entry = self.write_buffers.entry(id).or_insert_with(|| {
-            // Seed from existing draft content (if any) so that a partial
-            // overwrite doesn't lose bytes outside the written range.
+        // Lock discipline: never hold a `write_buffers` entry across I/O.
+        // The previous shape called `drafts.read_draft(...)` inside
+        // `or_insert_with`, which held the DashMap shard lock across a disk
+        // read. With multiple concurrent writers to the same shard, that
+        // serialized unrelated requests. Worse, if anyone later changed
+        // `read_draft` to do anything async / network-y, this would silently
+        // become a head-of-line block on every other writer that hashes to
+        // the same shard.
+        //
+        // Snapshot the existing draft FIRST (no entry locked), then take the
+        // entry only to mutate the in-memory buffer.
+        let needs_seed = !self.write_buffers.contains_key(&id);
+        let seed = if needs_seed {
             self.drafts
                 .read_draft(connector, collection, slug)
                 .ok()
                 .flatten()
                 .unwrap_or_default()
-        });
+        } else {
+            Vec::new()
+        };
+
+        let mut entry = self
+            .write_buffers
+            .entry(id)
+            .or_insert_with(|| seed);
         let buf = entry.value_mut();
         let off = offset as usize;
         let needed = off + data.len();
