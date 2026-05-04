@@ -18,6 +18,7 @@
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
+use std::fmt;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -25,7 +26,11 @@ use serde::{Deserialize, Serialize};
 const KEYCHAIN_SERVICE: &str = "tapfs";
 
 /// Credentials for a single connector.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+///
+/// Secret fields (`token`, `refresh_token`, `client_secret`) are redacted by the
+/// manual `Debug` impl so that `tracing::debug!(?creds)` and similar accidents
+/// can never leak them into logs.
+#[derive(Clone, Serialize, Deserialize, Default)]
 pub struct ConnectorCredentials {
     pub token: Option<String>,
     pub email: Option<String>,
@@ -35,8 +40,34 @@ pub struct ConnectorCredentials {
     pub client_secret: Option<String>,
 }
 
+/// Wrapper that lets `Debug` print presence-or-absence of a secret without
+/// revealing its value.
+struct Redacted<'a>(&'a Option<String>);
+
+impl fmt::Debug for Redacted<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(_) => f.write_str("Some(<redacted>)"),
+            None => f.write_str("None"),
+        }
+    }
+}
+
+impl fmt::Debug for ConnectorCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConnectorCredentials")
+            .field("token", &Redacted(&self.token))
+            .field("email", &self.email)
+            .field("base_url", &self.base_url)
+            .field("refresh_token", &Redacted(&self.refresh_token))
+            .field("client_id", &self.client_id)
+            .field("client_secret", &Redacted(&self.client_secret))
+            .finish()
+    }
+}
+
 /// Secret fields stored in the OS keychain as a single JSON blob per connector.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 struct KeychainSecret {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     token: Option<String>,
@@ -44,6 +75,16 @@ struct KeychainSecret {
     refresh_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     client_secret: Option<String>,
+}
+
+impl fmt::Debug for KeychainSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KeychainSecret")
+            .field("token", &Redacted(&self.token))
+            .field("refresh_token", &Redacted(&self.refresh_token))
+            .field("client_secret", &Redacted(&self.client_secret))
+            .finish()
+    }
 }
 
 impl KeychainSecret {
@@ -130,7 +171,11 @@ fn keychain_set(connector: &str, secret: &KeychainSecret) -> Result<()> {
 }
 
 /// Read the `credentials.yaml` index without touching the keychain.
-fn read_yaml_index(data_dir: &Path) -> Result<HashMap<String, ConnectorCredentials>> {
+///
+/// `pub(crate)` so other connector-side code (e.g. `atlassian_auth`) can reuse
+/// the same parser instead of duplicating it (and re-introducing the silent
+/// `unwrap_or_default()` swallow that drops parse errors).
+pub(crate) fn read_yaml_index(data_dir: &Path) -> Result<HashMap<String, ConnectorCredentials>> {
     let path = data_dir.join("credentials.yaml");
     if !path.exists() {
         return Ok(HashMap::new());
@@ -158,8 +203,14 @@ fn read_yaml_index(data_dir: &Path) -> Result<HashMap<String, ConnectorCredentia
     Ok(entries)
 }
 
-/// Write the YAML index back, preserving 0600 permissions.
-fn write_yaml_index(
+/// Write the YAML index back, atomically and with 0600 permissions.
+///
+/// Atomicity is critical here: the previous implementation used `std::fs::write`,
+/// which truncates the destination *before* writing. A crash mid-write left a
+/// truncated `credentials.yaml`, losing every connector's metadata. We instead
+/// write to a sibling tempfile, set its mode, then `rename(2)` it over the
+/// destination — atomic on POSIX same-filesystem.
+pub(crate) fn write_yaml_index(
     data_dir: &Path,
     entries: &HashMap<String, ConnectorCredentials>,
 ) -> Result<()> {
@@ -168,13 +219,16 @@ fn write_yaml_index(
         std::fs::create_dir_all(parent)?;
     }
     let yaml = serde_yaml::to_string(entries).context("serializing credentials")?;
-    std::fs::write(&path, yaml).context("writing credentials file")?;
 
+    let tmp = data_dir.join("credentials.yaml.tmp");
+    std::fs::write(&tmp, yaml).context("writing credentials tempfile")?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+            .context("setting credentials tempfile permissions")?;
     }
+    std::fs::rename(&tmp, &path).context("renaming credentials tempfile into place")?;
     Ok(())
 }
 
@@ -279,7 +333,10 @@ impl CredentialStore {
         token: &str,
         use_keychain: bool,
     ) -> Result<()> {
-        let mut entries = read_yaml_index(data_dir).unwrap_or_default();
+        // Propagate parse errors instead of silently overwriting a corrupted
+        // YAML file with a single-entry map (which would lose every other
+        // connector's metadata).
+        let mut entries = read_yaml_index(data_dir)?;
         let entry = entries.entry(connector_name.to_string()).or_default();
 
         let mut wrote_to_keychain = false;
@@ -340,7 +397,7 @@ impl CredentialStore {
         client_secret: &str,
         use_keychain: bool,
     ) -> Result<()> {
-        let mut entries = read_yaml_index(data_dir).unwrap_or_default();
+        let mut entries = read_yaml_index(data_dir)?;
         let entry = entries.entry(connector_name.to_string()).or_default();
         entry.client_id = Some(client_id.to_string());
 
@@ -524,5 +581,96 @@ mod tests {
         let store = CredentialStore::load(dir.path()).unwrap();
         assert!(store.get("anything").is_none());
         assert!(store.token("anything").is_none());
+    }
+
+    #[test]
+    fn debug_impl_redacts_secrets() {
+        let creds = ConnectorCredentials {
+            token: Some("ghp_super_secret".to_string()),
+            refresh_token: Some("rt_also_secret".to_string()),
+            client_secret: Some("cs_secret".to_string()),
+            email: Some("user@example.com".to_string()),
+            base_url: Some("https://api.example.com".to_string()),
+            client_id: Some("public-client-id".to_string()),
+        };
+        let dbg = format!("{:?}", creds);
+        assert!(!dbg.contains("ghp_super_secret"), "debug leaked token: {}", dbg);
+        assert!(!dbg.contains("rt_also_secret"), "debug leaked refresh: {}", dbg);
+        assert!(!dbg.contains("cs_secret"), "debug leaked client_secret: {}", dbg);
+        assert!(dbg.contains("user@example.com"), "non-secret email should remain: {}", dbg);
+        assert!(dbg.contains("public-client-id"), "non-secret client_id should remain: {}", dbg);
+        assert!(dbg.contains("<redacted>"), "should annotate redaction: {}", dbg);
+    }
+
+    #[test]
+    fn save_token_propagates_corrupt_yaml_error() {
+        // The previous unwrap_or_default() path would silently overwrite a
+        // corrupt credentials.yaml with a single-entry map, losing every other
+        // connector's metadata. Now it must error.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("credentials.yaml"),
+            "::: not valid yaml :::\n",
+        )
+        .unwrap();
+
+        let err = CredentialStore::save_token_with_keychain(
+            dir.path(),
+            "github",
+            "ghp_secret",
+            false,
+        )
+        .expect_err("expected error on corrupt YAML");
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("parsing credentials YAML"),
+            "unexpected error: {}",
+            msg
+        );
+
+        // Confirm the corrupt file was not overwritten.
+        let on_disk = std::fs::read_to_string(dir.path().join("credentials.yaml")).unwrap();
+        assert!(on_disk.contains("not valid yaml"));
+    }
+
+    #[test]
+    fn save_oauth2_propagates_corrupt_yaml_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("credentials.yaml"), "{ unterminated\n").unwrap();
+
+        let err = CredentialStore::save_oauth2_with_keychain(
+            dir.path(),
+            "google",
+            "tok",
+            "refresh",
+            "client",
+            "secret",
+            false,
+        )
+        .expect_err("expected error on corrupt YAML");
+        assert!(format!("{:#}", err).contains("parsing credentials YAML"));
+    }
+
+    #[test]
+    fn write_yaml_index_is_atomic_no_tempfile_left_behind() {
+        // tempfile + rename means after a successful write the .tmp sidecar is
+        // gone. (Crash-safety we can't directly test in-process — the rename
+        // call itself is what gives us atomicity on POSIX same-fs.)
+        let dir = tempfile::tempdir().unwrap();
+        let mut entries = HashMap::new();
+        entries.insert(
+            "x".to_string(),
+            ConnectorCredentials {
+                email: Some("a@b".to_string()),
+                ..Default::default()
+            },
+        );
+        write_yaml_index(dir.path(), &entries).unwrap();
+
+        assert!(dir.path().join("credentials.yaml").exists());
+        assert!(
+            !dir.path().join("credentials.yaml.tmp").exists(),
+            "tempfile should have been renamed away"
+        );
     }
 }
