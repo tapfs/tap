@@ -47,9 +47,8 @@ pub fn prompt_api_key(
         anyhow::bail!("No token provided");
     }
 
-    // Save to credentials.yaml
     CredentialStore::save_token(data_dir, connector_name, &token)?;
-    println!("Saved to credentials.yaml");
+    println!("{}", saved_message());
 
     Ok(token)
 }
@@ -156,7 +155,6 @@ pub async fn oauth2_browser_flow(
         anyhow::anyhow!("no refresh_token in response (need access_type=offline)")
     })?;
 
-    // Save to credentials.yaml (for RestConnector OAuth2 refresh)
     CredentialStore::save_oauth2(
         data_dir,
         connector_name,
@@ -166,7 +164,7 @@ pub async fn oauth2_browser_flow(
         client_secret,
     )?;
 
-    println!("Credentials saved to credentials.yaml");
+    println!("{}", saved_message());
 
     Ok(())
 }
@@ -245,9 +243,8 @@ pub async fn oauth2_device_flow(
         let body: serde_json::Value = resp.json().await?;
 
         if let Some(token) = body["access_token"].as_str() {
-            // Success
             CredentialStore::save_token(data_dir, connector_name, token)?;
-            println!("Authenticated! Credentials saved.");
+            println!("Authenticated! {}", saved_message());
             return Ok(());
         }
 
@@ -298,6 +295,17 @@ pub fn default_oauth2_config(connector_name: &str) -> crate::connector::spec::Au
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn saved_message() -> &'static str {
+    if std::env::var("TAPFS_NO_KEYCHAIN")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        "Credentials saved to ~/.tapfs/credentials.yaml"
+    } else {
+        "Credentials saved to OS keychain"
+    }
+}
 
 /// Minimal percent-encoding for URL query parameters.
 fn percent_encode(input: &str) -> String {
