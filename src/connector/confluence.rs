@@ -18,9 +18,9 @@ pub struct ConfluenceConnector {
 }
 
 impl ConfluenceConnector {
-    pub fn new() -> Result<Self> {
-        let auth =
-            AtlassianAuth::from_env().context("initializing Atlassian auth for Confluence")?;
+    pub fn new(creds: &crate::credentials::CredentialStore) -> Result<Self> {
+        let auth = AtlassianAuth::load("confluence", creds)
+            .context("loading Atlassian auth for Confluence")?;
         tracing::info!(base_url = %auth.base_url, "Confluence connector initialized");
         Ok(Self {
             auth,

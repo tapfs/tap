@@ -8,11 +8,14 @@
 //!   - `ATLASSIAN_EMAIL`     (the account email)
 //!   - `ATLASSIAN_API_TOKEN` (the API token)
 
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use serde_json::Value;
+
+use crate::credentials::{ConnectorCredentials, CredentialStore};
 
 /// Configuration parsed from env vars, shared by Jira and Confluence connectors.
 pub struct AtlassianAuth {
@@ -31,6 +34,48 @@ impl AtlassianAuth {
             std::env::var("ATLASSIAN_API_TOKEN").context("ATLASSIAN_API_TOKEN env var required")?;
 
         let base_url = format!("https://{}.atlassian.net", domain);
+        Self::build(&base_url, &email, &token)
+    }
+
+    /// Build an `AtlassianAuth`, preferring environment variables, then the
+    /// credentials store (keyed by `connector_name`, e.g. "jira" or
+    /// "confluence"). Returns an error when no source has all three of
+    /// (base_url, email, token).
+    pub fn load(connector_name: &str, store: &CredentialStore) -> Result<Self> {
+        if let Ok(auth) = Self::from_env() {
+            return Ok(auth);
+        }
+
+        let creds = store.get(connector_name).ok_or_else(|| {
+            anyhow!(
+                "no Atlassian credentials for '{}': set ATLASSIAN_DOMAIN/EMAIL/API_TOKEN \
+                 or run `tap mount {}` from a terminal to set them interactively",
+                connector_name,
+                connector_name
+            )
+        })?;
+
+        Self::from_credentials(connector_name, creds)
+    }
+
+    fn from_credentials(connector_name: &str, creds: &ConnectorCredentials) -> Result<Self> {
+        let base_url = creds
+            .base_url
+            .as_deref()
+            .ok_or_else(|| anyhow!("no base_url stored for '{}'", connector_name))?;
+        let email = creds
+            .email
+            .as_deref()
+            .ok_or_else(|| anyhow!("no email stored for '{}'", connector_name))?;
+        let token = creds
+            .token
+            .as_deref()
+            .ok_or_else(|| anyhow!("no token stored for '{}'", connector_name))?;
+
+        Self::build(base_url, email, token)
+    }
+
+    fn build(base_url: &str, email: &str, token: &str) -> Result<Self> {
         let auth = base64_encode(format!("{}:{}", email, token).as_bytes());
         let auth_header = format!("Basic {}", auth);
 
@@ -44,9 +89,62 @@ impl AtlassianAuth {
 
         Ok(Self {
             client,
-            base_url,
+            base_url: base_url.to_string(),
             auth_header,
         })
+    }
+
+    /// Returns true if either env vars or the credentials store has a complete
+    /// set of Atlassian credentials for `connector_name`. Used by the connector
+    /// factory to decide between proceeding and surfacing AuthRequired.
+    pub fn credentials_present(connector_name: &str, store: &CredentialStore) -> bool {
+        let env_ok = std::env::var("ATLASSIAN_DOMAIN").is_ok()
+            && std::env::var("ATLASSIAN_EMAIL").is_ok()
+            && std::env::var("ATLASSIAN_API_TOKEN").is_ok();
+        if env_ok {
+            return true;
+        }
+        store
+            .get(connector_name)
+            .map(|c| c.base_url.is_some() && c.email.is_some() && c.token.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Persist Atlassian credentials. Domain may be passed as just the
+    /// subdomain (e.g. "mycompany") or as a full URL; both are normalized
+    /// to "https://mycompany.atlassian.net".
+    pub fn save_credentials(
+        data_dir: &Path,
+        connector_name: &str,
+        domain: &str,
+        email: &str,
+        token: &str,
+    ) -> Result<()> {
+        let base_url = normalize_atlassian_domain(domain);
+        // Save token to keychain (or YAML fallback) via existing API.
+        CredentialStore::save_token(data_dir, connector_name, token)?;
+        // Update the YAML index entry with email + base_url.
+        let path = data_dir.join("credentials.yaml");
+        let mut entries: std::collections::HashMap<String, ConnectorCredentials> = if path.exists()
+        {
+            serde_yaml::from_str(&std::fs::read_to_string(&path)?).unwrap_or_default()
+        } else {
+            std::collections::HashMap::new()
+        };
+        let entry = entries.entry(connector_name.to_string()).or_default();
+        entry.email = Some(email.to_string());
+        entry.base_url = Some(base_url);
+        let yaml = serde_yaml::to_string(&entries).context("serializing credentials")?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, yaml)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(())
     }
 
     /// Send a GET request with retry on 401, 429, 503.
@@ -265,6 +363,22 @@ impl AtlassianAuth {
     }
 }
 
+/// Normalize an Atlassian domain input (e.g. "mycompany",
+/// "https://mycompany.atlassian.net", "mycompany.atlassian.net") to a
+/// canonical "https://mycompany.atlassian.net" base URL.
+fn normalize_atlassian_domain(input: &str) -> String {
+    let trimmed = input
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/');
+    if trimmed.contains('.') {
+        format!("https://{}", trimmed)
+    } else {
+        format!("https://{}.atlassian.net", trimmed)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Base64 encoding (inline implementation, matching the Google connector style)
 // ---------------------------------------------------------------------------
@@ -412,6 +526,30 @@ mod tests {
     fn test_strip_frontmatter_no_frontmatter() {
         let input = "Just plain text";
         assert_eq!(strip_frontmatter_str(input), "Just plain text");
+    }
+
+    #[test]
+    fn normalize_subdomain_only() {
+        assert_eq!(
+            normalize_atlassian_domain("mycompany"),
+            "https://mycompany.atlassian.net"
+        );
+    }
+
+    #[test]
+    fn normalize_full_host() {
+        assert_eq!(
+            normalize_atlassian_domain("mycompany.atlassian.net"),
+            "https://mycompany.atlassian.net"
+        );
+    }
+
+    #[test]
+    fn normalize_full_url_with_trailing_slash() {
+        assert_eq!(
+            normalize_atlassian_domain("https://mycompany.atlassian.net/"),
+            "https://mycompany.atlassian.net"
+        );
     }
 
     #[test]

@@ -84,11 +84,25 @@ pub fn create_connector(
             }
         }
     } else if name == "jira" {
-        let inner: Arc<dyn Connector> = Arc::new(JiraConnector::new()?);
+        if !crate::connector::atlassian_auth::AtlassianAuth::credentials_present(name, creds) {
+            return Err(AuthRequired {
+                connector_name: name.to_string(),
+                spec: None,
+            }
+            .into());
+        }
+        let inner: Arc<dyn Connector> = Arc::new(JiraConnector::new(creds)?);
         audited = Arc::new(AuditedConnector::new(inner, audit.clone()));
         spec = None;
     } else if name == "confluence" {
-        let inner: Arc<dyn Connector> = Arc::new(ConfluenceConnector::new()?);
+        if !crate::connector::atlassian_auth::AtlassianAuth::credentials_present(name, creds) {
+            return Err(AuthRequired {
+                connector_name: name.to_string(),
+                spec: None,
+            }
+            .into());
+        }
+        let inner: Arc<dyn Connector> = Arc::new(ConfluenceConnector::new(creds)?);
         audited = Arc::new(AuditedConnector::new(inner, audit.clone()));
         spec = None;
     } else {

@@ -282,6 +282,10 @@ pub async fn handle_auth_required(
         );
     }
 
+    if matches!(auth_err.connector_name.as_str(), "jira" | "confluence") {
+        return prompt_atlassian_credentials(&auth_err.connector_name, data_dir);
+    }
+
     let default_auth = default_oauth2_config(&auth_err.connector_name);
     let auth = auth_err
         .spec
@@ -302,6 +306,49 @@ pub async fn handle_auth_required(
     } else {
         prompt_api_key(&auth_err.connector_name, auth_err.spec.as_ref(), data_dir).map(|_| ())
     }
+}
+
+/// Prompt the user for Atlassian Cloud credentials (domain, email, API token)
+/// and persist them via `AtlassianAuth::save_credentials`.
+pub fn prompt_atlassian_credentials(connector_name: &str, data_dir: &Path) -> Result<()> {
+    println!();
+    println!(
+        "{} requires Atlassian Cloud authentication.",
+        connector_name
+    );
+    println!("Generate an API token at: https://id.atlassian.com/manage-profile/security/api-tokens");
+    println!();
+
+    let domain = read_line("Atlassian domain (e.g. mycompany or mycompany.atlassian.net): ")?;
+    if domain.is_empty() {
+        anyhow::bail!("domain is required");
+    }
+    let email = read_line("Atlassian account email: ")?;
+    if email.is_empty() {
+        anyhow::bail!("email is required");
+    }
+    let token = read_line("API token: ")?;
+    if token.is_empty() {
+        anyhow::bail!("API token is required");
+    }
+
+    crate::connector::atlassian_auth::AtlassianAuth::save_credentials(
+        data_dir,
+        connector_name,
+        &domain,
+        &email,
+        &token,
+    )?;
+    println!("{}", saved_message());
+    Ok(())
+}
+
+fn read_line(prompt: &str) -> Result<String> {
+    print!("{}", prompt);
+    io::stdout().flush()?;
+    let mut buf = String::new();
+    io::stdin().read_line(&mut buf)?;
+    Ok(buf.trim().to_string())
 }
 
 fn print_non_interactive_hint(connector: &str, spec: Option<&ConnectorSpec>) {
