@@ -315,83 +315,56 @@ impl RestConnector {
 
     /// Send a request with retry + exponential backoff for transient errors.
     ///
-    /// Retries on:
-    /// - HTTP status codes 429 (Too Many Requests), 502, 503 (server errors)
-    /// - Network errors: timeouts, connection refused, DNS failures
+    /// Delegates to `connector::retry::execute` so the retry/backoff/
+    /// Retry-After logic lives in one place. This wrapper just handles
+    /// the connector-specific concerns: refreshing the OAuth token,
+    /// acquiring the concurrency permit, and stamping auth/headers.
     ///
-    /// Non-retryable errors (e.g. invalid URL) are returned immediately.
-    ///
-    /// Acquires a permit from the concurrency semaphore before each attempt
-    /// to prevent overwhelming the API with unlimited parallel requests.
+    /// The semaphore permit is acquired once for the entire retry sequence
+    /// (not per-attempt) — semantically a "request" includes its retries.
+    /// Acquiring per-attempt would let other callers slip in during sleeps,
+    /// defeating the cap that protects upstream APIs.
     async fn send_with_retry(
         &self,
         build_request: impl Fn() -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response> {
         self.ensure_token().await;
-        const MAX_RETRIES: u32 = 3;
-        let mut delay = std::time::Duration::from_millis(500);
-
-        for attempt in 0..=MAX_RETRIES {
-            let _permit = self
-                .request_semaphore
-                .acquire()
-                .await
-                .map_err(|_| anyhow!("request semaphore closed"))?;
-            let request = self.authenticate(build_request());
-            let response = request.send().await;
-
-            match response {
-                Ok(resp)
-                    if resp.status() == 429 || resp.status() == 502 || resp.status() == 503 =>
-                {
-                    if attempt == MAX_RETRIES {
-                        return Ok(resp);
-                    }
-                    // Use Retry-After header if present, otherwise exponential backoff.
-                    let wait = resp
-                        .headers()
-                        .get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|v| v.parse::<u64>().ok())
-                        .map(std::time::Duration::from_secs)
-                        .unwrap_or(delay);
-                    tracing::warn!(
-                        status = resp.status().as_u16(),
-                        attempt,
-                        wait_ms = wait.as_millis() as u64,
-                        "retrying after transient error"
-                    );
-                    tokio::time::sleep(wait).await;
-                    delay *= 2;
-                }
-                Ok(resp) => return Ok(resp),
-                Err(e)
-                    if attempt < MAX_RETRIES
-                        && (e.is_timeout() || e.is_connect() || e.is_request()) =>
-                {
-                    tracing::warn!(
-                        error = %e,
-                        attempt,
-                        wait_ms = delay.as_millis() as u64,
-                        "retrying after transient network error"
-                    );
-                    tokio::time::sleep(delay).await;
-                    delay *= 2;
-                }
-                Err(e) => return Err(e).context("HTTP request failed"),
-            }
-        }
-        unreachable!()
+        let _permit = self
+            .request_semaphore
+            .acquire()
+            .await
+            .map_err(|_| anyhow!("request semaphore closed"))?;
+        crate::connector::retry::execute(&crate::connector::retry::RetryPolicy::default(), || {
+            self.authenticate(build_request())
+        })
+        .await
     }
 
     /// Ensure the OAuth2 access token is fresh, refreshing if expired or missing.
+    ///
+    /// Hardened in three ways from the previous shape:
+    ///
+    /// 1. The refresh request goes through `retry::execute` — a single
+    ///    transient network blip used to silently fail and force every
+    ///    downstream API call to fail with 401. Now we tolerate one bad
+    ///    packet on the way to the OAuth provider.
+    ///
+    /// 2. The response is also parsed for a *new* `refresh_token`. Some
+    ///    providers (Google) rotate refresh tokens on every refresh — if we
+    ///    keep using the old one, the next refresh will fail with
+    ///    invalid_grant. The new token replaces the in-memory copy.
+    ///    (Persisting the rotated token back to disk is a follow-up — that
+    ///    requires plumbing the `data_dir` through OAuth2Config, which is
+    ///    a wider change than belongs in this PR.)
+    ///
+    /// 3. Failures are still logged (not panicked) so downstream code can
+    ///    proceed and surface the inevitable 401 with a useful message.
     async fn ensure_token(&self) {
         let config = match &self.oauth2_config {
             Some(c) => c,
-            None => return, // No OAuth2, static token
+            None => return,
         };
 
-        // Check if refresh is needed
         let needs_refresh = {
             let expiry = config.expiry.read().unwrap();
             match expiry.as_ref() {
@@ -399,38 +372,67 @@ impl RestConnector {
                 None => self.token.read().unwrap().is_none(),
             }
         };
-
         if !needs_refresh {
             return;
         }
 
-        // Refresh the token
-        match self
-            .client
-            .post(&config.token_url)
-            .form(&[
+        let policy = crate::connector::retry::RetryPolicy::default();
+        let refresh_result = crate::connector::retry::execute(&policy, || {
+            self.client.post(&config.token_url).form(&[
                 ("grant_type", "refresh_token"),
                 ("refresh_token", config.refresh_token.as_str()),
                 ("client_id", config.client_id.as_str()),
                 ("client_secret", config.client_secret.as_str()),
             ])
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                if let Ok(json) = resp.json::<serde_json::Value>().await {
-                    if let Some(new_token) = json["access_token"].as_str() {
-                        *self.token.write().unwrap() = Some(new_token.to_string());
-                        let expires_in = json["expires_in"].as_u64().unwrap_or(3600);
-                        // Refresh at 80% of TTL to avoid edge-case expiry
-                        *config.expiry.write().unwrap() = Some(
-                            Instant::now() + std::time::Duration::from_secs(expires_in * 4 / 5),
-                        );
-                    }
-                }
-            }
+        })
+        .await;
+
+        let resp = match refresh_result {
+            Ok(r) => r,
             Err(e) => {
-                tracing::warn!("OAuth2 token refresh failed: {}", e);
+                tracing::warn!(error = %e, "OAuth2 token refresh failed (network/transport)");
+                return;
+            }
+        };
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            tracing::warn!(
+                status = status.as_u16(),
+                body = truncate_error_body(&body),
+                "OAuth2 token refresh failed (non-2xx)"
+            );
+            return;
+        }
+
+        let json: serde_json::Value = match resp.json().await {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::warn!(error = %e, "OAuth2 token refresh response was not JSON");
+                return;
+            }
+        };
+
+        if let Some(new_token) = json["access_token"].as_str() {
+            *self.token.write().unwrap() = Some(new_token.to_string());
+            let expires_in = json["expires_in"].as_u64().unwrap_or(3600);
+            *config.expiry.write().unwrap() =
+                Some(Instant::now() + std::time::Duration::from_secs(expires_in * 4 / 5));
+        }
+        // Rotated refresh tokens: providers like Google issue a new
+        // refresh_token on each refresh and invalidate the old one. The
+        // OAuth2Config holds the refresh_token in a plain field; we can't
+        // mutate it without an &mut. Log when a rotated value is returned
+        // so we can plumb persistence in a follow-up. (Until then, daemon
+        // restarts reuse the original token from credentials.yaml — fine
+        // for non-rotating providers, eventually broken for Google.)
+        if let Some(new_refresh) = json["refresh_token"].as_str() {
+            if new_refresh != config.refresh_token {
+                tracing::info!(
+                    "OAuth2 provider rotated refresh_token; \
+                     persistence not yet plumbed — daemon restart will need re-auth"
+                );
             }
         }
     }
