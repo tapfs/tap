@@ -274,12 +274,7 @@ pub async fn handle_auth_required(
     use std::io::IsTerminal;
 
     if !std::io::stdin().is_terminal() {
-        print_non_interactive_hint(&auth_err.connector_name, auth_err.spec.as_ref());
-        anyhow::bail!(
-            "connector '{}' requires authentication and stdin is not a terminal — \
-             rerun from a terminal or set the connector's credentials in advance",
-            auth_err.connector_name
-        );
+        return Err(bail_non_interactive(auth_err));
     }
 
     if matches!(auth_err.connector_name.as_str(), "jira" | "confluence") {
@@ -349,6 +344,22 @@ fn read_line(prompt: &str) -> Result<String> {
     let mut buf = String::new();
     io::stdin().read_line(&mut buf)?;
     Ok(buf.trim().to_string())
+}
+
+/// Print actionable guidance to stderr and return an error explaining why we
+/// can't proceed. Use from non-interactive call sites (CI, daemon spawn) where
+/// `handle_auth_required` would otherwise need to be called purely to surface
+/// the same message — and where callers were previously hiding behind an
+/// `unreachable!()` after that call.
+pub fn bail_non_interactive(
+    auth_err: &crate::connector::factory::AuthRequired,
+) -> anyhow::Error {
+    print_non_interactive_hint(&auth_err.connector_name, auth_err.spec.as_ref());
+    anyhow::anyhow!(
+        "connector '{}' requires authentication and stdin is not a terminal — \
+         rerun from a terminal or set the connector's credentials in advance",
+        auth_err.connector_name
+    )
 }
 
 fn print_non_interactive_hint(connector: &str, spec: Option<&ConnectorSpec>) {
