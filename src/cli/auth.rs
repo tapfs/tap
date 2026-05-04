@@ -464,3 +464,45 @@ fn extract_code_from_request(request: &str) -> Option<String> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connector::factory::AuthRequired;
+
+    #[tokio::test]
+    async fn handle_auth_required_non_tty_returns_error_with_hint() {
+        // `cargo test` runs with non-terminal stdin, so the non-TTY branch
+        // is the path under test.
+        let dir = tempfile::tempdir().unwrap();
+        let auth_err = AuthRequired {
+            connector_name: "github".to_string(),
+            spec: None,
+        };
+        let result = handle_auth_required(&auth_err, dir.path()).await;
+        let err = result.expect_err("expected non-TTY to return an error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("requires authentication"),
+            "unexpected error: {}",
+            msg
+        );
+        assert!(
+            msg.contains("not a terminal"),
+            "unexpected error: {}",
+            msg
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_auth_required_non_tty_does_not_touch_data_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth_err = AuthRequired {
+            connector_name: "linear".to_string(),
+            spec: None,
+        };
+        let _ = handle_auth_required(&auth_err, dir.path()).await;
+        // The non-TTY path must not write any credentials files.
+        assert!(!dir.path().join("credentials.yaml").exists());
+    }
+}

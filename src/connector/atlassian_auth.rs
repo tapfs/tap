@@ -553,6 +553,42 @@ mod tests {
     }
 
     #[test]
+    fn from_credentials_builds_basic_auth_header() {
+        let creds = ConnectorCredentials {
+            base_url: Some("https://acme.atlassian.net".to_string()),
+            email: Some("dev@acme.com".to_string()),
+            token: Some("api-tok".to_string()),
+            ..Default::default()
+        };
+        let auth = AtlassianAuth::from_credentials("jira", &creds).unwrap();
+        assert_eq!(auth.base_url, "https://acme.atlassian.net");
+        // Basic dev@acme.com:api-tok
+        assert_eq!(
+            auth.auth_header,
+            format!("Basic {}", base64_encode(b"dev@acme.com:api-tok"))
+        );
+    }
+
+    #[test]
+    fn from_credentials_errors_on_missing_field() {
+        let creds = ConnectorCredentials {
+            base_url: Some("https://acme.atlassian.net".to_string()),
+            email: None, // missing
+            token: Some("api-tok".to_string()),
+            ..Default::default()
+        };
+        let err_msg = AtlassianAuth::from_credentials("jira", &creds)
+            .err()
+            .expect("expected error")
+            .to_string();
+        assert!(
+            err_msg.contains("no email stored"),
+            "unexpected error: {}",
+            err_msg
+        );
+    }
+
+    #[test]
     fn test_extract_frontmatter() {
         let input = "---\nid: \"123\"\ntitle: \"Test\"\n---\n\nBody";
         let fm = extract_frontmatter(input).unwrap();
