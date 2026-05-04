@@ -37,6 +37,32 @@ fn max_concurrent_requests() -> usize {
         .unwrap_or(DEFAULT_MAX_CONCURRENT_REQUESTS)
 }
 
+/// Clamp a Unix timestamp (signed seconds-since-epoch) into the u32 slot
+/// that NFSv3's `nfstime3.seconds` requires. The previous `as u32` cast
+/// silently truncated past 2038-01-19 03:14:07 UTC (and wrapped negatives
+/// to huge positives) — by 2038 a stat() on any old file would report a
+/// nonsensical mtime and macOS NFS client behavior depends on plausible
+/// timestamps for cache validation.
+///
+/// Strategy: clamp to `[0, u32::MAX]`. Pre-1970 dates become epoch-0 (we
+/// don't have a way to represent them in NFSv3 anyway); post-2106 dates
+/// pin to u32::MAX. Both end-points get logged once per process via
+/// `tracing::warn` (rate-limited inside chrono parsing pathways).
+pub(crate) fn clamp_to_u32_seconds(seconds: i64) -> u32 {
+    if seconds < 0 {
+        tracing::debug!(seconds, "pre-epoch timestamp clamped to 0 for nfstime3");
+        0
+    } else if seconds > u32::MAX as i64 {
+        tracing::warn!(
+            seconds,
+            "post-2106 timestamp clamped to u32::MAX — fattr3 cannot represent it"
+        );
+        u32::MAX
+    } else {
+        seconds as u32
+    }
+}
+
 /// NFS adapter wrapping VirtualFs.
 pub struct TapNfs {
     pub vfs: Arc<VirtualFs>,
@@ -93,7 +119,7 @@ impl TapNfs {
         let ts = if let Some(ref mtime_str) = attr.mtime {
             chrono::DateTime::parse_from_rfc3339(mtime_str)
                 .map(|dt| nfstime3 {
-                    seconds: dt.timestamp() as u32,
+                    seconds: clamp_to_u32_seconds(dt.timestamp()),
                     nseconds: dt.timestamp_subsec_nanos(),
                 })
                 .unwrap_or_else(|_| Self::now_nfstime())
@@ -136,7 +162,7 @@ impl TapNfs {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
         nfstime3 {
-            seconds: now.as_secs() as u32,
+            seconds: clamp_to_u32_seconds(now.as_secs() as i64),
             nseconds: now.subsec_nanos(),
         }
     }
@@ -605,6 +631,32 @@ mod tests {
         let info = nfs.fsinfo(nfs.root_dir()).await.unwrap();
         assert_eq!(info.time_delta.seconds, 1);
         assert_eq!(info.time_delta.nseconds, 0);
+    }
+
+    #[test]
+    fn clamp_rejects_negative_seconds() {
+        // Pre-1970 dates can't be represented in nfstime3. Clamp to 0 rather
+        // than letting `as u32` wrap them to wildly future timestamps that
+        // confuse macOS NFS attribute caching.
+        assert_eq!(clamp_to_u32_seconds(-1), 0);
+        assert_eq!(clamp_to_u32_seconds(i64::MIN), 0);
+    }
+
+    #[test]
+    fn clamp_caps_post_2106_seconds() {
+        // u32::MAX seconds = 2106-02-07 06:28:15 UTC. Anything past that
+        // pins to the cap; previously `as u32` silently truncated to
+        // bogus low values (e.g. 2106 + 1 sec → 0, the Unix epoch).
+        let post_2106 = (u32::MAX as i64) + 1;
+        assert_eq!(clamp_to_u32_seconds(post_2106), u32::MAX);
+        assert_eq!(clamp_to_u32_seconds(i64::MAX), u32::MAX);
+    }
+
+    #[test]
+    fn clamp_passes_through_in_range() {
+        // Sanity: sane modern timestamp survives the clamp unchanged.
+        let now = 1_777_000_000; // ~2026
+        assert_eq!(clamp_to_u32_seconds(now), now as u32);
     }
 
     /// Nodes with no real mtime must emit epoch-0, not the current wall clock.
