@@ -18,7 +18,7 @@ capabilities:
   read: true
   write: true
   create: true
-  delete: false
+  delete: true
   pagination: link_header
   rate_limit:
     requests_per_minute: 5000
@@ -126,6 +126,24 @@ collections:
                 - created_at
                 - updated_at
               body: "body"
+
+      - name: labels
+        parent_param: repo
+        description: "Labels available on issues and PRs in this repo"
+        slug_hint: "label name (e.g. bug, enhancement)"
+        operations: [read, delete]
+        list_endpoint: "/repos/{repo}/labels?per_page=100"
+        get_endpoint: "/repos/{repo}/labels/{id}"
+        delete_endpoint: "/repos/{repo}/labels/{id}"
+        id_field: "name"
+        slug_field: "name"
+        title_field: "name"
+        render:
+          frontmatter:
+            - name
+            - color
+            - "default as default_label"
+          body: "description"
 
       - name: pulls
         parent_param: repo
