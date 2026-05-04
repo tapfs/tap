@@ -986,9 +986,17 @@ impl VirtualFs {
                         })
                     };
                     let template: Vec<u8> = if let Some(ref id) = api_id {
+                        // Existing API resource — no idempotency key needed
+                        // (PATCH is idempotent at the HTTP layer).
                         format!("---\n_id: {}\n_version: 0\n---\n\n", id).into_bytes()
                     } else {
-                        b"---\n_draft: true\n_id:\n_version:\n---\n\n".to_vec()
+                        // Brand-new draft. Include _idempotency_key so a
+                        // retried POST after a lost response doesn't dup.
+                        format!(
+                            "---\n_draft: true\n_id:\n_version:\n_idempotency_key: {}\n---\n\n",
+                            generate_idempotency_key()
+                        )
+                        .into_bytes()
                     };
                     self.drafts
                         .create_draft(&connector, &collection, &slug, &template)
@@ -3259,7 +3267,10 @@ impl VirtualFs {
                     })
                     .unwrap_or_default();
 
-                let mut template = "---\n_draft: true\n_id:\n_version:\n".to_string();
+                let mut template = format!(
+                    "---\n_draft: true\n_id:\n_version:\n_idempotency_key: {}\n",
+                    generate_idempotency_key()
+                );
                 for field in &writable_fields {
                     template.push_str(field);
                     template.push('\n');
@@ -3698,6 +3709,29 @@ impl VirtualFs {
 // ---------------------------------------------------------------------------
 // Free functions
 // ---------------------------------------------------------------------------
+
+/// Generate a per-resource idempotency key for new drafts.
+///
+/// The key is sent as an HTTP header (e.g. `Idempotency-Key`) on POST so a
+/// retried create after a lost response doesn't produce a duplicate. It needs
+/// to be unique per draft and stable across retries — including across daemon
+/// restarts, because the key lives in the draft file on disk.
+///
+/// Process-time-nanos prefix plus a process-local atomic counter. Within a
+/// process this is monotonically unique. Across processes the nanos component
+/// makes collisions effectively impossible. UUIDv4-grade randomness would be
+/// stronger but isn't required: APIs treat the key as an opaque string.
+pub(crate) fn generate_idempotency_key() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("tapfs-{:016x}-{:08x}", nanos, counter)
+}
 
 /// The slug used to store a lock in the DraftStore.
 fn lock_slug(slug: &str) -> String {
@@ -4394,6 +4428,7 @@ mod nested_collections {
             create_endpoint: Some("/repos/{repo}/issues/{issue}/comments".into()),
             delete_endpoint: None,
             delete_body: None,
+            idempotency_key_header: None,
             id_field: None,
             slug_field: None,
             title_field: None,
@@ -4418,6 +4453,7 @@ mod nested_collections {
             create_endpoint: Some("/repos/{repo}/issues".into()),
             delete_endpoint: None,
             delete_body: None,
+            idempotency_key_header: None,
             id_field: None,
             slug_field: None,
             title_field: Some("title".into()),
@@ -4447,6 +4483,7 @@ mod nested_collections {
             create_endpoint: None,
             delete_endpoint: None,
             delete_body: None,
+            idempotency_key_header: None,
             id_field: None,
             slug_field: None,
             title_field: Some("name".into()),
@@ -4691,6 +4728,23 @@ mod nested_collections {
             content.contains("title: "),
             "template must include title placeholder from spec"
         );
+        assert!(
+            content.contains("_idempotency_key: tapfs-"),
+            "template must include a generated idempotency key so a retried \
+             POST after a lost response doesn't create a duplicate; got: {}",
+            content
+        );
+    }
+
+    #[test]
+    fn idempotency_key_generator_is_unique_across_calls() {
+        // Process-time-nanos prefix + atomic counter — two back-to-back
+        // calls must never collide, otherwise duplicate keys defeat the
+        // whole point of having them.
+        let a = generate_idempotency_key();
+        let b = generate_idempotency_key();
+        assert_ne!(a, b);
+        assert!(a.starts_with("tapfs-"));
     }
 
     /// `rm -rf <resource>` on an API-backed ResourceDir (no local draft) must

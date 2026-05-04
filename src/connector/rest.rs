@@ -90,6 +90,33 @@ fn truncate_error_body(body: &str) -> &str {
     }
 }
 
+/// Pull the `_idempotency_key: <value>` line out of the YAML frontmatter, if
+/// present. Used by `create_resource` to send a per-resource idempotency key
+/// as an HTTP header — so a retried POST after a lost response doesn't create
+/// a duplicate (e.g. duplicate Jira comment, duplicate GitHub issue).
+///
+/// The key is deliberately stable across retries because it's read from the
+/// content (which the VFS persisted to a draft file) rather than generated
+/// per attempt. It even survives daemon restarts: the draft file on disk
+/// keeps the same key.
+fn extract_idempotency_key(content: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(content).ok()?;
+    let after_open = text.strip_prefix("---")?;
+    let fm_text = match after_open.split_once("\n---") {
+        Some((fm, _)) => fm,
+        None => after_open,
+    };
+    for line in fm_text.lines() {
+        if let Some(val) = line.strip_prefix("_idempotency_key:") {
+            let v = val.trim();
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Generic REST connector driven by a ConnectorSpec.
 ///
 /// Translates the spec's endpoint templates into HTTP calls using reqwest,
@@ -1005,10 +1032,24 @@ impl Connector for RestConnector {
         let clean_endpoint = endpoint.split('?').next().unwrap_or(endpoint);
         let url = self.url(clean_endpoint);
 
+        // Read the per-resource idempotency key out of the draft frontmatter
+        // *before* converting to JSON (markdown_to_json strips `_`-prefixed
+        // fields). The key is stable across the whole retry loop and across
+        // daemon restarts — that's the entire point.
+        let idempotency_header = coll.idempotency_key_header.as_deref().and_then(|header| {
+            extract_idempotency_key(content).map(|key| (header.to_string(), key))
+        });
+
         let body_json = markdown_to_json(content, &coll)?;
 
         let response = self
-            .send_with_retry(|| self.client.post(&url).json(&body_json))
+            .send_with_retry(|| {
+                let mut req = self.client.post(&url).json(&body_json);
+                if let Some((ref name, ref value)) = idempotency_header {
+                    req = req.header(name, value);
+                }
+                req
+            })
             .await?;
 
         let status = response.status();
@@ -1124,6 +1165,7 @@ mod tests {
             create_endpoint: None,
             delete_endpoint: None,
             delete_body: None,
+            idempotency_key_header: None,
             id_field: None,
             slug_field: None,
             title_field: None,
@@ -1512,6 +1554,133 @@ mod tests {
             .expect("delete should succeed");
 
         // MockServer's `.expect(1)` is verified on drop.
+        drop(server);
+    }
+
+    // ---------------------------------------------------------------
+    // Idempotency-key handling
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn extract_idempotency_key_handles_present_and_missing() {
+        let with_key = b"---\n_draft: true\n_id:\n_idempotency_key: tapfs-abc-001\ntitle: hi\n---\n\nbody";
+        assert_eq!(
+            extract_idempotency_key(with_key).as_deref(),
+            Some("tapfs-abc-001")
+        );
+
+        let no_fm = b"plain markdown without frontmatter";
+        assert!(extract_idempotency_key(no_fm).is_none());
+
+        let fm_no_key = b"---\n_draft: true\n_id:\ntitle: hi\n---\n\nbody";
+        assert!(extract_idempotency_key(fm_no_key).is_none());
+
+        let empty_value = b"---\n_idempotency_key: \n---\n\nbody";
+        assert!(
+            extract_idempotency_key(empty_value).is_none(),
+            "empty value must not be treated as a real key"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_resource_sends_idempotency_header_when_configured() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/widgets"))
+            .and(header("Idempotency-Key", "tapfs-fixed-123"))
+            .respond_with(
+                ResponseTemplate::new(201)
+                    .set_body_string(r#"{"id":"new-id","slug":"hi"}"#),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut coll = minimal_collection("widgets");
+        coll.create_endpoint = Some("/widgets".to_string());
+        coll.idempotency_key_header = Some("Idempotency-Key".to_string());
+        let conn = build_connector(&server.uri(), vec![coll]);
+
+        let body = b"---\n_draft: true\n_idempotency_key: tapfs-fixed-123\ntitle: hi\n---\n\nbody";
+        conn.create_resource("widgets", body)
+            .await
+            .expect("create with idempotency header should succeed");
+
+        drop(server);
+    }
+
+    #[tokio::test]
+    async fn create_resource_omits_header_when_spec_does_not_configure_it() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/widgets"))
+            .respond_with(
+                ResponseTemplate::new(201)
+                    .set_body_string(r#"{"id":"new-id","slug":"hi"}"#),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut coll = minimal_collection("widgets");
+        coll.create_endpoint = Some("/widgets".to_string());
+        // idempotency_key_header is None — header must not be sent even if
+        // the body contains an _idempotency_key field.
+        let conn = build_connector(&server.uri(), vec![coll]);
+
+        let body = b"---\n_draft: true\n_idempotency_key: tapfs-irrelevant\ntitle: hi\n---\n\nbody";
+        conn.create_resource("widgets", body).await.unwrap();
+
+        // Inspect the captured request to confirm no Idempotency-Key header.
+        let received: Vec<Request> = server.received_requests().await.unwrap();
+        let req = received.first().expect("a request was received");
+        assert!(
+            !req.headers.contains_key("idempotency-key"),
+            "header should not be present when spec doesn't configure it"
+        );
+
+        drop(server);
+    }
+
+    #[tokio::test]
+    async fn create_resource_omits_header_when_body_has_no_key() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/widgets"))
+            .respond_with(
+                ResponseTemplate::new(201)
+                    .set_body_string(r#"{"id":"new-id","slug":"hi"}"#),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut coll = minimal_collection("widgets");
+        coll.create_endpoint = Some("/widgets".to_string());
+        coll.idempotency_key_header = Some("Idempotency-Key".to_string());
+        let conn = build_connector(&server.uri(), vec![coll]);
+
+        // No _idempotency_key in body — header should be omitted (not sent
+        // empty), so the API doesn't reject the request.
+        let body = b"---\n_draft: true\ntitle: hi\n---\n\nbody";
+        conn.create_resource("widgets", body).await.unwrap();
+
+        let received: Vec<Request> = server.received_requests().await.unwrap();
+        let req = received.first().unwrap();
+        assert!(
+            !req.headers.contains_key("idempotency-key"),
+            "header should not be sent when key is missing from body"
+        );
+
         drop(server);
     }
 

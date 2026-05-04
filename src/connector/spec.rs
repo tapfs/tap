@@ -106,6 +106,12 @@ pub struct CollectionSpec {
     /// `delete_endpoint` with this JSON body. Used by APIs that soft-delete
     /// via an archive flag (e.g. Notion's `{"archived": true}`).
     pub delete_body: Option<String>,
+    /// HTTP header name used to send a per-resource idempotency key on POST.
+    /// e.g. `Idempotency-Key` (Stripe convention) or `X-Request-ID`. When
+    /// set, `RestConnector::create_resource` reads `_idempotency_key` from
+    /// the draft frontmatter and sends it as this header — so a retried POST
+    /// after a lost response doesn't create a duplicate resource.
+    pub idempotency_key_header: Option<String>,
     pub id_field: Option<String>,   // field name for ID, default "id"
     pub slug_field: Option<String>, // field for slug, default "slug" or "id"
     pub title_field: Option<String>,
