@@ -47,9 +47,8 @@ pub fn prompt_api_key(
         anyhow::bail!("No token provided");
     }
 
-    // Save to credentials.yaml
     CredentialStore::save_token(data_dir, connector_name, &token)?;
-    println!("Saved to credentials.yaml");
+    println!("{}", saved_message());
 
     Ok(token)
 }
@@ -156,7 +155,6 @@ pub async fn oauth2_browser_flow(
         anyhow::anyhow!("no refresh_token in response (need access_type=offline)")
     })?;
 
-    // Save to credentials.yaml (for RestConnector OAuth2 refresh)
     CredentialStore::save_oauth2(
         data_dir,
         connector_name,
@@ -166,7 +164,7 @@ pub async fn oauth2_browser_flow(
         client_secret,
     )?;
 
-    println!("Credentials saved to credentials.yaml");
+    println!("{}", saved_message());
 
     Ok(())
 }
@@ -245,9 +243,8 @@ pub async fn oauth2_device_flow(
         let body: serde_json::Value = resp.json().await?;
 
         if let Some(token) = body["access_token"].as_str() {
-            // Success
             CredentialStore::save_token(data_dir, connector_name, token)?;
-            println!("Authenticated! Credentials saved.");
+            println!("Authenticated! {}", saved_message());
             return Ok(());
         }
 
@@ -263,6 +260,117 @@ pub async fn oauth2_device_flow(
             None => anyhow::bail!("Unexpected response: {}", body),
         }
     }
+}
+
+/// Run the appropriate interactive auth flow for a connector that the factory
+/// couldn't construct because credentials were missing.
+///
+/// On a non-interactive session (no TTY on stdin), prints actionable
+/// instructions to stderr and returns an error so the caller can bail.
+pub async fn handle_auth_required(
+    auth_err: &crate::connector::factory::AuthRequired,
+    data_dir: &Path,
+) -> Result<()> {
+    use std::io::IsTerminal;
+
+    if !std::io::stdin().is_terminal() {
+        print_non_interactive_hint(&auth_err.connector_name, auth_err.spec.as_ref());
+        anyhow::bail!(
+            "connector '{}' requires authentication and stdin is not a terminal — \
+             rerun from a terminal or set the connector's credentials in advance",
+            auth_err.connector_name
+        );
+    }
+
+    if matches!(auth_err.connector_name.as_str(), "jira" | "confluence") {
+        return prompt_atlassian_credentials(&auth_err.connector_name, data_dir);
+    }
+
+    let default_auth = default_oauth2_config(&auth_err.connector_name);
+    let auth = auth_err
+        .spec
+        .as_ref()
+        .and_then(|s| s.auth.clone())
+        .unwrap_or(default_auth);
+
+    let has_device_flow = auth.device_code_url.is_some() && auth.client_id.is_some();
+    let oauth2_ready = auth.auth_type == "oauth2"
+        && auth.auth_url.is_some()
+        && auth.token_url.is_some()
+        && auth.client_id.is_some();
+
+    if has_device_flow {
+        oauth2_device_flow(&auth_err.connector_name, &auth, data_dir).await
+    } else if oauth2_ready {
+        oauth2_browser_flow(&auth_err.connector_name, &auth, data_dir).await
+    } else {
+        prompt_api_key(&auth_err.connector_name, auth_err.spec.as_ref(), data_dir).map(|_| ())
+    }
+}
+
+/// Prompt the user for Atlassian Cloud credentials (domain, email, API token)
+/// and persist them via `AtlassianAuth::save_credentials`.
+pub fn prompt_atlassian_credentials(connector_name: &str, data_dir: &Path) -> Result<()> {
+    println!();
+    println!(
+        "{} requires Atlassian Cloud authentication.",
+        connector_name
+    );
+    println!("Generate an API token at: https://id.atlassian.com/manage-profile/security/api-tokens");
+    println!();
+
+    let domain = read_line("Atlassian domain (e.g. mycompany or mycompany.atlassian.net): ")?;
+    if domain.is_empty() {
+        anyhow::bail!("domain is required");
+    }
+    let email = read_line("Atlassian account email: ")?;
+    if email.is_empty() {
+        anyhow::bail!("email is required");
+    }
+    let token = read_line("API token: ")?;
+    if token.is_empty() {
+        anyhow::bail!("API token is required");
+    }
+
+    crate::connector::atlassian_auth::AtlassianAuth::save_credentials(
+        data_dir,
+        connector_name,
+        &domain,
+        &email,
+        &token,
+    )?;
+    println!("{}", saved_message());
+    Ok(())
+}
+
+fn read_line(prompt: &str) -> Result<String> {
+    print!("{}", prompt);
+    io::stdout().flush()?;
+    let mut buf = String::new();
+    io::stdin().read_line(&mut buf)?;
+    Ok(buf.trim().to_string())
+}
+
+fn print_non_interactive_hint(connector: &str, spec: Option<&ConnectorSpec>) {
+    let auth = spec.and_then(|s| s.auth.as_ref());
+    eprintln!();
+    eprintln!("Authentication required for connector '{}'.", connector);
+    if let Some(a) = auth {
+        if let Some(url) = &a.setup_url {
+            eprintln!("  Get credentials at: {}", url);
+        }
+        if let Some(env) = &a.token_env {
+            eprintln!("  Then set {}=...", env);
+        }
+        if let Some(instructions) = &a.setup_instructions {
+            eprintln!("  {}", instructions);
+        }
+    }
+    eprintln!(
+        "  Or run `tap mount {}` from an interactive terminal to authenticate.",
+        connector
+    );
+    eprintln!();
 }
 
 /// Return default OAuth2 config for native connectors that don't have a YAML spec.
@@ -298,6 +406,17 @@ pub fn default_oauth2_config(connector_name: &str) -> crate::connector::spec::Au
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn saved_message() -> &'static str {
+    if std::env::var("TAPFS_NO_KEYCHAIN")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        "Credentials saved to ~/.tapfs/credentials.yaml"
+    } else {
+        "Credentials saved to OS keychain"
+    }
+}
 
 /// Minimal percent-encoding for URL query parameters.
 fn percent_encode(input: &str) -> String {
@@ -344,4 +463,46 @@ fn extract_code_from_request(request: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connector::factory::AuthRequired;
+
+    #[tokio::test]
+    async fn handle_auth_required_non_tty_returns_error_with_hint() {
+        // `cargo test` runs with non-terminal stdin, so the non-TTY branch
+        // is the path under test.
+        let dir = tempfile::tempdir().unwrap();
+        let auth_err = AuthRequired {
+            connector_name: "github".to_string(),
+            spec: None,
+        };
+        let result = handle_auth_required(&auth_err, dir.path()).await;
+        let err = result.expect_err("expected non-TTY to return an error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("requires authentication"),
+            "unexpected error: {}",
+            msg
+        );
+        assert!(
+            msg.contains("not a terminal"),
+            "unexpected error: {}",
+            msg
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_auth_required_non_tty_does_not_touch_data_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth_err = AuthRequired {
+            connector_name: "linear".to_string(),
+            spec: None,
+        };
+        let _ = handle_auth_required(&auth_err, dir.path()).await;
+        // The non-TTY path must not write any credentials files.
+        assert!(!dir.path().join("credentials.yaml").exists());
+    }
 }

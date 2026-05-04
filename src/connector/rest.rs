@@ -1022,19 +1022,34 @@ impl Connector for RestConnector {
 
     async fn delete_resource(&self, collection: &str, id: &str) -> Result<()> {
         let coll = self.find_collection(collection)?;
+        let endpoint = coll.delete_endpoint.as_deref().ok_or_else(|| {
+            anyhow!(
+                "collection '{}' does not declare a delete_endpoint",
+                collection
+            )
+        })?;
         let resolved_id = self
             .slug_to_id
             .get(&format!("{}/{}", collection, id))
             .map(|v| v.clone())
             .unwrap_or_else(|| id.to_string());
-        let endpoint = coll
-            .delete_endpoint
-            .as_deref()
-            .unwrap_or(&coll.get_endpoint);
         let path = Self::substitute_id(endpoint, &resolved_id);
         let url = self.url(&path);
 
-        let response = self.send_with_retry(|| self.client.delete(&url)).await?;
+        // If delete_body is set, the API soft-deletes via PATCH (e.g. Notion's
+        // archive flag). Otherwise issue a standard HTTP DELETE.
+        let response = if let Some(body) = coll.delete_body.as_deref() {
+            let body = body.to_string();
+            self.send_with_retry(|| {
+                self.client
+                    .patch(&url)
+                    .header("Content-Type", "application/json")
+                    .body(body.clone())
+            })
+            .await?
+        } else {
+            self.send_with_retry(|| self.client.delete(&url)).await?
+        };
 
         let status = response.status();
         if !status.is_success() {
@@ -1091,6 +1106,7 @@ mod tests {
             update_endpoint: None,
             create_endpoint: None,
             delete_endpoint: None,
+            delete_body: None,
             id_field: None,
             slug_field: None,
             title_field: None,
@@ -1417,6 +1433,95 @@ mod tests {
         assert!(output.contains("## Labels"));
         assert!(output.contains("- bug"));
         assert!(output.contains("- enhancement"));
+    }
+
+    // ---------------------------------------------------------------
+    // delete_resource gating
+    // ---------------------------------------------------------------
+
+    fn build_connector(server_url: &str, collections: Vec<CollectionSpec>) -> RestConnector {
+        let spec = crate::connector::spec::ConnectorSpec {
+            spec_version: None,
+            version: None,
+            description: None,
+            name: "test".to_string(),
+            base_url: server_url.to_string(),
+            auth: None,
+            transport: None,
+            capabilities: None,
+            agent: None,
+            collections,
+        };
+        RestConnector::new_with_token(spec, reqwest::Client::new(), None)
+    }
+
+    #[tokio::test]
+    async fn delete_resource_errors_without_delete_endpoint() {
+        let mut coll = minimal_collection("widgets");
+        coll.delete_endpoint = None;
+        let conn = build_connector("http://localhost:1", vec![coll]);
+
+        let err = conn
+            .delete_resource("widgets", "42")
+            .await
+            .expect_err("expected error when delete_endpoint is missing");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("does not declare a delete_endpoint"),
+            "unexpected error: {}",
+            msg
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_resource_calls_endpoint_when_configured() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/widgets/42"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut coll = minimal_collection("widgets");
+        coll.delete_endpoint = Some("/widgets/{id}".to_string());
+        let conn = build_connector(&server.uri(), vec![coll]);
+
+        conn.delete_resource("widgets", "42")
+            .await
+            .expect("delete should succeed");
+
+        // MockServer's `.expect(1)` is verified on drop.
+        drop(server);
+    }
+
+    #[tokio::test]
+    async fn delete_resource_uses_patch_when_delete_body_set() {
+        use wiremock::matchers::{body_json_string, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/pages/abc-123"))
+            .and(body_json_string(r#"{"archived": true}"#))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut coll = minimal_collection("pages");
+        coll.delete_endpoint = Some("/pages/{id}".to_string());
+        coll.delete_body = Some(r#"{"archived": true}"#.to_string());
+        let conn = build_connector(&server.uri(), vec![coll]);
+
+        conn.delete_resource("pages", "abc-123")
+            .await
+            .expect("archive-style delete should succeed");
+
+        drop(server);
     }
 
     #[test]

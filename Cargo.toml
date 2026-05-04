@@ -45,6 +45,7 @@ libc = "0.2"
 dirs = "5"
 bytes = "1"
 siphasher = "1"
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
 [dev-dependencies]
 wiremock = "=0.6.2"
