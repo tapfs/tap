@@ -316,7 +316,30 @@ impl NFSFileSystem for TapNfs {
             .map_err(|_| nfsstat3::NFS3ERR_IO)?
             .map_err(Self::vfs_err_to_nfs)?;
 
-        // Filter out . and .., convert to NFS DirEntry, handle pagination
+        // Filter out . and .., convert to NFS DirEntry, handle pagination.
+        //
+        // Cookie validity check: NFSv3 lets clients paginate by passing back
+        // the fileid of the last entry from the previous batch. If the
+        // directory's contents changed between calls and that fileid is no
+        // longer here, walking past every entry would silently return an
+        // empty result — the client never learns the directory shifted under
+        // it. Walk first to detect the missing-cookie case, then return
+        // NFS3ERR_BAD_COOKIE so the client restarts from the beginning.
+        if start_after != 0 {
+            let cookie_present = entries
+                .iter()
+                .any(|e| e.id == start_after && e.name != "." && e.name != "..");
+            if !cookie_present {
+                tracing::debug!(
+                    dirid,
+                    cookie = start_after,
+                    "readdir cookie no longer in directory — directory shifted; \
+                     returning BAD_COOKIE so client restarts from beginning"
+                );
+                return Err(nfsstat3::NFS3ERR_BAD_COOKIE);
+            }
+        }
+
         let mut nfs_entries: Vec<DirEntry> = Vec::new();
         let mut past_start = start_after == 0;
 
@@ -348,6 +371,45 @@ impl NFSFileSystem for TapNfs {
         Ok(ReadDirResult {
             entries: nfs_entries,
             end: true,
+        })
+    }
+
+    /// Override `fsinfo` to advertise tapfs-specific characteristics.
+    ///
+    /// The nfsserve default reports nanosecond `time_delta`, which is wrong
+    /// for us — most of our mtimes come from API timestamps that round to
+    /// the second (and synthetic nodes report epoch-0 per CLAUDE.md). Telling
+    /// the kernel we have nanosecond precision causes it to expect sub-second
+    /// mtime ordering and produce confusing "file changed" warnings in
+    /// editors when nothing actually changed.
+    ///
+    /// Other tunings:
+    /// - `maxfilesize`: kept generous (128 GB) — most resources are tiny but
+    ///   a future binary-blob backend shouldn't trip on this.
+    /// - rt/wt sizes: kept at defaults (1 MB) — fine for our workload.
+    async fn fsinfo(&self, root_fileid: fileid3) -> Result<fsinfo3, nfsstat3> {
+        let dir_attr = match self.getattr(root_fileid).await {
+            Ok(v) => post_op_attr::attributes(v),
+            Err(_) => post_op_attr::Void,
+        };
+        Ok(fsinfo3 {
+            obj_attributes: dir_attr,
+            rtmax: 1024 * 1024,
+            rtpref: 1024 * 124,
+            rtmult: 1024 * 1024,
+            wtmax: 1024 * 1024,
+            wtpref: 1024 * 1024,
+            wtmult: 1024 * 1024,
+            dtpref: 1024 * 1024,
+            maxfilesize: 128 * 1024 * 1024 * 1024,
+            // 1-second granularity: matches the precision of API mtimes and
+            // the epoch-0 stable mtime contract from CLAUDE.md. Tells the
+            // kernel not to expect sub-second mtime ordering.
+            time_delta: nfstime3 {
+                seconds: 1,
+                nseconds: 0,
+            },
+            properties: FSF_HOMOGENEOUS | FSF_CANSETTIME,
         })
     }
 
@@ -531,6 +593,18 @@ mod tests {
             VfsError::RateLimited(d) => assert_eq!(d, Duration::from_secs(7)),
             other => panic!("expected RateLimited, got {:?}", other),
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn fsinfo_advertises_one_second_time_delta() {
+        // The nfsserve default reports nanosecond precision; we override
+        // because our mtime sources (API timestamps, epoch-0 synthetic nodes)
+        // round to the second. Telling the kernel "1-sec precision" prevents
+        // editors from claiming the file changed when nothing did.
+        let nfs = dummy_tapnfs();
+        let info = nfs.fsinfo(nfs.root_dir()).await.unwrap();
+        assert_eq!(info.time_delta.seconds, 1);
+        assert_eq!(info.time_delta.nseconds, 0);
     }
 
     /// Nodes with no real mtime must emit epoch-0, not the current wall clock.
