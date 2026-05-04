@@ -262,6 +262,70 @@ pub async fn oauth2_device_flow(
     }
 }
 
+/// Run the appropriate interactive auth flow for a connector that the factory
+/// couldn't construct because credentials were missing.
+///
+/// On a non-interactive session (no TTY on stdin), prints actionable
+/// instructions to stderr and returns an error so the caller can bail.
+pub async fn handle_auth_required(
+    auth_err: &crate::connector::factory::AuthRequired,
+    data_dir: &Path,
+) -> Result<()> {
+    use std::io::IsTerminal;
+
+    if !std::io::stdin().is_terminal() {
+        print_non_interactive_hint(&auth_err.connector_name, auth_err.spec.as_ref());
+        anyhow::bail!(
+            "connector '{}' requires authentication and stdin is not a terminal — \
+             rerun from a terminal or set the connector's credentials in advance",
+            auth_err.connector_name
+        );
+    }
+
+    let default_auth = default_oauth2_config(&auth_err.connector_name);
+    let auth = auth_err
+        .spec
+        .as_ref()
+        .and_then(|s| s.auth.clone())
+        .unwrap_or(default_auth);
+
+    let has_device_flow = auth.device_code_url.is_some() && auth.client_id.is_some();
+    let oauth2_ready = auth.auth_type == "oauth2"
+        && auth.auth_url.is_some()
+        && auth.token_url.is_some()
+        && auth.client_id.is_some();
+
+    if has_device_flow {
+        oauth2_device_flow(&auth_err.connector_name, &auth, data_dir).await
+    } else if oauth2_ready {
+        oauth2_browser_flow(&auth_err.connector_name, &auth, data_dir).await
+    } else {
+        prompt_api_key(&auth_err.connector_name, auth_err.spec.as_ref(), data_dir).map(|_| ())
+    }
+}
+
+fn print_non_interactive_hint(connector: &str, spec: Option<&ConnectorSpec>) {
+    let auth = spec.and_then(|s| s.auth.as_ref());
+    eprintln!();
+    eprintln!("Authentication required for connector '{}'.", connector);
+    if let Some(a) = auth {
+        if let Some(url) = &a.setup_url {
+            eprintln!("  Get credentials at: {}", url);
+        }
+        if let Some(env) = &a.token_env {
+            eprintln!("  Then set {}=...", env);
+        }
+        if let Some(instructions) = &a.setup_instructions {
+            eprintln!("  {}", instructions);
+        }
+    }
+    eprintln!(
+        "  Or run `tap mount {}` from an interactive terminal to authenticate.",
+        connector
+    );
+    eprintln!();
+}
+
 /// Return default OAuth2 config for native connectors that don't have a YAML spec.
 pub fn default_oauth2_config(connector_name: &str) -> crate::connector::spec::AuthSpec {
     match connector_name {

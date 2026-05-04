@@ -65,49 +65,7 @@ pub async fn run(config: TapConfig) -> Result<()> {
         );
         if let Err(e) = create_connector(&config.connector_name, &audit_tmp, &creds) {
             if let Some(auth_err) = e.downcast_ref::<crate::connector::factory::AuthRequired>() {
-                use std::io::IsTerminal;
-                if std::io::stdin().is_terminal() {
-                    // Get auth config from spec, or fall back to built-in defaults
-                    // for native connectors (google, etc.)
-                    let default_auth =
-                        crate::cli::auth::default_oauth2_config(&auth_err.connector_name);
-                    let auth = auth_err
-                        .spec
-                        .as_ref()
-                        .and_then(|s| s.auth.clone())
-                        .unwrap_or(default_auth);
-
-                    let oauth2_ready = auth.auth_type == "oauth2"
-                        && auth.auth_url.is_some()
-                        && auth.token_url.is_some()
-                        && auth.client_id.is_some();
-
-                    if auth.device_code_url.is_some() && auth.client_id.is_some() {
-                        crate::cli::auth::oauth2_device_flow(
-                            &auth_err.connector_name,
-                            &auth,
-                            &data_dir,
-                        )
-                        .await?;
-                    } else if oauth2_ready {
-                        crate::cli::auth::oauth2_browser_flow(
-                            &auth_err.connector_name,
-                            &auth,
-                            &data_dir,
-                        )
-                        .await?;
-                    } else {
-                        // Fall back to API key prompt (covers bearer, basic,
-                        // and incomplete oauth2 specs)
-                        crate::cli::auth::prompt_api_key(
-                            &auth_err.connector_name,
-                            auth_err.spec.as_ref(),
-                            &data_dir,
-                        )?;
-                    }
-                } else {
-                    return Err(e);
-                }
+                crate::cli::auth::handle_auth_required(auth_err, &data_dir).await?;
             }
             // Other errors (not auth) — will be caught again when daemon starts
         }
@@ -240,43 +198,8 @@ pub async fn run(config: TapConfig) -> Result<()> {
                     if let Some(auth_err) = e.downcast_ref::<AuthRequired>() {
                         use std::io::IsTerminal;
                         if std::io::stdin().is_terminal() {
-                            // Interactive terminal — prompt the user
-                            let auth_type = auth_err
-                                .spec
-                                .as_ref()
-                                .and_then(|s| s.auth.as_ref())
-                                .map(|a| a.auth_type.as_str())
-                                .unwrap_or("bearer");
-
-                            let auth_spec = auth_err.spec.as_ref().and_then(|s| s.auth.as_ref());
-
-                            let has_device_flow =
-                                auth_spec.and_then(|a| a.device_code_url.as_ref()).is_some();
-                            let has_browser_oauth = auth_type == "oauth2" && !has_device_flow;
-
-                            if has_device_flow {
-                                let auth = auth_spec.unwrap();
-                                crate::cli::auth::oauth2_device_flow(
-                                    &auth_err.connector_name,
-                                    auth,
-                                    &config.data_dir(),
-                                )
+                            crate::cli::auth::handle_auth_required(auth_err, &config.data_dir())
                                 .await?;
-                            } else if has_browser_oauth {
-                                let auth = auth_spec.unwrap();
-                                crate::cli::auth::oauth2_browser_flow(
-                                    &auth_err.connector_name,
-                                    auth,
-                                    &config.data_dir(),
-                                )
-                                .await?;
-                            } else {
-                                crate::cli::auth::prompt_api_key(
-                                    &auth_err.connector_name,
-                                    auth_err.spec.as_ref(),
-                                    &config.data_dir(),
-                                )?;
-                            }
                             // Reload credentials and retry
                             let creds =
                                 crate::credentials::CredentialStore::load(&config.data_dir())?;
@@ -300,7 +223,14 @@ pub async fn run(config: TapConfig) -> Result<()> {
                                 }
                                 spec
                             } else {
-                                return Err(e);
+                                crate::cli::auth::handle_auth_required(
+                                    auth_err,
+                                    &config.data_dir(),
+                                )
+                                .await?;
+                                unreachable!(
+                                    "handle_auth_required returns Err on non-TTY"
+                                );
                             };
 
                             tracing::info!(name = %spec.name, base_url = %spec.base_url, "loaded connector spec");
