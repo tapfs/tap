@@ -6,5 +6,6 @@ pub mod google;
 pub mod jira;
 pub mod registry;
 pub mod rest;
+pub mod retry;
 pub mod spec;
 pub mod traits;
