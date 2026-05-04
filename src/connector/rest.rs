@@ -1036,7 +1036,20 @@ impl Connector for RestConnector {
         let path = Self::substitute_id(endpoint, &resolved_id);
         let url = self.url(&path);
 
-        let response = self.send_with_retry(|| self.client.delete(&url)).await?;
+        // If delete_body is set, the API soft-deletes via PATCH (e.g. Notion's
+        // archive flag). Otherwise issue a standard HTTP DELETE.
+        let response = if let Some(body) = coll.delete_body.as_deref() {
+            let body = body.to_string();
+            self.send_with_retry(|| {
+                self.client
+                    .patch(&url)
+                    .header("Content-Type", "application/json")
+                    .body(body.clone())
+            })
+            .await?
+        } else {
+            self.send_with_retry(|| self.client.delete(&url)).await?
+        };
 
         let status = response.status();
         if !status.is_success() {
@@ -1093,6 +1106,7 @@ mod tests {
             update_endpoint: None,
             create_endpoint: None,
             delete_endpoint: None,
+            delete_body: None,
             id_field: None,
             slug_field: None,
             title_field: None,
@@ -1481,6 +1495,32 @@ mod tests {
             .expect("delete should succeed");
 
         // MockServer's `.expect(1)` is verified on drop.
+        drop(server);
+    }
+
+    #[tokio::test]
+    async fn delete_resource_uses_patch_when_delete_body_set() {
+        use wiremock::matchers::{body_json_string, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/pages/abc-123"))
+            .and(body_json_string(r#"{"archived": true}"#))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut coll = minimal_collection("pages");
+        coll.delete_endpoint = Some("/pages/{id}".to_string());
+        coll.delete_body = Some(r#"{"archived": true}"#.to_string());
+        let conn = build_connector(&server.uri(), vec![coll]);
+
+        conn.delete_resource("pages", "abc-123")
+            .await
+            .expect("archive-style delete should succeed");
+
         drop(server);
     }
 

@@ -102,6 +102,10 @@ pub struct CollectionSpec {
     pub update_endpoint: Option<String>,
     pub create_endpoint: Option<String>,
     pub delete_endpoint: Option<String>,
+    /// When set, delete_resource sends PATCH (instead of DELETE) to
+    /// `delete_endpoint` with this JSON body. Used by APIs that soft-delete
+    /// via an archive flag (e.g. Notion's `{"archived": true}`).
+    pub delete_body: Option<String>,
     pub id_field: Option<String>,   // field name for ID, default "id"
     pub slug_field: Option<String>, // field for slug, default "slug" or "id"
     pub title_field: Option<String>,
