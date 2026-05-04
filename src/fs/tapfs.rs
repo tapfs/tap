@@ -34,12 +34,7 @@ pub struct TapFs {
 
 /// Convert a [`VfsAttr`] to a [`fuser::FileAttr`].
 fn to_fuse_attr(attr: &VfsAttr) -> fuser::FileAttr {
-    let ts = attr
-        .mtime
-        .as_deref()
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| std::time::UNIX_EPOCH + std::time::Duration::from_secs(dt.timestamp() as u64))
-        .unwrap_or_else(SystemTime::now);
+    let ts = to_fuse_time(attr.mtime.as_deref());
     let kind = match attr.file_type {
         VfsFileType::Directory => FileType::Directory,
         VfsFileType::RegularFile => FileType::RegularFile,
@@ -64,6 +59,27 @@ fn to_fuse_attr(attr: &VfsAttr) -> fuser::FileAttr {
         rdev: 0,
         blksize: 512,
         flags: 0,
+    }
+}
+
+/// Convert an optional RFC3339 mtime to a FUSE SystemTime.
+///
+/// This intentionally mirrors the NFS adapter's timestamp contract:
+/// synthetic nodes with no real mtime use epoch-0 so the kernel sees stable
+/// directory attributes, while malformed timestamps fall back to wall clock.
+fn to_fuse_time(mtime: Option<&str>) -> SystemTime {
+    match mtime {
+        Some(mtime_str) => chrono::DateTime::parse_from_rfc3339(mtime_str)
+            .map(|dt| {
+                if dt.timestamp() < 0 {
+                    std::time::UNIX_EPOCH
+                } else {
+                    std::time::UNIX_EPOCH
+                        + Duration::new(dt.timestamp() as u64, dt.timestamp_subsec_nanos())
+                }
+            })
+            .unwrap_or_else(|_| SystemTime::now()),
+        None => std::time::UNIX_EPOCH,
     }
 }
 
@@ -506,5 +522,54 @@ impl Filesystem for TapFs {
         } else {
             reply.error(libc::EACCES);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_vfs_errors_map_to_expected_errno() {
+        assert_eq!(to_errno(VfsError::Busy), libc::EAGAIN);
+        assert_eq!(
+            to_errno(VfsError::RateLimited(Duration::from_secs(5))),
+            libc::EAGAIN
+        );
+        assert_eq!(to_errno(VfsError::StaleHandle), libc::ESTALE);
+        assert_eq!(to_errno(VfsError::NoSpace), libc::ENOSPC);
+        assert_eq!(
+            to_errno(VfsError::PartialFlush("upstream timed out".into())),
+            libc::EIO
+        );
+        assert_eq!(
+            to_errno(VfsError::DraftCorrupted("bad frontmatter".into())),
+            libc::EIO
+        );
+    }
+
+    #[test]
+    fn nodes_without_mtime_use_epoch_zero() {
+        let attr = VfsAttr {
+            id: 1,
+            size: 0,
+            file_type: VfsFileType::Directory,
+            perm: 0o755,
+            mtime: None,
+        };
+
+        let fuse_attr = to_fuse_attr(&attr);
+        assert_eq!(fuse_attr.mtime, std::time::UNIX_EPOCH);
+        assert_eq!(fuse_attr.atime, std::time::UNIX_EPOCH);
+        assert_eq!(fuse_attr.ctime, std::time::UNIX_EPOCH);
+        assert_eq!(fuse_attr.crtime, std::time::UNIX_EPOCH);
+    }
+
+    #[test]
+    fn pre_epoch_mtime_clamps_to_epoch_zero() {
+        assert_eq!(
+            to_fuse_time(Some("1969-12-31T23:59:59Z")),
+            std::time::UNIX_EPOCH
+        );
     }
 }
