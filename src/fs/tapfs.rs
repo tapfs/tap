@@ -76,6 +76,10 @@ fn to_fuse_file_type(ft: VfsFileType) -> FileType {
 }
 
 /// Convert a [`VfsError`] to a libc errno.
+///
+/// Mirror of `nfs/server.rs::vfs_err_to_nfs` but mapping to FUSE/libc
+/// errnos instead of `nfsstat3`. Both layers stay in sync — adding a
+/// `VfsError` variant means adding an arm here too.
 fn to_errno(err: VfsError) -> i32 {
     match err {
         VfsError::NotFound => libc::ENOENT,
@@ -85,6 +89,19 @@ fn to_errno(err: VfsError) -> i32 {
         VfsError::AlreadyExists => libc::EEXIST,
         VfsError::CrossDevice => libc::EXDEV,
         VfsError::NotSupported => libc::ENOTSUP,
+        // EAGAIN is the FUSE/POSIX equivalent of NFS3ERR_JUKEBOX —
+        // "transient, retry me." Both Busy (in-flight POST sentinel)
+        // and RateLimited (upstream 429) surface this so the caller
+        // backs off instead of treating the failure as permanent.
+        VfsError::Busy => libc::EAGAIN,
+        VfsError::RateLimited(_) => libc::EAGAIN,
+        VfsError::StaleHandle => libc::ESTALE,
+        VfsError::NoSpace => libc::ENOSPC,
+        // PartialFlush and DraftCorrupted are "genuinely broken, don't
+        // retry"; surface as EIO so callers don't loop, and the message
+        // goes to logs.
+        VfsError::PartialFlush(_) => libc::EIO,
+        VfsError::DraftCorrupted(_) => libc::EIO,
         VfsError::IoError(_) => libc::EIO,
     }
 }

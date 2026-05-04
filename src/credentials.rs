@@ -130,7 +130,9 @@ impl KeychainBackend for OsKeychain {
     fn set(&self, name: &str, value: &str) -> Result<()> {
         let entry =
             keyring::Entry::new(KEYCHAIN_SERVICE, name).context("opening keychain entry")?;
-        entry.set_password(value).context("writing keychain entry")?;
+        entry
+            .set_password(value)
+            .context("writing keychain entry")?;
         Ok(())
     }
 
@@ -358,7 +360,10 @@ impl CredentialStore {
 
         let mut wrote_to_keychain = false;
         if use_keychain {
-            let mut secret = keychain_get(connector_name).ok().flatten().unwrap_or_default();
+            let mut secret = keychain_get(connector_name)
+                .ok()
+                .flatten()
+                .unwrap_or_default();
             secret.token = Some(token.to_string());
             match keychain_set(connector_name, &secret) {
                 Ok(()) => {
@@ -611,12 +616,36 @@ mod tests {
             client_id: Some("public-client-id".to_string()),
         };
         let dbg = format!("{:?}", creds);
-        assert!(!dbg.contains("ghp_super_secret"), "debug leaked token: {}", dbg);
-        assert!(!dbg.contains("rt_also_secret"), "debug leaked refresh: {}", dbg);
-        assert!(!dbg.contains("cs_secret"), "debug leaked client_secret: {}", dbg);
-        assert!(dbg.contains("user@example.com"), "non-secret email should remain: {}", dbg);
-        assert!(dbg.contains("public-client-id"), "non-secret client_id should remain: {}", dbg);
-        assert!(dbg.contains("<redacted>"), "should annotate redaction: {}", dbg);
+        assert!(
+            !dbg.contains("ghp_super_secret"),
+            "debug leaked token: {}",
+            dbg
+        );
+        assert!(
+            !dbg.contains("rt_also_secret"),
+            "debug leaked refresh: {}",
+            dbg
+        );
+        assert!(
+            !dbg.contains("cs_secret"),
+            "debug leaked client_secret: {}",
+            dbg
+        );
+        assert!(
+            dbg.contains("user@example.com"),
+            "non-secret email should remain: {}",
+            dbg
+        );
+        assert!(
+            dbg.contains("public-client-id"),
+            "non-secret client_id should remain: {}",
+            dbg
+        );
+        assert!(
+            dbg.contains("<redacted>"),
+            "should annotate redaction: {}",
+            dbg
+        );
     }
 
     #[test]
@@ -631,13 +660,9 @@ mod tests {
         )
         .unwrap();
 
-        let err = CredentialStore::save_token_with_keychain(
-            dir.path(),
-            "github",
-            "ghp_secret",
-            false,
-        )
-        .expect_err("expected error on corrupt YAML");
+        let err =
+            CredentialStore::save_token_with_keychain(dir.path(), "github", "ghp_secret", false)
+                .expect_err("expected error on corrupt YAML");
         let msg = format!("{:#}", err);
         assert!(
             msg.contains("parsing credentials YAML"),

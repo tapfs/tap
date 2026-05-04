@@ -149,8 +149,12 @@ and sent as an HTTP header on POST so retried creates don't duplicate.
   `PartialFlush(String)`, `DraftCorrupted(String)`, plus the classics
   (NotFound, NotDirectory, AlreadyExists, etc.). Adding a new failure
   mode? Add a variant — don't collapse into `IoError(String)`.
-- `nfsstat3` mapping in `nfs/server.rs::vfs_err_to_nfs` — this is the
-  errno the kernel sees. Each new VfsError variant needs a clean mapping.
+- **Two adapters, one mapping**: `nfs/server.rs::vfs_err_to_nfs` →
+  `nfsstat3`, and `fs/tapfs.rs::to_errno` → libc errno. **Both must be
+  exhaustive**. Local `--no-default-features --features nfs` builds
+  only exercise the NFS adapter; CI's Linux job builds with FUSE on
+  and will catch a missed FUSE arm. When adding a `VfsError` variant,
+  update **both** files in the same PR.
 
 ### Lock discipline
 

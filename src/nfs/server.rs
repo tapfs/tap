@@ -524,7 +524,9 @@ mod tests {
             // Permit goes out of scope at end of block.
         }
         // Now the permit is back, the next acquire should succeed.
-        let _again = nfs.acquire_permit().expect("permit should be available again");
+        let _again = nfs
+            .acquire_permit()
+            .expect("permit should be available again");
     }
 
     /// vfs_attr_to_fattr must include S_IFDIR / S_IFREG in the mode field.
