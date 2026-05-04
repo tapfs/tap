@@ -121,29 +121,13 @@ impl AtlassianAuth {
         token: &str,
     ) -> Result<()> {
         let base_url = normalize_atlassian_domain(domain);
-        // Save token to keychain (or YAML fallback) via existing API.
         CredentialStore::save_token(data_dir, connector_name, token)?;
-        // Update the YAML index entry with email + base_url.
-        let path = data_dir.join("credentials.yaml");
-        let mut entries: std::collections::HashMap<String, ConnectorCredentials> = if path.exists()
-        {
-            serde_yaml::from_str(&std::fs::read_to_string(&path)?).unwrap_or_default()
-        } else {
-            std::collections::HashMap::new()
-        };
+
+        let mut entries = crate::credentials::read_yaml_index(data_dir)?;
         let entry = entries.entry(connector_name.to_string()).or_default();
         entry.email = Some(email.to_string());
         entry.base_url = Some(base_url);
-        let yaml = serde_yaml::to_string(&entries).context("serializing credentials")?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, yaml)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-        }
+        crate::credentials::write_yaml_index(data_dir, &entries)?;
         Ok(())
     }
 
