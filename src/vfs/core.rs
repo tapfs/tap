@@ -19,6 +19,19 @@ use crate::version::store::VersionStore;
 
 use super::types::*;
 
+/// Default cap on a single write buffer's in-memory size (100 MiB). Prevents
+/// a runaway upload from OOMing the daemon. Override with the
+/// `TAPFS_MAX_WRITE_BUFFER` environment variable (value in bytes).
+const DEFAULT_MAX_WRITE_BUFFER: usize = 100 * 1024 * 1024;
+
+pub(crate) fn max_write_buffer_size() -> usize {
+    std::env::var("TAPFS_MAX_WRITE_BUFFER")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_MAX_WRITE_BUFFER)
+}
+
 // ---------------------------------------------------------------------------
 // tapfs frontmatter helpers
 // ---------------------------------------------------------------------------
@@ -1623,6 +1636,23 @@ impl VirtualFs {
         let buf = entry.value_mut();
         let off = offset as usize;
         let needed = off + data.len();
+        // Bounded write buffer: a single resource cannot grow unbounded in
+        // memory. NFS clients that try to upload a multi-GB file would
+        // otherwise consume RAM and OOM the daemon — better to refuse the
+        // write at the boundary with ENOSPC. Tunable for the rare case
+        // where a user genuinely needs a larger buffer.
+        if needed > max_write_buffer_size() {
+            tracing::warn!(
+                id,
+                requested = needed,
+                limit = max_write_buffer_size(),
+                "write buffer would exceed TAPFS_MAX_WRITE_BUFFER; refusing"
+            );
+            return Err(VfsError::IoError(format!(
+                "write buffer would exceed limit of {} bytes (set TAPFS_MAX_WRITE_BUFFER to override)",
+                max_write_buffer_size()
+            )));
+        }
         if buf.len() < needed {
             buf.resize(needed, 0);
         }

@@ -189,10 +189,27 @@ pub(crate) fn read_yaml_index(data_dir: &Path) -> Result<HashMap<String, Connect
             .permissions();
         let mode = perms.mode() & 0o777;
         if mode & 0o077 != 0 {
+            // By default we warn loudly. Users running in a security-sensitive
+            // environment can opt into a hard error via TAPFS_STRICT_PERMS=1
+            // so a misconfigured deploy fails closed instead of surfacing a
+            // log line that nobody reads.
+            let strict = std::env::var("TAPFS_STRICT_PERMS")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            if strict {
+                anyhow::bail!(
+                    "credentials file {} has overly permissive permissions ({:o}) — \
+                     refusing to load with TAPFS_STRICT_PERMS=1 set. Run `chmod 600 {}`",
+                    path.display(),
+                    mode,
+                    path.display()
+                );
+            }
             tracing::warn!(
                 path = %path.display(),
                 mode = format!("{:o}", mode),
-                "credentials file has overly permissive permissions — should be 0600"
+                "credentials file has overly permissive permissions — should be 0600 \
+                 (set TAPFS_STRICT_PERMS=1 to fail-closed instead of warn)"
             );
         }
     }
@@ -671,6 +688,31 @@ mod tests {
         assert!(
             !dir.path().join("credentials.yaml.tmp").exists(),
             "tempfile should have been renamed away"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn strict_perms_env_promotes_warn_to_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.yaml");
+        std::fs::write(&path, "github: {}\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        // Setting + unsetting an env var inside a parallel test runner is
+        // racy, but read_yaml_index reads it once per call so the window
+        // is tiny.
+        std::env::set_var("TAPFS_STRICT_PERMS", "1");
+        let result = read_yaml_index(dir.path());
+        std::env::remove_var("TAPFS_STRICT_PERMS");
+
+        let err = result.expect_err("expected hard error with TAPFS_STRICT_PERMS=1");
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("overly permissive permissions"),
+            "unexpected error: {}",
+            msg
         );
     }
 }
