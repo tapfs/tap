@@ -198,8 +198,54 @@ pub struct RelationshipSpec {
 
 impl ConnectorSpec {
     pub fn from_yaml(yaml: &str) -> Result<Self> {
-        Ok(serde_yaml::from_str(yaml)?)
+        let spec: Self = serde_yaml::from_str(yaml)?;
+        spec.validate()?;
+        Ok(spec)
     }
+
+    /// Validate spec invariants that serde can't express.
+    fn validate(&self) -> Result<()> {
+        for coll in &self.collections {
+            validate_collection(&self.name, coll)?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_collection(spec_name: &str, coll: &CollectionSpec) -> Result<()> {
+    if let Some(body) = coll.delete_body.as_deref() {
+        validate_delete_body_json(spec_name, &coll.name, body)?;
+    }
+    if let Some(subs) = coll.subcollections.as_ref() {
+        for sub in subs {
+            validate_collection(spec_name, sub)?;
+        }
+    }
+    Ok(())
+}
+
+/// `delete_body` is sent verbatim (after `{id}` substitution) as a PATCH body
+/// with `Content-Type: application/json`. If the spec author writes invalid
+/// JSON we'd previously find out only when a user ran `rmdir` on a resource —
+/// long after the spec was loaded. Validate at load time.
+///
+/// The placeholder is substituted with `0` (a valid JSON scalar) before
+/// parsing so the template itself doesn't need to be self-parseable. This
+/// catches structural problems (unclosed braces, missing commas, etc.) but
+/// not all runtime substitution edge cases — e.g. `{"count": {id}}` parses
+/// fine here but breaks at runtime if the id isn't numeric.
+fn validate_delete_body_json(spec_name: &str, coll_name: &str, body: &str) -> Result<()> {
+    let with_dummy = body.replace("{id}", "0");
+    serde_json::from_str::<serde_json::Value>(&with_dummy).map_err(|e| {
+        anyhow::anyhow!(
+            "spec '{}' collection '{}': delete_body is not valid JSON ({}): {}",
+            spec_name,
+            coll_name,
+            e,
+            body
+        )
+    })?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -287,6 +333,61 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn delete_body_invalid_json_rejected_at_load() {
+        let yaml = r#"
+name: test
+base_url: https://example.com
+collections:
+  - name: pages
+    list_endpoint: /pages
+    get_endpoint: /pages/{id}
+    delete_endpoint: /pages/{id}
+    delete_body: '{ "archived": true,, }'
+"#;
+        let err = ConnectorSpec::from_yaml(yaml).expect_err("expected invalid-JSON error");
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("delete_body is not valid JSON"), "got: {}", msg);
+    }
+
+    #[test]
+    fn delete_body_with_id_placeholder_validates() {
+        // {id} placeholder is substituted with 0 for validation, so a body
+        // referencing {id} inside a string must still parse.
+        let yaml = r#"
+name: test
+base_url: https://example.com
+collections:
+  - name: pages
+    list_endpoint: /pages
+    get_endpoint: /pages/{id}
+    delete_endpoint: /pages/{id}
+    delete_body: '{"archived": true, "deleted_id": "{id}"}'
+"#;
+        ConnectorSpec::from_yaml(yaml).expect("should accept valid body with {id}");
+    }
+
+    #[test]
+    fn delete_body_validation_recurses_into_subcollections() {
+        let yaml = r#"
+name: test
+base_url: https://example.com
+collections:
+  - name: parent
+    list_endpoint: /parent
+    get_endpoint: /parent/{id}
+    subcollections:
+      - name: child
+        list_endpoint: /parent/{id}/child
+        get_endpoint: /parent/{id}/child/{id}
+        delete_endpoint: /parent/{id}/child/{id}
+        delete_body: 'not json at all'
+"#;
+        let err =
+            ConnectorSpec::from_yaml(yaml).expect_err("expected error from nested invalid body");
+        assert!(format!("{:#}", err).contains("delete_body is not valid JSON"));
     }
 
     #[test]
