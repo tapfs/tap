@@ -183,6 +183,23 @@ impl RestConnector {
         endpoint.replace("{id}", id)
     }
 
+    /// Substitute `{id}` in a JSON request body template, escaping the value
+    /// so the result is still valid JSON when the placeholder appears inside
+    /// a string literal (`"{id}"` → `"<escaped-id>"`).
+    ///
+    /// Non-string positions (`{"count": {id}}`) get the raw escaped scalar,
+    /// which is valid only if the id parses as a JSON value (e.g. a number).
+    /// That edge case is the user's responsibility — `validate_delete_body`
+    /// in the spec layer catches structural problems at load time.
+    fn substitute_id_json(template: &str, id: &str) -> String {
+        // serde_json renders the id as a quoted JSON string ("abc-\"foo\"").
+        // We strip the surrounding quotes so the substitution still fits
+        // inside a `"…"` template literal.
+        let quoted = serde_json::to_string(id).expect("string serialization is infallible");
+        let escaped = &quoted[1..quoted.len() - 1];
+        template.replace("{id}", escaped)
+    }
+
     /// Find the CollectionSpec by name, handling path-encoded nested collection paths.
     ///
     /// For flat collections like `"issues"`, does a direct match.
@@ -1038,8 +1055,8 @@ impl Connector for RestConnector {
 
         // If delete_body is set, the API soft-deletes via PATCH (e.g. Notion's
         // archive flag). Otherwise issue a standard HTTP DELETE.
-        let response = if let Some(body) = coll.delete_body.as_deref() {
-            let body = body.to_string();
+        let response = if let Some(body_template) = coll.delete_body.as_deref() {
+            let body = Self::substitute_id_json(body_template, &resolved_id);
             self.send_with_retry(|| {
                 self.client
                     .patch(&url)
@@ -1495,6 +1512,65 @@ mod tests {
             .expect("delete should succeed");
 
         // MockServer's `.expect(1)` is verified on drop.
+        drop(server);
+    }
+
+    #[tokio::test]
+    async fn delete_resource_substitutes_id_into_delete_body() {
+        use wiremock::matchers::{body_json_string, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/items/abc-123"))
+            .and(body_json_string(
+                r#"{"archived":true,"deleted_id":"abc-123"}"#,
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut coll = minimal_collection("items");
+        coll.delete_endpoint = Some("/items/{id}".to_string());
+        coll.delete_body =
+            Some(r#"{"archived":true,"deleted_id":"{id}"}"#.to_string());
+        let conn = build_connector(&server.uri(), vec![coll]);
+
+        conn.delete_resource("items", "abc-123")
+            .await
+            .expect("delete with substituted id should succeed");
+
+        drop(server);
+    }
+
+    #[tokio::test]
+    async fn delete_body_id_substitution_escapes_json_specials() {
+        use wiremock::matchers::{body_json_string, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // An id containing a quote must be JSON-escaped in the body so the
+        // request remains valid JSON.
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/items/quote%22danger"))
+            .and(body_json_string(r#"{"deleted_id":"quote\"danger"}"#))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut coll = minimal_collection("items");
+        coll.delete_endpoint = Some("/items/quote%22danger".to_string()); // pre-encoded
+        coll.delete_body = Some(r#"{"deleted_id":"{id}"}"#.to_string());
+        let conn = build_connector(&server.uri(), vec![coll]);
+
+        // The id field doubles as the URL — but for this test we only care
+        // about the body's JSON escaping, so we hardcode the path above.
+        conn.delete_resource("items", "quote\"danger")
+            .await
+            .expect("delete with quote-containing id should succeed");
+
         drop(server);
     }
 
