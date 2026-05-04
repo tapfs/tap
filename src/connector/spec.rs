@@ -88,7 +88,7 @@ pub struct AgentSpec {
     pub relationships: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CollectionSpec {
     pub name: String,
     /// Human/agent-readable description of this collection.
