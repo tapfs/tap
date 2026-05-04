@@ -20,22 +20,69 @@ const MODE_IFDIR: u32 = libc::S_IFDIR as u32;
 #[allow(clippy::unnecessary_cast, clippy::useless_conversion)]
 const MODE_IFREG: u32 = libc::S_IFREG as u32;
 
+/// Default maximum in-flight NFS handlers that hit the connector side.
+///
+/// NFS clients (especially macOS) retry aggressively on RPC timeout — a flaky
+/// upstream API can otherwise grow our blocking-task pool without bound and
+/// exhaust tokio's blocking thread pool (default 512). 64 in-flight is a
+/// conservative ceiling that still gives plenty of parallelism for normal
+/// bursty access. Override via `TAPFS_MAX_CONCURRENT_REQUESTS`.
+const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 64;
+
+fn max_concurrent_requests() -> usize {
+    std::env::var("TAPFS_MAX_CONCURRENT_REQUESTS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_MAX_CONCURRENT_REQUESTS)
+}
+
 /// NFS adapter wrapping VirtualFs.
 pub struct TapNfs {
     pub vfs: Arc<VirtualFs>,
     pub rt: tokio::runtime::Handle,
     uid: u32,
     gid: u32,
+    /// Bounds in-flight handlers that dispatch into the connector side
+    /// (`spawn_blocking` + sync VFS that may `rt.block_on` an HTTP call).
+    /// When the semaphore has no permits, handlers return `NFS3ERR_JUKEBOX`
+    /// so the kernel client backs off — that's NFSv3's standard "transient,
+    /// try later" code, exactly what JUKEBOX was added to the protocol for.
+    request_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl TapNfs {
     pub fn new(vfs: Arc<VirtualFs>, rt: tokio::runtime::Handle) -> Self {
+        Self::new_with_concurrency(vfs, rt, max_concurrent_requests())
+    }
+
+    pub fn new_with_concurrency(
+        vfs: Arc<VirtualFs>,
+        rt: tokio::runtime::Handle,
+        max_concurrent: usize,
+    ) -> Self {
         Self {
             vfs,
             rt,
             uid: unsafe { libc::getuid() },
             gid: unsafe { libc::getgid() },
+            request_semaphore: Arc::new(tokio::sync::Semaphore::new(max_concurrent)),
         }
+    }
+
+    /// Acquire an owned permit for an in-flight NFS handler. Returns
+    /// `NFS3ERR_JUKEBOX` when no permit is available so the kernel backs off
+    /// instead of piling on retries (which would just deepen the pile-up).
+    fn acquire_permit(&self) -> Result<tokio::sync::OwnedSemaphorePermit, nfsstat3> {
+        Arc::clone(&self.request_semaphore)
+            .try_acquire_owned()
+            .map_err(|_| {
+                tracing::warn!(
+                    in_flight = self.request_semaphore.available_permits(),
+                    "NFS request rejected — semaphore exhausted, returning JUKEBOX"
+                );
+                nfsstat3::NFS3ERR_JUKEBOX
+            })
     }
 
     fn vfs_attr_to_fattr(&self, attr: &VfsAttr) -> fattr3 {
@@ -134,6 +181,7 @@ impl NFSFileSystem for TapNfs {
     async fn lookup(&self, dirid: fileid3, filename: &filename3) -> Result<fileid3, nfsstat3> {
         let name = std::str::from_utf8(filename).map_err(|_| nfsstat3::NFS3ERR_INVAL)?;
         let name = name.to_string();
+        let _permit = self.acquire_permit()?;
         let vfs = Arc::clone(&self.vfs);
         let rt = self.rt.clone();
         let attr = tokio::task::spawn_blocking(move || vfs.lookup(&rt, dirid, &name))
@@ -164,6 +212,7 @@ impl NFSFileSystem for TapNfs {
         offset: u64,
         count: u32,
     ) -> Result<(Vec<u8>, bool), nfsstat3> {
+        let _permit = self.acquire_permit()?;
         let vfs = Arc::clone(&self.vfs);
         let rt = self.rt.clone();
         let data = tokio::task::spawn_blocking(move || vfs.read(&rt, id, offset, count))
@@ -175,6 +224,7 @@ impl NFSFileSystem for TapNfs {
     }
 
     async fn write(&self, id: fileid3, offset: u64, data: &[u8]) -> Result<fattr3, nfsstat3> {
+        let _permit = self.acquire_permit()?;
         let vfs = Arc::clone(&self.vfs);
         let rt = self.rt.clone();
         let data_owned = data.to_vec();
@@ -241,6 +291,7 @@ impl NFSFileSystem for TapNfs {
         let new_name = std::str::from_utf8(to_filename)
             .map_err(|_| nfsstat3::NFS3ERR_INVAL)?
             .to_string();
+        let _permit = self.acquire_permit()?;
         let vfs = Arc::clone(&self.vfs);
         let rt = self.rt.clone();
         tokio::task::spawn_blocking(move || {
@@ -257,6 +308,7 @@ impl NFSFileSystem for TapNfs {
         start_after: fileid3,
         max_entries: usize,
     ) -> Result<ReadDirResult, nfsstat3> {
+        let _permit = self.acquire_permit()?;
         let vfs = Arc::clone(&self.vfs);
         let rt = self.rt.clone();
         let entries = tokio::task::spawn_blocking(move || vfs.readdir(&rt, dirid))
@@ -343,7 +395,48 @@ mod tests {
             rt: tokio::runtime::Handle::current(),
             uid: 0,
             gid: 0,
+            request_semaphore: Arc::new(tokio::sync::Semaphore::new(64)),
         }
+    }
+
+    fn dummy_tapnfs_with_concurrency(max: usize) -> TapNfs {
+        let mut nfs = dummy_tapnfs();
+        nfs.request_semaphore = Arc::new(tokio::sync::Semaphore::new(max));
+        nfs
+    }
+
+    #[test]
+    fn acquire_permit_returns_jukebox_when_exhausted() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = rt.enter();
+        // Capacity 1: take the only permit, then a second acquire must
+        // surface JUKEBOX rather than block (which would queue forever
+        // under retry storms).
+        let nfs = dummy_tapnfs_with_concurrency(1);
+        let _held = nfs.acquire_permit().expect("first permit should succeed");
+        let err = nfs
+            .acquire_permit()
+            .expect_err("second permit should be rejected");
+        assert!(matches!(err, nfsstat3::NFS3ERR_JUKEBOX));
+    }
+
+    #[test]
+    fn acquire_permit_replenishes_after_drop() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = rt.enter();
+        let nfs = dummy_tapnfs_with_concurrency(1);
+        {
+            let _held = nfs.acquire_permit().expect("first permit");
+            // Permit goes out of scope at end of block.
+        }
+        // Now the permit is back, the next acquire should succeed.
+        let _again = nfs.acquire_permit().expect("permit should be available again");
     }
 
     /// vfs_attr_to_fattr must include S_IFDIR / S_IFREG in the mode field.
