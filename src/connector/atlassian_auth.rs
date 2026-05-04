@@ -59,18 +59,33 @@ impl AtlassianAuth {
     }
 
     fn from_credentials(connector_name: &str, creds: &ConnectorCredentials) -> Result<Self> {
-        let base_url = creds
-            .base_url
-            .as_deref()
-            .ok_or_else(|| anyhow!("no base_url stored for '{}'", connector_name))?;
-        let email = creds
-            .email
-            .as_deref()
-            .ok_or_else(|| anyhow!("no email stored for '{}'", connector_name))?;
-        let token = creds
-            .token
-            .as_deref()
-            .ok_or_else(|| anyhow!("no token stored for '{}'", connector_name))?;
+        let base_url = creds.base_url.as_deref().ok_or_else(|| {
+            anyhow!(
+                "no base_url stored for '{}' — re-run `tap mount {}` from a terminal to enter \
+                 your Atlassian domain",
+                connector_name,
+                connector_name
+            )
+        })?;
+        let email = creds.email.as_deref().ok_or_else(|| {
+            anyhow!(
+                "no email stored for '{}' — re-run `tap mount {}` from a terminal to set it",
+                connector_name,
+                connector_name
+            )
+        })?;
+        // The token lives in the keychain; if `creds.token` is None despite
+        // the connector having an entry in credentials.yaml, the keychain
+        // is the most likely culprit (locked, unavailable, denied permission).
+        let token = creds.token.as_deref().ok_or_else(|| {
+            anyhow!(
+                "no token available for '{}' — the OS keychain may be locked or unavailable. \
+                 Re-run `tap mount {}` from a terminal to re-authenticate, or set \
+                 TAPFS_NO_KEYCHAIN=1 to read the token from credentials.yaml",
+                connector_name,
+                connector_name
+            )
+        })?;
 
         Self::build(base_url, email, token)
     }

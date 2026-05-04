@@ -211,27 +211,18 @@ pub async fn run(config: TapConfig) -> Result<()> {
                                 registry.register(connector);
                             }
                         } else {
-                            // Non-interactive (CI, daemon) — fall back to spec path or bare connector
-                            let spec = if let Some(ref spec_path) = config.connector_spec {
-                                let yaml =
-                                    std::fs::read_to_string(spec_path).with_context(|| {
-                                        format!("reading spec file {:?}", spec_path)
-                                    })?;
-                                let mut spec = ConnectorSpec::from_yaml(&yaml)?;
-                                if let Some(ref url) = config.base_url {
-                                    spec.base_url = url.clone();
-                                }
-                                spec
-                            } else {
-                                crate::cli::auth::handle_auth_required(
-                                    auth_err,
-                                    &config.data_dir(),
-                                )
-                                .await?;
-                                unreachable!(
-                                    "handle_auth_required returns Err on non-TTY"
-                                );
+                            // Non-interactive (CI, daemon). Either the user
+                            // supplied --connector-spec to bypass auth, or we
+                            // bail with an actionable hint.
+                            let Some(spec_path) = config.connector_spec.as_ref() else {
+                                return Err(crate::cli::auth::bail_non_interactive(auth_err));
                             };
+                            let yaml = std::fs::read_to_string(spec_path)
+                                .with_context(|| format!("reading spec file {:?}", spec_path))?;
+                            let mut spec = ConnectorSpec::from_yaml(&yaml)?;
+                            if let Some(ref url) = config.base_url {
+                                spec.base_url = url.clone();
+                            }
 
                             tracing::info!(name = %spec.name, base_url = %spec.base_url, "loaded connector spec");
 
