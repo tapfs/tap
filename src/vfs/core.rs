@@ -88,6 +88,12 @@ pub struct VirtualFs {
     /// populated on first read so that subsequent `getattr` calls can report
     /// accurate sizes instead of the 4096 placeholder.
     pub(crate) content_lengths: DashMap<String, u64>,
+    /// Rendered `agent.md` content, keyed by node id. Populated on every
+    /// allocation of an AgentMd / ConnectorAgentMd / CollectionAgentMd node
+    /// so that `getattr` reports the actual content length and the kernel
+    /// doesn't zero-pad the READ response up to a placeholder size (which
+    /// is what made `grep` see these files as binary).
+    pub(crate) agent_md_cache: DashMap<u64, bytes::Bytes>,
 }
 
 impl VirtualFs {
@@ -110,7 +116,38 @@ impl VirtualFs {
             write_buffers: DashMap::new(),
             resource_mtimes: DashMap::new(),
             content_lengths: DashMap::new(),
+            agent_md_cache: DashMap::new(),
         }
+    }
+
+    /// Render an `agent.md` for the given node and store its bytes in
+    /// `agent_md_cache`. Always overwrites — the source data (registered
+    /// connectors, collection list) can change between calls, and the
+    /// rendered content is small.
+    ///
+    /// Called from every code path that allocates an AgentMd-flavored node
+    /// so that the next `getattr` reports the real size. Without this, the
+    /// kernel pads READ responses with NULs to the hardcoded placeholder
+    /// length and `grep`/`file(1)` see the result as binary.
+    pub(crate) fn cache_agent_md(
+        &self,
+        rt: &tokio::runtime::Handle,
+        id: u64,
+        kind: &NodeKind,
+    ) {
+        let rendered = match kind {
+            NodeKind::AgentMd => self.generate_root_agent_md(),
+            NodeKind::ConnectorAgentMd { connector } => {
+                self.generate_connector_agent_md(rt, connector)
+            }
+            NodeKind::CollectionAgentMd {
+                connector,
+                collection,
+            } => self.generate_collection_agent_md(rt, connector, collection),
+            _ => return,
+        };
+        self.agent_md_cache
+            .insert(id, bytes::Bytes::from(rendered.into_bytes()));
     }
 
     /// Attach a persistent disk cache. Returns `self` so the call chains with
@@ -206,6 +243,9 @@ impl VirtualFs {
         };
 
         let id = self.nodes.allocate(child_kind.clone());
+        // Pre-render agent.md content so kind_to_attr returns the actual size.
+        // No-op for non-AgentMd kinds.
+        self.cache_agent_md(rt, id, &child_kind);
         let attr = self.kind_to_attr(id, &child_kind);
         Ok(attr)
     }
@@ -297,17 +337,21 @@ impl VirtualFs {
         // Other node types produce small content that doesn't benefit from
         // refcounted buffers.
         let data: bytes::Bytes = match &kind {
-            NodeKind::AgentMd => bytes::Bytes::from(self.generate_root_agent_md().into_bytes()),
-            NodeKind::ConnectorAgentMd { connector } => {
-                bytes::Bytes::from(self.generate_connector_agent_md(rt, connector).into_bytes())
+            NodeKind::AgentMd
+            | NodeKind::ConnectorAgentMd { .. }
+            | NodeKind::CollectionAgentMd { .. } => {
+                // Always serve the same bytes that `getattr` reported the
+                // size of. If the cache happens to be empty (e.g. NFS got
+                // here without going through lookup/readdir first), render
+                // and populate it now.
+                if !self.agent_md_cache.contains_key(&id) {
+                    self.cache_agent_md(rt, id, &kind);
+                }
+                self.agent_md_cache
+                    .get(&id)
+                    .map(|c| c.value().clone())
+                    .unwrap_or_default()
             }
-            NodeKind::CollectionAgentMd {
-                connector,
-                collection,
-            } => bytes::Bytes::from(
-                self.generate_collection_agent_md(rt, connector, collection)
-                    .into_bytes(),
-            ),
             NodeKind::Resource {
                 connector,
                 collection,
@@ -890,27 +934,43 @@ impl VirtualFs {
                     mtime,
                 }
             }
-            NodeKind::AgentMd => VfsAttr {
-                id,
-                size: 4096, // dynamic content, actual size known on read
-                file_type: VfsFileType::RegularFile,
-                perm: 0o644,
-                mtime: None,
-            },
-            NodeKind::ConnectorAgentMd { .. } => VfsAttr {
-                id,
-                size: 4096,
-                file_type: VfsFileType::RegularFile,
-                perm: 0o644,
-                mtime: None,
-            },
-            NodeKind::CollectionAgentMd { .. } => VfsAttr {
-                id,
-                size: 4096,
-                file_type: VfsFileType::RegularFile,
-                perm: 0o644,
-                mtime: None,
-            },
+            NodeKind::AgentMd => {
+                // Root agent.md is sync to render — fall back to a fresh
+                // render if `lookup` / `readdir` hasn't pre-warmed the cache,
+                // so the size is always accurate.
+                let size = self
+                    .agent_md_cache
+                    .get(&id)
+                    .map(|c| c.len() as u64)
+                    .unwrap_or_else(|| self.generate_root_agent_md().len() as u64);
+                VfsAttr {
+                    id,
+                    size,
+                    file_type: VfsFileType::RegularFile,
+                    perm: 0o644,
+                    mtime: None,
+                }
+            }
+            NodeKind::ConnectorAgentMd { .. } | NodeKind::CollectionAgentMd { .. } => {
+                // These two need a tokio handle to render (they consult
+                // `get_collections_cached` / `get_resources_cached`). The
+                // `lookup` and `readdir_*` paths populate the cache before
+                // the kernel ever sees a `getattr`. The 0-size fallback is
+                // for the rare stale-handle case where neither has run; the
+                // next ls warms it.
+                let size = self
+                    .agent_md_cache
+                    .get(&id)
+                    .map(|c| c.len() as u64)
+                    .unwrap_or(0);
+                VfsAttr {
+                    id,
+                    size,
+                    file_type: VfsFileType::RegularFile,
+                    perm: 0o644,
+                    mtime: None,
+                }
+            }
             NodeKind::Resource {
                 connector,
                 collection,
@@ -1580,6 +1640,13 @@ impl VirtualFs {
 
         // agent.md
         let agent_id = self.nodes.allocate(NodeKind::AgentMd);
+        // Root agent.md is sync to render — populate the cache so `getattr`
+        // reports the real length. (Not via cache_agent_md because this
+        // function doesn't have an rt handle, but we don't need one for
+        // the root variant.)
+        let root_md = self.generate_root_agent_md();
+        self.agent_md_cache
+            .insert(agent_id, bytes::Bytes::from(root_md.into_bytes()));
         entries.push(VfsDirEntry {
             name: "agent.md".to_string(),
             id: agent_id,
@@ -1623,7 +1690,8 @@ impl VirtualFs {
         let agent_kind = NodeKind::ConnectorAgentMd {
             connector: connector.to_string(),
         };
-        let agent_id = self.nodes.allocate(agent_kind);
+        let agent_id = self.nodes.allocate(agent_kind.clone());
+        self.cache_agent_md(rt, agent_id, &agent_kind);
         entries.push(VfsDirEntry {
             name: "agent.md".to_string(),
             id: agent_id,
@@ -1709,7 +1777,8 @@ impl VirtualFs {
             connector: connector.to_string(),
             collection: collection.to_string(),
         };
-        let agent_id = self.nodes.allocate(agent_kind);
+        let agent_id = self.nodes.allocate(agent_kind.clone());
+        self.cache_agent_md(rt, agent_id, &agent_kind);
         entries.push(VfsDirEntry {
             name: "agent.md".to_string(),
             id: agent_id,
@@ -3580,5 +3649,63 @@ mod nested_collections {
             .expect("unlink index.md on API-backed resource dir must succeed");
         vfs.unlink(&handle, tap_id, "issues")
             .expect("unlink subcollection dir on API-backed resource dir must succeed");
+    }
+
+    /// Regression: agent.md `getattr.size` must equal what `read` actually
+    /// produces. Returning a placeholder size larger than the content
+    /// caused the NFS kernel client to zero-pad reads, which made `grep`
+    /// flag every agent.md file as binary. Covers all three variants
+    /// (root, connector, collection).
+    #[test]
+    fn agent_md_getattr_size_matches_read_length() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rt = make_rt();
+        let conn = Arc::new(StubConnector::with_resources(vec![meta("tap", None)]));
+        let vfs = build_vfs(tmp.path(), conn as Arc<dyn Connector>, make_spec(None));
+        let handle = rt.handle().clone();
+
+        // Root /agent.md — discovered via lookup, must report real size.
+        let root_md_attr = vfs.lookup(&handle, 1, "agent.md").unwrap();
+        let root_md_bytes = vfs
+            .read(&handle, root_md_attr.id, 0, root_md_attr.size as u32)
+            .unwrap();
+        assert_eq!(
+            root_md_attr.size as usize,
+            root_md_bytes.len(),
+            "root agent.md getattr.size must match read length"
+        );
+        assert!(!root_md_bytes.contains(&0u8), "root agent.md must not contain NUL bytes");
+
+        // Connector /<conn>/agent.md
+        let conn_id = vfs.lookup(&handle, 1, "mock").unwrap().id;
+        let conn_md_attr = vfs.lookup(&handle, conn_id, "agent.md").unwrap();
+        let conn_md_bytes = vfs
+            .read(&handle, conn_md_attr.id, 0, conn_md_attr.size as u32)
+            .unwrap();
+        assert_eq!(
+            conn_md_attr.size as usize,
+            conn_md_bytes.len(),
+            "connector agent.md getattr.size must match read length"
+        );
+        assert!(
+            !conn_md_bytes.contains(&0u8),
+            "connector agent.md must not contain NUL bytes"
+        );
+
+        // Collection /<conn>/<coll>/agent.md
+        let coll_id = vfs.lookup(&handle, conn_id, "repos").unwrap().id;
+        let coll_md_attr = vfs.lookup(&handle, coll_id, "agent.md").unwrap();
+        let coll_md_bytes = vfs
+            .read(&handle, coll_md_attr.id, 0, coll_md_attr.size as u32)
+            .unwrap();
+        assert_eq!(
+            coll_md_attr.size as usize,
+            coll_md_bytes.len(),
+            "collection agent.md getattr.size must match read length"
+        );
+        assert!(
+            !coll_md_bytes.contains(&0u8),
+            "collection agent.md must not contain NUL bytes"
+        );
     }
 }
