@@ -311,7 +311,9 @@ pub fn prompt_atlassian_credentials(connector_name: &str, data_dir: &Path) -> Re
         "{} requires Atlassian Cloud authentication.",
         connector_name
     );
-    println!("Generate an API token at: https://id.atlassian.com/manage-profile/security/api-tokens");
+    println!(
+        "Generate an API token at: https://id.atlassian.com/manage-profile/security/api-tokens"
+    );
     println!();
 
     let domain = read_line("Atlassian domain (e.g. mycompany or mycompany.atlassian.net): ")?;
@@ -351,9 +353,7 @@ fn read_line(prompt: &str) -> Result<String> {
 /// `handle_auth_required` would otherwise need to be called purely to surface
 /// the same message — and where callers were previously hiding behind an
 /// `unreachable!()` after that call.
-pub fn bail_non_interactive(
-    auth_err: &crate::connector::factory::AuthRequired,
-) -> anyhow::Error {
+pub fn bail_non_interactive(auth_err: &crate::connector::factory::AuthRequired) -> anyhow::Error {
     print_non_interactive_hint(&auth_err.connector_name, auth_err.spec.as_ref());
     anyhow::anyhow!(
         "connector '{}' requires authentication and stdin is not a terminal — \
@@ -498,11 +498,7 @@ mod tests {
             "unexpected error: {}",
             msg
         );
-        assert!(
-            msg.contains("not a terminal"),
-            "unexpected error: {}",
-            msg
-        );
+        assert!(msg.contains("not a terminal"), "unexpected error: {}", msg);
     }
 
     #[tokio::test]

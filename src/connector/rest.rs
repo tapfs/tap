@@ -1565,7 +1565,8 @@ mod tests {
 
     #[test]
     fn extract_idempotency_key_handles_present_and_missing() {
-        let with_key = b"---\n_draft: true\n_id:\n_idempotency_key: tapfs-abc-001\ntitle: hi\n---\n\nbody";
+        let with_key =
+            b"---\n_draft: true\n_id:\n_idempotency_key: tapfs-abc-001\ntitle: hi\n---\n\nbody";
         assert_eq!(
             extract_idempotency_key(with_key).as_deref(),
             Some("tapfs-abc-001")
@@ -1594,8 +1595,7 @@ mod tests {
             .and(path("/widgets"))
             .and(header("Idempotency-Key", "tapfs-fixed-123"))
             .respond_with(
-                ResponseTemplate::new(201)
-                    .set_body_string(r#"{"id":"new-id","slug":"hi"}"#),
+                ResponseTemplate::new(201).set_body_string(r#"{"id":"new-id","slug":"hi"}"#),
             )
             .expect(1)
             .mount(&server)
@@ -1623,8 +1623,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/widgets"))
             .respond_with(
-                ResponseTemplate::new(201)
-                    .set_body_string(r#"{"id":"new-id","slug":"hi"}"#),
+                ResponseTemplate::new(201).set_body_string(r#"{"id":"new-id","slug":"hi"}"#),
             )
             .expect(1)
             .mount(&server)
@@ -1659,8 +1658,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/widgets"))
             .respond_with(
-                ResponseTemplate::new(201)
-                    .set_body_string(r#"{"id":"new-id","slug":"hi"}"#),
+                ResponseTemplate::new(201).set_body_string(r#"{"id":"new-id","slug":"hi"}"#),
             )
             .expect(1)
             .mount(&server)
@@ -1704,8 +1702,7 @@ mod tests {
 
         let mut coll = minimal_collection("items");
         coll.delete_endpoint = Some("/items/{id}".to_string());
-        coll.delete_body =
-            Some(r#"{"archived":true,"deleted_id":"{id}"}"#.to_string());
+        coll.delete_body = Some(r#"{"archived":true,"deleted_id":"{id}"}"#.to_string());
         let conn = build_connector(&server.uri(), vec![coll]);
 
         conn.delete_resource("items", "abc-123")

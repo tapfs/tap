@@ -835,7 +835,6 @@ impl VirtualFs {
         Ok(())
     }
 
-
     fn kind_to_attr(&self, id: u64, kind: &NodeKind) -> VfsAttr {
         match kind {
             NodeKind::Root | NodeKind::Connector { .. } => VfsAttr {

@@ -196,10 +196,7 @@ impl VirtualFs {
                     SentinelState::NotSentinel => {}
                 }
                 let is_new = id_value.is_empty()
-                    || matches!(
-                        sentinel_state,
-                        SentinelState::Stale | SentinelState::Legacy
-                    );
+                    || matches!(sentinel_state, SentinelState::Stale | SentinelState::Legacy);
 
                 let api_id = if is_new {
                     // Write sentinel before the API call so a concurrent flush
@@ -454,10 +451,7 @@ impl VirtualFs {
             Vec::new()
         };
 
-        let mut entry = self
-            .write_buffers
-            .entry(id)
-            .or_insert_with(|| seed);
+        let mut entry = self.write_buffers.entry(id).or_insert_with(|| seed);
         let buf = entry.value_mut();
         let off = offset as usize;
         let needed = off + data.len();

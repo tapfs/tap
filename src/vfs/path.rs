@@ -55,13 +55,7 @@ impl SlugMap {
         }
     }
 
-    pub(crate) fn insert(
-        &self,
-        connector: &str,
-        collection: &str,
-        api_id: &str,
-        user_slug: &str,
-    ) {
+    pub(crate) fn insert(&self, connector: &str, collection: &str, api_id: &str, user_slug: &str) {
         let fwd_key = format!("{}/{}/{}", connector, collection, api_id);
         let rev_key = format!("{}/{}/{}", connector, collection, user_slug);
         // Remove stale reverse entry if api_id previously had a different slug
@@ -197,9 +191,7 @@ pub(crate) fn lock_slug(slug: &str) -> String {
 }
 
 /// Parse a filename into (resource_slug, ResourceVariant).
-pub(crate) fn parse_resource_filename(
-    name: &str,
-) -> Result<(String, ResourceVariant), VfsError> {
+pub(crate) fn parse_resource_filename(name: &str) -> Result<(String, ResourceVariant), VfsError> {
     // Reject hidden/temp files (vim .swp, macOS .DS_Store, etc.)
     if name.starts_with('.') {
         return Err(VfsError::PermissionDenied);

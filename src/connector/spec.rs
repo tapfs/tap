@@ -355,7 +355,11 @@ collections:
 "#;
         let err = ConnectorSpec::from_yaml(yaml).expect_err("expected invalid-JSON error");
         let msg = format!("{:#}", err);
-        assert!(msg.contains("delete_body is not valid JSON"), "got: {}", msg);
+        assert!(
+            msg.contains("delete_body is not valid JSON"),
+            "got: {}",
+            msg
+        );
     }
 
     #[test]
