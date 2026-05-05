@@ -1,6 +1,6 @@
-//! `agent.md` generators for the three levels at which the file appears:
-//! root (`/agent.md`), per-connector (`/<connector>/agent.md`), and
-//! per-collection (`/<connector>/<collection>/agent.md`).
+//! `AGENTS.md` generators for the three levels at which the file appears:
+//! root (`/AGENTS.md`), per-connector (`/<connector>/AGENTS.md`), and
+//! per-collection (`/<connector>/<collection>/AGENTS.md`).
 //!
 //! These run in `read()` for the synthetic AgentMd nodes. They're free of
 //! mutation, but they consume the connector spec + listings cache, so they
@@ -42,8 +42,8 @@ impl VirtualFs {
         out.push_str("- Create `<name>.lock` before editing to prevent conflicts\n");
 
         out.push_str("\n## Tips\n\n");
-        out.push_str("- Each service directory has its own `agent.md` with details\n");
-        out.push_str("- Each collection directory has an `agent.md` listing available resources\n");
+        out.push_str("- Each service directory has its own `AGENTS.md` with details\n");
+        out.push_str("- Each collection directory has an `AGENTS.md` listing available resources\n");
         out.push_str("- `.md` files are live data — reading fetches the latest from the API\n");
         out.push_str("- `.draft.md` files are local only until promoted\n");
 

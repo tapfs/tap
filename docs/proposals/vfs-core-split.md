@@ -9,7 +9,7 @@ PR to the VFS layer touches it. Three concrete problems:
 
 - **Cognitive load.** A reader looking for the draft state machine has to grep
   past readdir code, frontmatter parsing, the slug map, and four kinds of
-  generated `agent.md`.
+  generated `AGENTS.md`.
 - **Merge conflicts.** Independent PRs that touch unrelated VFS concerns
   (e.g. NFS error mapping vs idempotency keys) collide on the same file.
 - **Test discoverability.** Tests for sentinel handling, aggregate flush,

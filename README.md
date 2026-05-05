@@ -132,7 +132,7 @@ tap mount rest -s ./my-connector.yaml
 
 ## Agent setup
 
-Every mount includes an `agent.md` that teaches the agent what's available — collections, operations, draft conventions, and tips. The agent discovers the API by reading, not by being pre-configured.
+Every mount includes an `AGENTS.md` that teaches the agent what's available — collections, operations, draft conventions, and tips. The agent discovers the API by reading, not by being pre-configured.
 
 ```bash
 tap setup claude --append   # Claude Code

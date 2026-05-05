@@ -8,7 +8,7 @@
 ///   `/connector/collection/resource.draft.md`   → Draft (local edits)
 ///   `/connector/collection/resource.lock`        → Lock file
 ///   `/connector/collection/resource@v3.md`       → Version 3
-///   `/connector/agent.md` or `/agent.md`         → Agent help file
+///   `/connector/AGENTS.md` or `/AGENTS.md`         → Agent help file
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PathVariant {
@@ -56,11 +56,11 @@ impl ParsedPath {
 
         match segments.len() {
             // ── 1 segment ────────────────────────────────────────────
-            // "agent.md" → root-level agent file
+            // "AGENTS.md" → root-level agent file
             // "rest"     → connector root directory
             1 => {
                 let seg = segments[0];
-                if seg == "agent.md" {
+                if seg == "AGENTS.md" {
                     Some(Self {
                         connector: String::new(),
                         collection: None,
@@ -82,12 +82,12 @@ impl ParsedPath {
             }
 
             // ── 2 segments ───────────────────────────────────────────
-            // "rest/agent.md" → connector-level agent file
+            // "rest/AGENTS.md" → connector-level agent file
             // "rest/items"    → collection directory
             2 => {
                 let connector = segments[0].to_string();
                 let second = segments[1];
-                if second == "agent.md" {
+                if second == "AGENTS.md" {
                     Some(Self {
                         connector,
                         collection: None,
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn root_agent_md() {
-        let p = ParsedPath::parse("agent.md").unwrap();
+        let p = ParsedPath::parse("AGENTS.md").unwrap();
         assert!(p.is_agent_md);
         assert_eq!(p.connector, "");
         assert_eq!(p.collection, None);
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn connector_agent_md() {
-        let p = ParsedPath::parse("rest/agent.md").unwrap();
+        let p = ParsedPath::parse("rest/AGENTS.md").unwrap();
         assert!(p.is_agent_md);
         assert_eq!(p.connector, "rest");
         assert_eq!(p.collection, None);

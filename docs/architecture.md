@@ -113,7 +113,7 @@ The discriminator for what a node *is*. Drives all dispatch in
 | `ResourceDir { connector, collection, resource }` | `/github/repos/tapfs/` (a resource that's *also* a directory because the spec declares subcollections) |
 | `GroupDir { connector, collection, group_value }` | `/github/repos/tapfs-org/` (synthetic group from `group_by` in spec) |
 | `Version { connector, collection, resource, version_id }` | `/github/issues/42.versions/3.md` |
-| `AgentMd`, `ConnectorAgentMd`, `CollectionAgentMd` | Generated `agent.md` at root / connector / collection levels |
+| `AgentMd`, `ConnectorAgentMd`, `CollectionAgentMd` | Generated `AGENTS.md` at root / connector / collection levels |
 | `TxDir`, `Transaction`, `TxResource` | Transaction directory + named transactions for atomic multi-write workflows |
 | `ResourceVariant` | `Live`, `Draft` (`.draft.md`), or `Lock` (`.lock`) |
 
@@ -249,7 +249,7 @@ These are sharp edges that took packet captures to find. Don't regress:
 4. **After successful `create_resource`**, populate `cache.put_resource`
    so subsequent flushes use `write_resource` (PATCH) instead of POST.
 5. **`rm -rf` on a `ResourceDir`**: virtual children (`index.md`,
-   `comments.md`, `agent.md`) must return `Ok(())` from `unlink`
+   `comments.md`, `AGENTS.md`) must return `Ok(())` from `unlink`
    unconditionally. The API delete gate is in `rmdir_resource_dir`,
    triggered by the final RMDIR. If any earlier REMOVE returns EPERM,
    the whole operation aborts before reaching RMDIR.
@@ -264,7 +264,7 @@ These are sharp edges that took packet captures to find. Don't regress:
    macOS NFS client honors the GETATTR-reported size and zero-pads READ
    responses up to that length when the server returns less. Files that
    look like text in `cat` then trip `grep`'s binary heuristic and are
-   skipped. The synthetic `agent.md` nodes used to hardcode `size: 4096`
+   skipped. The synthetic `AGENTS.md` nodes used to hardcode `size: 4096`
    and render content lazily on read; they now pre-render in `lookup`
    and the readdir paths and cache the bytes in
    `VirtualFs::agent_md_cache` so `kind_to_attr` reports the actual

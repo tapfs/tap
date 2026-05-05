@@ -7,7 +7,7 @@ pub struct ConnectorSpec {
     pub spec_version: Option<String>,
     /// Connector's own semver version (e.g. "1.0.0").
     pub version: Option<String>,
-    /// Human/agent-readable description — powers agent.md generation.
+    /// Human/agent-readable description — powers AGENTS.md generation.
     pub description: Option<String>,
     pub name: String,
     pub base_url: String,
@@ -16,7 +16,7 @@ pub struct ConnectorSpec {
     pub transport: Option<TransportSpec>,
     /// Connector-level capability declarations.
     pub capabilities: Option<CapabilitiesSpec>,
-    /// Agent guidance — tips and hints rendered into agent.md.
+    /// Agent guidance — tips and hints rendered into AGENTS.md.
     pub agent: Option<AgentSpec>,
     pub collections: Vec<CollectionSpec>,
 }
@@ -72,17 +72,17 @@ pub struct CapabilitiesSpec {
     pub rate_limit: Option<RateLimitSpec>,
 }
 
-/// Rate limit hints for agent.md and request throttling.
+/// Rate limit hints for AGENTS.md and request throttling.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RateLimitSpec {
     pub requests_per_minute: Option<u32>,
     pub burst: Option<u32>,
 }
 
-/// Agent guidance section — natural language hints for agent.md.
+/// Agent guidance section — natural language hints for AGENTS.md.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSpec {
-    /// Domain-specific tips rendered into the connector's agent.md.
+    /// Domain-specific tips rendered into the connector's AGENTS.md.
     pub tips: Option<Vec<String>>,
     /// Cross-collection relationship descriptions for agent context.
     pub relationships: Option<Vec<String>>,
