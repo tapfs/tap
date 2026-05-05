@@ -43,7 +43,9 @@ impl VirtualFs {
 
         out.push_str("\n## Tips\n\n");
         out.push_str("- Each service directory has its own `AGENTS.md` with details\n");
-        out.push_str("- Each collection directory has an `AGENTS.md` listing available resources\n");
+        out.push_str(
+            "- Each collection directory has an `AGENTS.md` listing available resources\n",
+        );
         out.push_str("- `.md` files are live data — reading fetches the latest from the API\n");
         out.push_str("- `.draft.md` files are local only until promoted\n");
 
