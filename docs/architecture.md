@@ -113,7 +113,7 @@ The discriminator for what a node *is*. Drives all dispatch in
 | `ResourceDir { connector, collection, resource }` | `/github/repos/tapfs/` (a resource that's *also* a directory because the spec declares subcollections) |
 | `GroupDir { connector, collection, group_value }` | `/github/repos/tapfs-org/` (synthetic group from `group_by` in spec) |
 | `Version { connector, collection, resource, version_id }` | `/github/issues/42.versions/3.md` |
-| `AgentMd`, `ConnectorAgentMd`, `CollectionAgentMd` | Generated `AGENTS.md` at root / connector / collection levels |
+| `AgentMd`, `ConnectorAgentMd`, `CollectionAgentMd` | `AGENTS.md` at root / connector / collection levels — generated on first read, then writable. User edits are buffered like normal writes and persisted to `<data_dir>/agents-md/` on flush, overlaying the generated content on subsequent reads (and surviving daemon restarts). |
 | `TxDir`, `Transaction`, `TxResource` | Transaction directory + named transactions for atomic multi-write workflows |
 | `ResourceVariant` | `Live`, `Draft` (`.draft.md`), or `Lock` (`.lock`) |
 

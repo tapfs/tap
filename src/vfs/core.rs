@@ -52,6 +52,19 @@ pub(crate) fn max_write_buffer_size() -> usize {
         .unwrap_or(DEFAULT_MAX_WRITE_BUFFER)
 }
 
+/// Sanitize a connector or collection name for use as a filename segment in
+/// the AGENTS.md override directory. Replaces path separators and anything
+/// non-alphanumeric (other than `-` and `_`) with `_` so nested collection
+/// paths like `repos/tap/issues` don't escape the override directory.
+fn sanitize_agents_md_segment(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => c,
+            _ => '_',
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // VirtualFs
 // ---------------------------------------------------------------------------
@@ -94,6 +107,11 @@ pub struct VirtualFs {
     /// doesn't zero-pad the READ response up to a placeholder size (which
     /// is what made `grep` see these files as binary).
     pub(crate) agent_md_cache: DashMap<u64, bytes::Bytes>,
+    /// Directory holding user-edited overrides of synthetic AGENTS.md files,
+    /// one file per node. Optional: when None, writes to AGENTS.md are
+    /// in-memory only and lost on flush. The mount path always sets this
+    /// to `<data_dir>/agents-md/`.
+    pub(crate) agents_md_dir: Option<PathBuf>,
 }
 
 impl VirtualFs {
@@ -117,6 +135,61 @@ impl VirtualFs {
             resource_mtimes: DashMap::new(),
             content_lengths: DashMap::new(),
             agent_md_cache: DashMap::new(),
+            agents_md_dir: None,
+        }
+    }
+
+    /// Set the directory that backs user-edited AGENTS.md overrides.
+    /// Without this, edits to AGENTS.md are buffered in memory only and
+    /// don't survive `flush_all`.
+    pub fn with_agents_md_dir(mut self, dir: PathBuf) -> Self {
+        self.agents_md_dir = Some(dir);
+        self
+    }
+
+    /// Map a synthetic AGENTS.md NodeKind to the path of its on-disk
+    /// override. Returns None when no `agents_md_dir` is configured or the
+    /// kind isn't an AgentMd variant.
+    pub(crate) fn agents_md_path(&self, kind: &NodeKind) -> Option<PathBuf> {
+        let dir = self.agents_md_dir.as_ref()?;
+        let leaf = match kind {
+            NodeKind::AgentMd => "root.md".to_string(),
+            NodeKind::ConnectorAgentMd { connector } => {
+                format!("{}.md", sanitize_agents_md_segment(connector))
+            }
+            NodeKind::CollectionAgentMd {
+                connector,
+                collection,
+            } => format!(
+                "{}__{}.md",
+                sanitize_agents_md_segment(connector),
+                sanitize_agents_md_segment(collection)
+            ),
+            _ => return None,
+        };
+        Some(dir.join(leaf))
+    }
+
+    /// Persist the write buffer for an AGENTS.md node to its on-disk
+    /// override file (if any) and update `agent_md_cache` so `getattr`
+    /// returns the new size. Called from both `flush` and `flush_all`.
+    pub(crate) fn flush_agents_md_buffer(&self, id: u64, kind: &NodeKind, buf: Vec<u8>) {
+        // Refresh the in-memory cache regardless of whether we can persist —
+        // the next getattr/read needs to see what was just written.
+        self.agent_md_cache
+            .insert(id, bytes::Bytes::from(buf.clone()));
+
+        let Some(path) = self.agents_md_path(kind) else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::warn!(error = %e, dir = %parent.display(), "failed to create agents-md dir");
+                return;
+            }
+        }
+        if let Err(e) = std::fs::write(&path, &buf) {
+            tracing::warn!(error = %e, path = %path.display(), "failed to persist AGENTS.md edit");
         }
     }
 
@@ -135,6 +208,15 @@ impl VirtualFs {
         id: u64,
         kind: &NodeKind,
     ) {
+        // User edits override the generated content. Read the disk override
+        // first so the agent's saved notes survive across daemon restarts.
+        if let Some(path) = self.agents_md_path(kind) {
+            if let Ok(bytes) = std::fs::read(&path) {
+                self.agent_md_cache.insert(id, bytes::Bytes::from(bytes));
+                return;
+            }
+        }
+
         let rendered = match kind {
             NodeKind::AgentMd => self.generate_root_agent_md(),
             NodeKind::ConnectorAgentMd { connector } => {
@@ -484,6 +566,38 @@ impl VirtualFs {
                     return Err(VfsError::PermissionDenied);
                 }
                 self.buffer_write(id, connector, collection, "__aggregate__", offset, data)?;
+                Ok(data.len() as u32)
+            }
+            NodeKind::AgentMd
+            | NodeKind::ConnectorAgentMd { .. }
+            | NodeKind::CollectionAgentMd { .. } => {
+                // AGENTS.md is editable: agents write notes alongside the
+                // generated guide. Buffer the write in memory, seeding from
+                // the cached rendered/override content on the first write so
+                // partial overwrites don't truncate the existing file.
+                let needs_seed = !self.write_buffers.contains_key(&id);
+                let seed = if needs_seed {
+                    self.agent_md_cache
+                        .get(&id)
+                        .map(|c| c.value().to_vec())
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                let mut entry = self.write_buffers.entry(id).or_insert_with(|| seed);
+                let buf = entry.value_mut();
+                let off = offset as usize;
+                let needed = off + data.len();
+                if needed > max_write_buffer_size() {
+                    return Err(VfsError::IoError(format!(
+                        "AGENTS.md write would exceed limit of {} bytes",
+                        max_write_buffer_size()
+                    )));
+                }
+                if buf.len() < needed {
+                    buf.resize(needed, 0);
+                }
+                buf[off..off + data.len()].copy_from_slice(data);
                 Ok(data.len() as u32)
             }
             _ => Err(VfsError::PermissionDenied),
@@ -3649,6 +3763,91 @@ mod nested_collections {
             .expect("unlink index.md on API-backed resource dir must succeed");
         vfs.unlink(&handle, tap_id, "issues")
             .expect("unlink subcollection dir on API-backed resource dir must succeed");
+    }
+
+    /// Agents can edit AGENTS.md. Writes are buffered, persisted to
+    /// `agents_md_dir` on flush, and overlay the generated content on
+    /// subsequent reads — including across simulated daemon restarts
+    /// (rebuild the VirtualFs pointing at the same agents_md_dir).
+    #[test]
+    fn agents_md_writes_persist_across_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agents_md_dir = tmp.path().join("agents-md");
+        let conn = Arc::new(StubConnector::with_resources(vec![meta("tap", None)]));
+        let spec = make_spec(None);
+
+        // First daemon
+        {
+            let registry = ConnectorRegistry::new();
+            registry.register_with_spec(conn.clone() as Arc<dyn Connector>, spec.clone());
+            let registry = Arc::new(registry);
+            let cache = Arc::new(Cache::new(Duration::from_secs(60)));
+            let drafts = Arc::new(DraftStore::new(tmp.path().join("drafts")).unwrap());
+            let versions = Arc::new(VersionStore::new(tmp.path().join("versions")).unwrap());
+            let audit = Arc::new(AuditLogger::new(tmp.path().join("audit.log")).unwrap());
+            let disk = Arc::new(DiskCache::new(tmp.path().join("cache")).unwrap());
+            let vfs = Arc::new(
+                VirtualFs::new(registry, cache, drafts, versions, audit)
+                    .with_disk_cache(disk)
+                    .with_agents_md_dir(agents_md_dir.clone()),
+            );
+            let rt = make_rt();
+            let handle = rt.handle().clone();
+
+            let conn_id = vfs.lookup(&handle, 1, "mock").unwrap().id;
+            let agents_attr = vfs.lookup(&handle, conn_id, "AGENTS.md").unwrap();
+            let original = vfs
+                .read(&handle, agents_attr.id, 0, agents_attr.size as u32)
+                .unwrap();
+
+            let appended = b"\n\n## Agent notes\nThis connector is flaky on Mondays.\n";
+            let mut new_content = original.clone();
+            new_content.extend_from_slice(appended);
+
+            let n = vfs
+                .write(agents_attr.id, 0, &new_content)
+                .expect("AGENTS.md write must succeed");
+            assert_eq!(n as usize, new_content.len());
+
+            vfs.flush(&handle, agents_attr.id)
+                .expect("flush must persist AGENTS.md edit");
+        }
+
+        // Second daemon, same agents_md_dir — edit must survive.
+        {
+            let registry = ConnectorRegistry::new();
+            registry.register_with_spec(conn as Arc<dyn Connector>, spec);
+            let registry = Arc::new(registry);
+            let cache = Arc::new(Cache::new(Duration::from_secs(60)));
+            let drafts = Arc::new(DraftStore::new(tmp.path().join("drafts2")).unwrap());
+            let versions = Arc::new(VersionStore::new(tmp.path().join("versions2")).unwrap());
+            let audit = Arc::new(AuditLogger::new(tmp.path().join("audit2.log")).unwrap());
+            let disk = Arc::new(DiskCache::new(tmp.path().join("cache2")).unwrap());
+            let vfs = Arc::new(
+                VirtualFs::new(registry, cache, drafts, versions, audit)
+                    .with_disk_cache(disk)
+                    .with_agents_md_dir(agents_md_dir.clone()),
+            );
+            let rt = make_rt();
+            let handle = rt.handle().clone();
+
+            let conn_id = vfs.lookup(&handle, 1, "mock").unwrap().id;
+            let agents_attr = vfs.lookup(&handle, conn_id, "AGENTS.md").unwrap();
+            let bytes = vfs
+                .read(&handle, agents_attr.id, 0, agents_attr.size as u32)
+                .unwrap();
+
+            assert_eq!(
+                agents_attr.size as usize,
+                bytes.len(),
+                "getattr.size must match read length after restart"
+            );
+            assert!(
+                bytes.windows(b"This connector is flaky on Mondays.".len()).any(|w| w
+                    == b"This connector is flaky on Mondays."),
+                "agent's saved note must survive daemon restart"
+            );
+        }
     }
 
     /// Regression: AGENTS.md `getattr.size` must equal what `read` actually

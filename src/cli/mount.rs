@@ -351,7 +351,8 @@ pub async fn run(config: TapConfig) -> Result<()> {
     let vfs = Arc::new(
         VirtualFs::new(registry.clone(), cache, drafts, versions, audit.clone())
             .with_disk_cache(disk_cache)
-            .with_slug_map(slug_map_path),
+            .with_slug_map(slug_map_path)
+            .with_agents_md_dir(config.agents_md_dir()),
     );
 
     // 12. Start IPC socket for CLI commands (inspect, status, invalidate, add/remove connector)
