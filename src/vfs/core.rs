@@ -1295,14 +1295,6 @@ impl VirtualFs {
         Ok(())
     }
 
-    fn is_aggregate_collection(&self, connector: &str, collection: &str) -> bool {
-        self.registry
-            .get_spec(connector)
-            .and_then(|s| find_collection_spec_in(&s.collections, collection).cloned())
-            .and_then(|c| c.aggregate)
-            .unwrap_or(false)
-    }
-
     fn kind_to_attr(&self, id: u64, kind: &NodeKind) -> VfsAttr {
         match kind {
             NodeKind::Root | NodeKind::Connector { .. } => VfsAttr {
@@ -2365,43 +2357,6 @@ impl VirtualFs {
         });
 
         Ok(entries)
-    }
-
-    /// Read all resources in an aggregate collection, concatenated with `---` separators.
-    fn read_aggregate_collection(
-        &self,
-        rt: &tokio::runtime::Handle,
-        connector: &str,
-        collection: &str,
-    ) -> Result<String, VfsError> {
-        let conn = self.registry.get(connector).ok_or(VfsError::NotFound)?;
-        let items = match rt.block_on(conn.list_resources_with_content(collection)) {
-            Ok(items) => items,
-            Err(_) => {
-                // Parent resource may not exist in the API yet (draft-only).
-                return Ok(String::new());
-            }
-        };
-
-        // Populate metadata cache so readdir can use it without a second request.
-        let cache_key = format!("{}/{}", connector, collection);
-        if self.cache.get_metadata(&cache_key).is_none() {
-            let metas: Vec<_> = items.iter().map(|(m, _)| m.clone()).collect();
-            self.cache.put_metadata(&cache_key, metas);
-        }
-
-        let mut out = String::new();
-        for (i, (_, content)) in items.iter().enumerate() {
-            if i > 0 {
-                out.push_str("\n---\n\n");
-            }
-            out.push_str(std::str::from_utf8(content).unwrap_or(""));
-            if !out.ends_with('\n') {
-                out.push('\n');
-            }
-        }
-
-        Ok(out)
     }
 
     /// Read full resource content, returning `Bytes` for O(1) slicing.
