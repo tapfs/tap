@@ -61,6 +61,11 @@ impl VirtualFs {
                                 .drafts
                                 .write_draft(connector, collection, &tx_slug, &buf);
                         }
+                        NodeKind::AgentMd
+                        | NodeKind::ConnectorAgentMd { .. }
+                        | NodeKind::CollectionAgentMd { .. } => {
+                            self.flush_agents_md_buffer(id, &kind, buf);
+                        }
                         _ => {}
                     }
                 }
@@ -143,6 +148,13 @@ impl VirtualFs {
                 self.drafts
                     .write_draft(connector, collection, &tx_slug, &buf)
                     .map_err(|e| VfsError::IoError(e.to_string()))?;
+            } else if matches!(
+                &kind,
+                NodeKind::AgentMd
+                    | NodeKind::ConnectorAgentMd { .. }
+                    | NodeKind::CollectionAgentMd { .. }
+            ) {
+                self.flush_agents_md_buffer(id, &kind, buf);
             }
         }
 

@@ -46,6 +46,11 @@ impl TapConfig {
         self.data_dir().join("versions")
     }
 
+    /// Directory holding user-edited overrides of synthetic AGENTS.md files.
+    pub fn agents_md_dir(&self) -> PathBuf {
+        self.data_dir().join("agents-md")
+    }
+
     /// Directory used to persist the on-disk resource cache.
     pub fn cache_dir(&self) -> PathBuf {
         self.data_dir().join("cache")
