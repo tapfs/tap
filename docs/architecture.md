@@ -260,6 +260,16 @@ These are sharp edges that took packet captures to find. Don't regress:
    that fileid may be gone. `nfs/server.rs::readdir` walks first to
    detect the missing-cookie case and returns `NFS3ERR_BAD_COOKIE` so
    the client restarts.
+8. **GETATTR `size` must equal what READ produces**, byte-for-byte. The
+   macOS NFS client honors the GETATTR-reported size and zero-pads READ
+   responses up to that length when the server returns less. Files that
+   look like text in `cat` then trip `grep`'s binary heuristic and are
+   skipped. The synthetic `agent.md` nodes used to hardcode `size: 4096`
+   and render content lazily on read; they now pre-render in `lookup`
+   and the readdir paths and cache the bytes in
+   `VirtualFs::agent_md_cache` so `kind_to_attr` reports the actual
+   length. Same rule applies to any future synthetic node — never use a
+   placeholder size larger than the smallest possible payload.
 
 ## Testing patterns
 
