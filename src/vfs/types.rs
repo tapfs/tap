@@ -47,11 +47,11 @@ pub enum NodeKind {
         resource: String,
         version_id: Option<u64>,
     },
-    /// Connector-level agent.md: `/CONNECTOR/agent.md`
+    /// Connector-level AGENTS.md: `/CONNECTOR/AGENTS.md`
     ConnectorAgentMd {
         connector: String,
     },
-    /// Collection-level agent.md: `/CONNECTOR/COLLECTION/agent.md`
+    /// Collection-level AGENTS.md: `/CONNECTOR/COLLECTION/AGENTS.md`
     CollectionAgentMd {
         connector: String,
         collection: String,

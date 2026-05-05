@@ -72,7 +72,7 @@ fn generate_snippet(mount_point: &str, connector: Option<&str>) -> String {
 
     out.push_str("## How to use\n\n");
     out.push_str(&format!(
-        "1. Read the guide: `cat {}/agent.md`\n",
+        "1. Read the guide: `cat {}/AGENTS.md`\n",
         mount_point
     ));
     out.push_str(&format!("2. List services: `ls {}/`\n", mount_point));

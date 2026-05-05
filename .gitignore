@@ -22,9 +22,8 @@ Thumbs.db
 .idea/
 .vscode/
 
-# AI assistant config
-CLAUDE.md
+# AGENTS.md is the canonical AI-assistant guide; CLAUDE.md is a checked-in
+# symlink to it. Both are committed.
 
 # Dependencies
 node_modules/
-CLAUDE.md
