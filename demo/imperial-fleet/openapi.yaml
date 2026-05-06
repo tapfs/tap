@@ -1,0 +1,455 @@
+openapi: 3.1.0
+info:
+  title: Imperial Fleet Command Registry
+  version: 1.0.0
+  description: |
+    Fictional enterprise-style REST API for the TapFS demo.
+
+    The default role is a sector operations analyst. It can read missions,
+    fleet assets, maintenance tickets, procurement requests, and duty-roster
+    personnel records. It can update one fleet field: commander assignment.
+    Intelligence is hidden and superweapon systems are explicitly denied unless
+    a higher-clearance token is used.
+servers:
+  - url: http://127.0.0.1:7077
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: Server status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  name:
+                    type: string
+                  role:
+                    type: string
+  /api/v1:
+    get:
+      summary: Visible API catalog for the current role
+      responses:
+        "200":
+          description: API catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  role:
+                    type: string
+                  collections:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Collection"
+  /api/v1/missions:
+    get:
+      summary: List visible missions
+      responses:
+        "200":
+          description: Mission list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Mission"
+  /api/v1/missions/{id}:
+    get:
+      summary: Read a mission by ID or slug
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Mission
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Mission"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/fleet:
+    get:
+      summary: List fleet assets
+      responses:
+        "200":
+          description: Fleet asset list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FleetAsset"
+  /api/v1/fleet/{id}:
+    get:
+      summary: Read a fleet asset by ID or slug
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Fleet asset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FleetAsset"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      summary: Change a fleet asset commander assignment
+      description: |
+        Role-scoped write used by the TapFS demo. The sector operations analyst
+        role can update `commander` on fleet assets. Other fleet fields are
+        immutable through this role, and other collections remain read-only.
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FleetCommanderUpdate"
+            examples:
+              assignLuke:
+                summary: Reassign commander
+                value:
+                  commander: Luke Skywalker
+      responses:
+        "200":
+          description: Updated fleet asset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FleetAsset"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/maintenance:
+    get:
+      summary: List maintenance tickets
+      responses:
+        "200":
+          description: Maintenance ticket list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MaintenanceTicket"
+  /api/v1/maintenance/{id}:
+    get:
+      summary: Read a maintenance ticket by ID or slug
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Maintenance ticket
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MaintenanceTicket"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/procurement:
+    get:
+      summary: List procurement requests
+      responses:
+        "200":
+          description: Procurement request list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProcurementRequest"
+  /api/v1/procurement/{id}:
+    get:
+      summary: Read a procurement request by ID or slug
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Procurement request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProcurementRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/personnel:
+    get:
+      summary: List duty-roster personnel records
+      responses:
+        "200":
+          description: Personnel list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PersonnelRecord"
+  /api/v1/personnel/{id}:
+    get:
+      summary: Read a duty-roster personnel record by ID or slug
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Personnel record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PersonnelRecord"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/intelligence:
+    get:
+      summary: Restricted intelligence collection
+      description: Hidden from the default sector-ops-analyst role.
+      responses:
+        "200":
+          description: Intelligence records for high-clearance roles
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/superweapon:
+    get:
+      summary: Restricted superweapon collection
+      description: Explicitly denied to the default sector-ops-analyst role.
+      responses:
+        "200":
+          description: Superweapon records for high-clearance roles
+        "403":
+          $ref: "#/components/responses/Forbidden"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Optional demo token. Use "moff-clearance" for direct high-clearance API exploration.
+  parameters:
+    ResourceId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Resource ID or slug.
+  responses:
+    BadRequest:
+      description: Invalid write payload.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: The current role cannot access the collection.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Resource or hidden collection not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Collection:
+      type: object
+      properties:
+        name:
+          type: string
+        href:
+          type: string
+        access:
+          type: string
+          enum: [readonly, "readwrite:commander", restricted]
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        role:
+          type: string
+        collection:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+    Link:
+      type: object
+      properties:
+        type:
+          type: string
+        id:
+          type: string
+    Blocker:
+      type: object
+      properties:
+        severity:
+          type: string
+        summary:
+          type: string
+    Mission:
+      type: object
+      properties:
+        id:
+          type: string
+        slug:
+          type: string
+        title:
+          type: string
+        status:
+          type: string
+        priority:
+          type: string
+        theater:
+          type: string
+        clearance:
+          type: string
+        owner:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+        brief:
+          type: string
+        linked_assets:
+          type: array
+          items:
+            $ref: "#/components/schemas/Link"
+        blockers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Blocker"
+    FleetAsset:
+      type: object
+      properties:
+        id:
+          type: string
+        slug:
+          type: string
+        title:
+          type: string
+        class:
+          type: string
+        status:
+          type: string
+        readiness:
+          type: integer
+        location:
+          type: string
+        commander:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+        summary:
+          type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+    FleetCommanderUpdate:
+      type: object
+      required:
+        - commander
+      properties:
+        commander:
+          type: string
+          minLength: 1
+          description: New commander assignment for the fleet asset.
+    MaintenanceTicket:
+      type: object
+      properties:
+        id:
+          type: string
+        slug:
+          type: string
+        title:
+          type: string
+        asset_id:
+          type: string
+        status:
+          type: string
+        severity:
+          type: string
+        assigned_to:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+        description:
+          type: string
+        steps:
+          type: array
+          items:
+            type: string
+    ProcurementRequest:
+      type: object
+      properties:
+        id:
+          type: string
+        slug:
+          type: string
+        title:
+          type: string
+        status:
+          type: string
+        requested_by:
+          type: string
+        needed_by:
+          type: string
+          format: date
+        updated_at:
+          type: string
+          format: date-time
+        description:
+          type: string
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              sku:
+                type: string
+              quantity:
+                type: integer
+              priority:
+                type: string
+    PersonnelRecord:
+      type: object
+      properties:
+        id:
+          type: string
+        slug:
+          type: string
+        title:
+          type: string
+        rank:
+          type: string
+        station:
+          type: string
+        status:
+          type: string
+        clearance:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+        briefing_notes:
+          type: string

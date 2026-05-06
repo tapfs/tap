@@ -1,0 +1,152 @@
+spec_version: "1"
+version: "1.0.0"
+description: "Imperial Fleet Command Registry demo API projected as a role-scoped agent filesystem"
+
+name: imperial-fleet
+base_url: "http://127.0.0.1:7077"
+auth:
+  type: bearer
+  token_env: IMPERIAL_FLEET_TOKEN
+  setup_instructions: "Optional for the demo. Leave unset for the sector-ops-analyst role, or set IMPERIAL_FLEET_TOKEN=moff-clearance for direct API exploration."
+
+capabilities:
+  read: true
+  write: true
+  create: false
+  delete: false
+  search: false
+  pagination: none
+  rate_limit:
+    requests_per_minute: 600
+
+agent:
+  tips:
+    - "This connector exposes the sector operations analyst view."
+    - "Visible collections are missions, fleet, maintenance, procurement, and personnel."
+    - "Only fleet commander assignment is writable; other fields and collections are read-only."
+    - "Restricted intelligence and superweapon APIs exist on the server but are not mounted in this connector."
+    - "Use missions to identify work, fleet and maintenance to understand asset state, and procurement to find blocked parts."
+  relationships:
+    - "Missions link to fleet assets and procurement requests through linked_assets."
+    - "Maintenance tickets refer to fleet assets by asset_id."
+    - "Procurement requests can unblock missions and maintenance tickets."
+
+collections:
+  - name: missions
+    description: "Operational missions visible to a sector operations analyst"
+    slug_hint: "mission slug (e.g. resupply-endor-garrison)"
+    operations: [read]
+    list_endpoint: "/api/v1/missions"
+    get_endpoint: "/api/v1/missions/{id}"
+    id_field: "id"
+    slug_field: "slug"
+    title_field: "title"
+    render:
+      frontmatter:
+        - id
+        - status
+        - priority
+        - theater
+        - clearance
+        - owner
+        - updated_at
+      body: "brief"
+      sections:
+        - name: Linked Assets
+          field: "linked_assets"
+          format: "list"
+          item_template: "{type}: {id}"
+        - name: Blockers
+          field: "blockers"
+          format: "list"
+          item_template: "{summary} ({severity})"
+
+  - name: fleet
+    description: "Fleet assets, readiness, location, and capability summaries. Commander assignment is writable."
+    slug_hint: "title-derived filename (e.g. lambda-shuttle-779.md)"
+    operations: [read, write]
+    list_endpoint: "/api/v1/fleet"
+    get_endpoint: "/api/v1/fleet/{id}"
+    update_endpoint: "/api/v1/fleet/{id}"
+    id_field: "id"
+    slug_field: "slug"
+    title_field: "title"
+    render:
+      frontmatter:
+        - id
+        - class
+        - status
+        - readiness
+        - location
+        - commander
+        - updated_at
+      body: "summary"
+      sections:
+        - name: Capabilities
+          field: "capabilities"
+          format: "list"
+
+  - name: maintenance
+    description: "Maintenance tickets for fleet assets"
+    slug_hint: "maintenance ticket slug (e.g. lambda-779-motivator-swap)"
+    operations: [read]
+    list_endpoint: "/api/v1/maintenance"
+    get_endpoint: "/api/v1/maintenance/{id}"
+    id_field: "id"
+    slug_field: "slug"
+    title_field: "title"
+    render:
+      frontmatter:
+        - id
+        - asset_id
+        - status
+        - severity
+        - assigned_to
+        - updated_at
+      body: "description"
+      sections:
+        - name: Steps
+          field: "steps"
+          format: "list"
+
+  - name: procurement
+    description: "Procurement requests that may block missions or maintenance"
+    slug_hint: "procurement request slug (e.g. hyperdrive-motivator-assemblies)"
+    operations: [read]
+    list_endpoint: "/api/v1/procurement"
+    get_endpoint: "/api/v1/procurement/{id}"
+    id_field: "id"
+    slug_field: "slug"
+    title_field: "title"
+    render:
+      frontmatter:
+        - id
+        - status
+        - requested_by
+        - needed_by
+        - updated_at
+      body: "description"
+      sections:
+        - name: Items
+          field: "items"
+          format: "list"
+          item_template: "{quantity}x {sku} ({priority})"
+
+  - name: personnel
+    description: "Duty-roster personnel records safe for sector operations"
+    slug_hint: "personnel slug (e.g. tk-421)"
+    operations: [read]
+    list_endpoint: "/api/v1/personnel"
+    get_endpoint: "/api/v1/personnel/{id}"
+    id_field: "id"
+    slug_field: "slug"
+    title_field: "title"
+    render:
+      frontmatter:
+        - id
+        - rank
+        - station
+        - status
+        - clearance
+        - updated_at
+      body: "briefing_notes"

@@ -202,12 +202,7 @@ impl VirtualFs {
     /// so that the next `getattr` reports the real size. Without this, the
     /// kernel pads READ responses with NULs to the hardcoded placeholder
     /// length and `grep`/`file(1)` see the result as binary.
-    pub(crate) fn cache_agent_md(
-        &self,
-        rt: &tokio::runtime::Handle,
-        id: u64,
-        kind: &NodeKind,
-    ) {
+    pub(crate) fn cache_agent_md(&self, rt: &tokio::runtime::Handle, id: u64, kind: &NodeKind) {
         // User edits override the generated content. Read the disk override
         // first so the agent's saved notes survive across daemon restarts.
         if let Some(path) = self.agents_md_path(kind) {
@@ -3843,8 +3838,9 @@ mod nested_collections {
                 "getattr.size must match read length after restart"
             );
             assert!(
-                bytes.windows(b"This connector is flaky on Mondays.".len()).any(|w| w
-                    == b"This connector is flaky on Mondays."),
+                bytes
+                    .windows(b"This connector is flaky on Mondays.".len())
+                    .any(|w| w == b"This connector is flaky on Mondays."),
                 "agent's saved note must survive daemon restart"
             );
         }
@@ -3873,7 +3869,10 @@ mod nested_collections {
             root_md_bytes.len(),
             "root AGENTS.md getattr.size must match read length"
         );
-        assert!(!root_md_bytes.contains(&0u8), "root AGENTS.md must not contain NUL bytes");
+        assert!(
+            !root_md_bytes.contains(&0u8),
+            "root AGENTS.md must not contain NUL bytes"
+        );
 
         // Connector /<conn>/AGENTS.md
         let conn_id = vfs.lookup(&handle, 1, "mock").unwrap().id;
