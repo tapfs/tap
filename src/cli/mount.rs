@@ -19,8 +19,15 @@ use crate::version::store::VersionStore;
 use crate::vfs::core::VirtualFs;
 
 pub async fn run(config: TapConfig) -> Result<()> {
+    let has_explicit_specs = config.connector_spec.is_some()
+        || config
+            .connector_specs
+            .as_ref()
+            .map(|specs| !specs.is_empty())
+            .unwrap_or(false);
+
     // If not in daemon mode, either hot-add to running daemon or start the service
-    if !config.daemon {
+    if !config.daemon && !has_explicit_specs {
         let socket_path = config.socket_path();
         let data_dir = config.data_dir();
 
