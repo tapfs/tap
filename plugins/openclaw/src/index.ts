@@ -50,7 +50,7 @@ export default {
 
       healthCheck: () => {
         const mountPoint = config.mountPoint || "/tmp/tap";
-        return existsSync(resolve(mountPoint, "agent.md"));
+        return existsSync(resolve(mountPoint, "AGENTS.md"));
       },
     });
   },

@@ -11,7 +11,7 @@ Enterprise API resources are mounted as a local filesystem at `/tmp/tap`. You ca
 
 1. Read the help file first:
    ```
-   cat /tmp/tap/agent.md
+   cat /tmp/tap/AGENTS.md
    ```
 
 2. List available connectors:
@@ -38,9 +38,9 @@ Enterprise API resources are mounted as a local filesystem at `/tmp/tap`. You ca
 
 ```
 /tmp/tap/
-  agent.md                              Help file
+  AGENTS.md                             Help file
   <connector>/                          One dir per API connector
-    agent.md                            Connector-specific help
+    AGENTS.md                           Connector-specific help
     <collection>/                       One dir per resource type
       <slug>.md                         Live resource (read from API)
       <slug>.draft.md                   Local draft (not yet pushed)
