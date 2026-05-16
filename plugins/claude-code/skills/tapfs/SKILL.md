@@ -14,5 +14,5 @@ When the user asks about issues, tickets, pull requests, documents, accounts, co
 tapfs is already running. Read the help file for what's available:
 
 ```
-cat ${user_config.mountPoint}/agent.md
+cat ${user_config.mountPoint}/AGENTS.md
 ```
