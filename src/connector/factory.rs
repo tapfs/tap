@@ -31,10 +31,42 @@ impl std::fmt::Display for AuthRequired {
 
 impl std::error::Error for AuthRequired {}
 
+/// Optional per-connector overrides sourced from a declarative config
+/// (e.g. an entry in `service.yaml`).
+///
+/// Precedence is `Overrides > credentials.yaml > spec defaults`. A field left
+/// as `None` falls through to the next layer.
+#[derive(Debug, Default, Clone)]
+pub struct ConnectorOverrides<'a> {
+    pub base_url: Option<&'a str>,
+    /// If set, read the bearer token from this environment variable instead
+    /// of `creds.token(name)`. Empty / unset env var falls through to creds.
+    pub auth_token_env: Option<&'a str>,
+}
+
 pub fn create_connector(
     name: &str,
     audit: &Arc<AuditLogger>,
     creds: &CredentialStore,
+) -> anyhow::Result<(Arc<dyn Connector>, Option<ConnectorSpec>)> {
+    create_connector_with_overrides(name, audit, creds, &ConnectorOverrides::default())
+}
+
+/// Resolve `overrides.auth_token_env` to the actual token value, treating
+/// unset or empty env vars as "no override" (the precedence rule documented
+/// on `ConnectorOverrides::auth_token_env`).
+fn resolve_token_override(overrides: &ConnectorOverrides<'_>) -> Option<String> {
+    overrides
+        .auth_token_env
+        .and_then(|var| std::env::var(var).ok())
+        .filter(|s| !s.is_empty())
+}
+
+pub fn create_connector_with_overrides(
+    name: &str,
+    audit: &Arc<AuditLogger>,
+    creds: &CredentialStore,
+    overrides: &ConnectorOverrides<'_>,
 ) -> anyhow::Result<(Arc<dyn Connector>, Option<ConnectorSpec>)> {
     let audited: Arc<dyn Connector>;
     let spec: Option<ConnectorSpec>;
@@ -84,33 +116,57 @@ pub fn create_connector(
             }
         }
     } else if name == "jira" {
-        if !crate::connector::atlassian_auth::AtlassianAuth::credentials_present(name, creds) {
+        let token_override = resolve_token_override(overrides);
+        if !crate::connector::atlassian_auth::AtlassianAuth::credentials_present_with_overrides(
+            name,
+            creds,
+            overrides.base_url,
+            token_override.as_deref(),
+        ) {
             return Err(AuthRequired {
                 connector_name: name.to_string(),
                 spec: None,
             }
             .into());
         }
-        let inner: Arc<dyn Connector> = Arc::new(JiraConnector::new(creds)?);
+        let inner: Arc<dyn Connector> = Arc::new(JiraConnector::new_with_overrides(
+            creds,
+            overrides.base_url,
+            token_override.as_deref(),
+        )?);
         audited = Arc::new(AuditedConnector::new(inner, audit.clone()));
         spec = None;
     } else if name == "confluence" {
-        if !crate::connector::atlassian_auth::AtlassianAuth::credentials_present(name, creds) {
+        let token_override = resolve_token_override(overrides);
+        if !crate::connector::atlassian_auth::AtlassianAuth::credentials_present_with_overrides(
+            name,
+            creds,
+            overrides.base_url,
+            token_override.as_deref(),
+        ) {
             return Err(AuthRequired {
                 connector_name: name.to_string(),
                 spec: None,
             }
             .into());
         }
-        let inner: Arc<dyn Connector> = Arc::new(ConfluenceConnector::new(creds)?);
+        let inner: Arc<dyn Connector> = Arc::new(ConfluenceConnector::new_with_overrides(
+            creds,
+            overrides.base_url,
+            token_override.as_deref(),
+        )?);
         audited = Arc::new(AuditedConnector::new(inner, audit.clone()));
         spec = None;
     } else {
         let yaml =
             builtin_spec(name).ok_or_else(|| anyhow::anyhow!("unknown connector: {}", name))?;
         let mut parsed = ConnectorSpec::from_yaml(yaml)?;
+        // Precedence: declarative override > credentials.yaml > spec default
         if let Some(url) = creds.base_url(name) {
             parsed.base_url = url;
+        }
+        if let Some(url) = overrides.base_url {
+            parsed.base_url = url.to_string();
         }
 
         let is_oauth2 = parsed.auth.as_ref().map(|a| a.auth_type.as_str()) == Some("oauth2");
@@ -123,7 +179,8 @@ pub fn create_connector(
             .build()?;
 
         let cred = creds.get(name);
-        let token = creds.token(name);
+        // Token precedence: auth_token_env override (if set+non-empty) > creds.token(name)
+        let token = resolve_token_override(overrides).or_else(|| creds.token(name));
         let refresh_token = cred.and_then(|c| c.refresh_token.clone());
 
         if let (true, Some(rt)) = (is_oauth2, refresh_token) {

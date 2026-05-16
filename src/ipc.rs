@@ -109,8 +109,9 @@ fn handle_request(state: &IpcState, request: &str) -> serde_json::Value {
             let stats = state.cache.stats();
             serde_json::json!({
                 "ok": true,
-                "resources_cached": stats.0,
-                "metadata_cached": stats.1,
+                "resources_cached": stats.resources,
+                "metadata_cached": stats.metadata,
+                "shards_cached": stats.shards,
             })
         }
         "invalidate" => {
@@ -132,10 +133,18 @@ fn handle_request(state: &IpcState, request: &str) -> serde_json::Value {
             if state.registry.get(name).is_some() {
                 return serde_json::json!({ "ok": true, "message": "already mounted" });
             }
-            match crate::connector::factory::create_connector(
+            // Honor service.yaml overrides if the entry was edited there.
+            let svc = ServiceConfig::load(&state.data_dir).ok();
+            let entry = svc.as_ref().and_then(|s| s.get_connector(name));
+            let overrides = crate::connector::factory::ConnectorOverrides {
+                base_url: entry.and_then(|e| e.base_url()),
+                auth_token_env: entry.and_then(|e| e.auth_token_env()),
+            };
+            match crate::connector::factory::create_connector_with_overrides(
                 name,
                 &state.audit,
                 &state.credentials,
+                &overrides,
             ) {
                 Ok((connector, spec)) => {
                     if let Some(s) = spec {
