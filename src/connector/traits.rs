@@ -100,6 +100,24 @@ pub trait Connector: Send + Sync {
         Ok(out)
     }
 
+    /// List resources alongside a per-item "frontmatter shard" — a partial
+    /// JSON object containing fields the connector's spec says the list
+    /// endpoint already populates. The VFS caches these shards so shallow
+    /// reads (grep over frontmatter) can answer without firing the detail
+    /// endpoint.
+    ///
+    /// Default impl: delegates to `list_resources` and returns `None` for
+    /// every shard, preserving the conservative "detail-only" behavior.
+    /// `RestConnector` overrides this to project the spec's `populates`
+    /// fields from each list-response item.
+    async fn list_resources_with_shards(
+        &self,
+        collection: &str,
+    ) -> Result<Vec<(ResourceMeta, Option<serde_json::Value>)>> {
+        let metas = self.list_resources(collection).await?;
+        Ok(metas.into_iter().map(|m| (m, None)).collect())
+    }
+
     async fn create_resource(&self, collection: &str, _content: &[u8]) -> Result<ResourceMeta> {
         Err(ConnectorError::NotSupported(format!(
             "create not supported for collection '{}'",

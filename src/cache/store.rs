@@ -33,14 +33,21 @@ impl<T> CacheEntry<T> {
 
 /// A concurrent, TTL-aware in-memory cache.
 ///
-/// Two separate maps are maintained – one for full resource content and one
-/// for metadata listings – because their access patterns and sizes differ.
-/// All public methods are safe to call from multiple threads concurrently
-/// thanks to `DashMap`.
+/// Three maps are maintained — full resource content, metadata listings, and
+/// per-resource "frontmatter shards" populated from list-response items when
+/// a spec declares `populates`.
 pub struct Cache {
     resources: DashMap<String, CacheEntry<Resource>>,
     metadata: DashMap<String, CacheEntry<Vec<ResourceMeta>>>,
+    shards: DashMap<String, CacheEntry<serde_json::Value>>,
     default_ttl: Duration,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CacheStats {
+    pub resources: usize,
+    pub metadata: usize,
+    pub shards: usize,
 }
 
 impl Cache {
@@ -49,6 +56,7 @@ impl Cache {
         Self {
             resources: DashMap::new(),
             metadata: DashMap::new(),
+            shards: DashMap::new(),
             default_ttl,
         }
     }
@@ -110,22 +118,56 @@ impl Cache {
         );
     }
 
+    // ── Frontmatter shards ───────────────────────────────────────
+
+    /// Canonical key shape for a shard: `connector/collection/id`. Kept
+    /// here so call sites can't drift from the storage format.
+    pub fn shard_key(connector: &str, collection: &str, id: &str) -> String {
+        format!("{}/{}/{}", connector, collection, id)
+    }
+
+    pub fn get_shard(&self, key: &str) -> Option<serde_json::Value> {
+        let entry = self.shards.get(key)?;
+        if entry.is_expired() {
+            drop(entry);
+            self.shards.remove(key);
+            None
+        } else {
+            Some(entry.value.clone())
+        }
+    }
+
+    pub fn put_shard(&self, key: &str, shard: serde_json::Value) {
+        self.shards.insert(
+            key.to_string(),
+            CacheEntry {
+                value: shard,
+                inserted_at: Instant::now(),
+                ttl: self.default_ttl,
+            },
+        );
+    }
+
     // ── Stats ────────────────────────────────────────────────────
 
-    /// Return (resource_count, metadata_count) for IPC status queries.
-    pub fn stats(&self) -> (usize, usize) {
-        (self.resources.len(), self.metadata.len())
+    pub fn stats(&self) -> CacheStats {
+        CacheStats {
+            resources: self.resources.len(),
+            metadata: self.metadata.len(),
+            shards: self.shards.len(),
+        }
     }
 
     // ── Maintenance ──────────────────────────────────────────────
 
-    /// Remove **both** the resource and metadata entry for a key.
+    /// Remove the resource, metadata, and shard entry for a key.
     pub fn invalidate(&self, key: &str) {
         self.resources.remove(key);
         self.metadata.remove(key);
+        self.shards.remove(key);
     }
 
-    /// Walk every entry in both maps and remove any that have exceeded
+    /// Walk every entry in all maps and remove any that have exceeded
     /// their TTL.  This is intended to be called periodically from a
     /// background `tokio` task so that stale data does not accumulate
     /// indefinitely.
@@ -134,6 +176,8 @@ impl Cache {
             .retain(|_k: &String, v: &mut CacheEntry<Resource>| !v.is_expired());
         self.metadata
             .retain(|_k: &String, v: &mut CacheEntry<Vec<ResourceMeta>>| !v.is_expired());
+        self.shards
+            .retain(|_k: &String, v: &mut CacheEntry<serde_json::Value>| !v.is_expired());
     }
 }
 
@@ -257,5 +301,41 @@ mod tests {
         let cache = Cache::new(Duration::from_secs(60));
         assert!(cache.get_resource("nope").is_none());
         assert!(cache.get_metadata("nope").is_none());
+    }
+
+    #[test]
+    fn put_and_get_shard() {
+        let cache = Cache::new(Duration::from_secs(60));
+        let shard = serde_json::json!({"title": "hello", "state": "open"});
+        cache.put_shard("k", shard.clone());
+        let got = cache.get_shard("k").expect("shard should be present");
+        assert_eq!(got, shard);
+    }
+
+    #[test]
+    fn expired_shard_returns_none() {
+        let cache = Cache::new(Duration::from_millis(10));
+        cache.put_shard("k", serde_json::json!({"x": 1}));
+        thread::sleep(Duration::from_millis(30));
+        assert!(cache.get_shard("k").is_none());
+    }
+
+    #[test]
+    fn invalidate_removes_shard() {
+        let cache = Cache::new(Duration::from_secs(60));
+        cache.put_shard("k", serde_json::json!({"x": 1}));
+        cache.invalidate("k");
+        assert!(cache.get_shard("k").is_none());
+    }
+
+    #[test]
+    fn evict_expired_cleans_shards() {
+        let cache = Cache::new(Duration::from_millis(10));
+        cache.put_shard("stale", serde_json::json!({"x": 1}));
+        thread::sleep(Duration::from_millis(30));
+        cache.put_shard("fresh", serde_json::json!({"x": 2}));
+        cache.evict_expired();
+        assert!(cache.get_shard("stale").is_none());
+        assert!(cache.get_shard("fresh").is_some());
     }
 }

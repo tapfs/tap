@@ -22,9 +22,85 @@ The protocol-level invariants below are the ones that took packet
 captures to discover and need to be visible *every time* I open the
 project — they stay duplicated here on purpose.
 
+## Workflow
+
+### Test-driven development (mandatory)
+
+Every behavioral change follows the red → green → refactor cycle:
+
+1. Write a failing test that captures the bug or new behavior. Run it.
+   Confirm it fails for the **right** reason (not a compile error, not a
+   typo).
+2. Implement the smallest change that makes it pass. Run the focused
+   test, then the full suite (`cargo test --no-default-features --features nfs`).
+3. Refactor only with green tests.
+
+Applies to bug fixes, features, refactors with observable behavior, and
+spec changes that affect parsing. Does **not** apply to: docs-only PRs,
+typo / comment-only edits, build-system tweaks with no behavioral
+surface, or a chore like moving items to satisfy clippy.
+
+If the behavior is genuinely untestable from Rust (NFS kernel protocol
+edge cases, FUSE mount-time errors), say so explicitly in the commit
+message and explain how it was verified manually — never silently skip.
+
+### Guardrails (require explicit human approval before proceeding)
+
+Stop and ask before doing any of these. A previous approval for the same
+action in the same conversation does **not** carry forward to a new
+context:
+
+- Skipping the failing-test-first step for a behavioral change
+- Merging or pushing code that lacks a test for the new behavior
+- Bypassing hooks or signing (`--no-verify`, `--no-gpg-sign`)
+- Destructive git ops on shared history (`reset --hard` past pushed
+  commits, `push --force`, `branch -D` on a remote-tracked branch,
+  `clean -fdx`)
+- Editing CI workflows, deploy scripts, branch protection, or other
+  shared infrastructure
+- Publishing artifacts, cutting releases, force-pushing to `main`
+- Disabling tests, lowering coverage gates, or `#[ignore]`ing a failing
+  test (the only acceptable reason to silence a test is to delete it
+  along with the code it covered)
+
+### Git worktrees (default for non-trivial work)
+
+All non-trivial work happens in a dedicated worktree so parallel tasks
+don't step on each other and `main` stays clean:
+
+- Single-file, single-commit fix: OK in the main checkout.
+- Anything multi-file, multi-commit, or that needs a build that might
+  take minutes: spin up a worktree.
+
+```bash
+git worktree add ~/p/tapfs-worktrees/<topic> -b <topic>
+cd ~/p/tapfs-worktrees/<topic>
+# work, commit, push, PR
+cd ~/p/tapfs && git worktree remove ~/p/tapfs-worktrees/<topic>
+```
+
+When delegating to sub-agents, pass `isolation: "worktree"` so they get
+their own copy and don't fight over the file tree.
+
+### Reference docs (part of "done")
+
+The maintenance rule above (mandatory `docs/architecture.md` updates for
+invariant-touching changes) extends to *all* reference docs under
+`docs/`:
+
+- **New CLI flag, config field, or spec field**: update `docs/architecture.md`
+  or add a topical doc under `docs/` linked from architecture.md.
+- **New use case visible to humans or agents**: add a row to (or a new
+  file in) `tests/use-cases/` — these are the contract for what tapfs
+  promises end users.
+- **Schema or wire-format change**: document the schema in the same
+  commit.
+
+Out-of-date docs are worse than absent — they actively mislead.
+
 ## Commit conventions
 
-- Use `Assisted-by: Claude:claude-opus-4-6` as the trailer (not `Co-Authored-By`)
+- Use `Assisted-by: Claude:claude-opus-4-7` as the trailer (not `Co-Authored-By`)
 - Never timestamp commit during Pacific Time work hours on weekdays. Always choose evenings.
 
 ## NFS transport (macOS)

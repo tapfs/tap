@@ -111,6 +111,22 @@ tap mount github jira       # mount several
 
 Set `TAPFS_NO_KEYCHAIN=1` to use a plaintext `~/.tapfs/credentials.yaml` instead — useful in CI or headless containers.
 
+### Declarative multi-connector config
+
+`tap mount <name>` appends to `~/.tapfs/service.yaml`. You can hand-edit it to add per-connector overrides:
+
+```yaml
+mount_point: /tmp/tap
+connectors:
+  - github
+  - name: jira
+    base_url: https://acme.atlassian.net
+  - name: linear
+    auth_token_env: LINEAR_CI_TOKEN
+```
+
+Running bare `tap mount` (no positional arg, no `--spec`) loads everything in `service.yaml`. Check it into a repo + `TAPFS_NO_KEYCHAIN=1` + `auth_token_env` overrides for a reproducible CI mount.
+
 ### Add your own
 
 ```yaml

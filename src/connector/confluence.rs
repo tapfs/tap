@@ -19,8 +19,24 @@ pub struct ConfluenceConnector {
 
 impl ConfluenceConnector {
     pub fn new(creds: &crate::credentials::CredentialStore) -> Result<Self> {
-        let auth = AtlassianAuth::load("confluence", creds)
-            .context("loading Atlassian auth for Confluence")?;
+        Self::new_with_overrides(creds, None, None)
+    }
+
+    /// Construct with declarative-config overrides for base_url and/or token,
+    /// applied on top of `creds`. Sourced from a `service.yaml` entry by the
+    /// factory.
+    pub fn new_with_overrides(
+        creds: &crate::credentials::CredentialStore,
+        base_url_override: Option<&str>,
+        token_override: Option<&str>,
+    ) -> Result<Self> {
+        let auth = AtlassianAuth::load_with_overrides(
+            "confluence",
+            creds,
+            base_url_override,
+            token_override,
+        )
+        .context("loading Atlassian auth for Confluence")?;
         tracing::info!(base_url = %auth.base_url, "Confluence connector initialized");
         Ok(Self {
             auth,

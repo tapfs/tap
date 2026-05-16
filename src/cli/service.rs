@@ -5,9 +5,59 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceConfig {
     #[serde(default)]
-    pub connectors: Vec<String>,
+    pub connectors: Vec<ConnectorEntry>,
     #[serde(default = "default_mount_point")]
     pub mount_point: PathBuf,
+}
+
+/// A connector entry in service.yaml.
+///
+/// Two YAML shapes are accepted (both parse into this enum via `untagged`):
+///
+/// ```yaml
+/// connectors:
+///   - github                            # bare-string form (auto-managed by `tap mount <name>`)
+///   - name: jira                        # detailed form (human-editable overrides)
+///     base_url: https://x.atlassian.net
+///     auth_token_env: JIRA_TOKEN
+/// ```
+///
+/// `add_connector(name)` always appends the bare-string form; the detailed
+/// form is only produced when a human edits service.yaml directly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ConnectorEntry {
+    Name(String),
+    Detailed {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base_url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth_token_env: Option<String>,
+    },
+}
+
+impl ConnectorEntry {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Name(s) => s,
+            Self::Detailed { name, .. } => name,
+        }
+    }
+
+    pub fn base_url(&self) -> Option<&str> {
+        match self {
+            Self::Name(_) => None,
+            Self::Detailed { base_url, .. } => base_url.as_deref(),
+        }
+    }
+
+    pub fn auth_token_env(&self) -> Option<&str> {
+        match self {
+            Self::Name(_) => None,
+            Self::Detailed { auth_token_env, .. } => auth_token_env.as_deref(),
+        }
+    }
 }
 
 fn default_mount_point() -> PathBuf {
@@ -45,17 +95,21 @@ impl ServiceConfig {
     }
 
     pub fn add_connector(&mut self, name: &str) -> bool {
-        if self.connectors.iter().any(|c| c == name) {
-            return false; // already present
+        if self.connectors.iter().any(|c| c.name() == name) {
+            return false; // already present — preserve existing entry (incl. overrides)
         }
-        self.connectors.push(name.to_string());
+        self.connectors.push(ConnectorEntry::Name(name.to_string()));
         true
     }
 
     pub fn remove_connector(&mut self, name: &str) -> bool {
         let len = self.connectors.len();
-        self.connectors.retain(|c| c != name);
+        self.connectors.retain(|c| c.name() != name);
         self.connectors.len() < len
+    }
+
+    pub fn get_connector(&self, name: &str) -> Option<&ConnectorEntry> {
+        self.connectors.iter().find(|c| c.name() == name)
     }
 }
 
@@ -329,4 +383,90 @@ pub fn logs() -> Result<()> {
         anyhow::bail!("tail failed");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_bare_string_form() {
+        let yaml = "connectors:\n  - github\n  - linear\n";
+        let cfg: ServiceConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.connectors.len(), 2);
+        assert_eq!(cfg.connectors[0].name(), "github");
+        assert_eq!(cfg.connectors[0].base_url(), None);
+    }
+
+    #[test]
+    fn parses_detailed_form_with_overrides() {
+        let yaml = r#"
+connectors:
+  - name: jira
+    base_url: https://acme.atlassian.net
+    auth_token_env: JIRA_TOKEN
+  - github
+"#;
+        let cfg: ServiceConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.connectors[0].name(), "jira");
+        assert_eq!(
+            cfg.connectors[0].base_url(),
+            Some("https://acme.atlassian.net")
+        );
+        assert_eq!(cfg.connectors[0].auth_token_env(), Some("JIRA_TOKEN"));
+        assert_eq!(cfg.connectors[1].name(), "github");
+        assert_eq!(cfg.connectors[1].base_url(), None);
+    }
+
+    #[test]
+    fn add_connector_preserves_existing_detailed_entry() {
+        let yaml = r#"
+connectors:
+  - name: jira
+    base_url: https://acme.atlassian.net
+"#;
+        let mut cfg: ServiceConfig = serde_yaml::from_str(yaml).unwrap();
+        let added = cfg.add_connector("jira");
+        assert!(!added, "duplicate add must be a no-op");
+        // Existing detailed entry must remain intact.
+        assert_eq!(
+            cfg.connectors[0].base_url(),
+            Some("https://acme.atlassian.net")
+        );
+    }
+
+    #[test]
+    fn round_trip_preserves_both_forms() {
+        let yaml = r#"
+connectors:
+  - github
+  - name: jira
+    base_url: https://acme.atlassian.net
+mount_point: /mnt/tap
+"#;
+        let cfg: ServiceConfig = serde_yaml::from_str(yaml).unwrap();
+        let serialized = serde_yaml::to_string(&cfg).unwrap();
+        let reparsed: ServiceConfig = serde_yaml::from_str(&serialized).unwrap();
+        assert_eq!(reparsed.connectors.len(), 2);
+        assert_eq!(reparsed.connectors[0].name(), "github");
+        assert_eq!(reparsed.connectors[1].name(), "jira");
+        assert_eq!(
+            reparsed.connectors[1].base_url(),
+            Some("https://acme.atlassian.net")
+        );
+    }
+
+    #[test]
+    fn remove_connector_works_on_detailed_entry() {
+        let yaml = r#"
+connectors:
+  - name: jira
+    base_url: https://acme.atlassian.net
+  - github
+"#;
+        let mut cfg: ServiceConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(cfg.remove_connector("jira"));
+        assert_eq!(cfg.connectors.len(), 1);
+        assert_eq!(cfg.connectors[0].name(), "github");
+    }
 }
