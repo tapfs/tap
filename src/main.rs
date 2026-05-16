@@ -189,6 +189,33 @@ enum Commands {
         #[command(subcommand)]
         action: ServiceAction,
     },
+
+    /// Search across mounted connectors via pluggable providers
+    Search {
+        /// Optional `connector` or `connector/collection`. Omit for a global
+        /// search across all indexed providers.
+        #[arg(short, long)]
+        target: Option<String>,
+
+        /// The query text.
+        query: String,
+
+        /// Max results to return.
+        #[arg(short = 'n', long, default_value = "20")]
+        limit: usize,
+
+        /// Emit JSON instead of pretty text.
+        #[arg(long)]
+        json: bool,
+
+        /// Per-provider deadline in seconds.
+        #[arg(long, default_value = "10")]
+        timeout: u64,
+
+        /// Data directory.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -349,6 +376,27 @@ async fn main() -> anyhow::Result<()> {
             }
             other => anyhow::bail!("unknown setup target '{}'. Supported: claude", other),
         },
+        Commands::Search {
+            target,
+            query,
+            limit,
+            json,
+            timeout,
+            data_dir,
+        } => {
+            let dir = data_dir.unwrap_or_else(default_data_dir);
+            cli::search::run(
+                cli::search::SearchArgs {
+                    target,
+                    query,
+                    limit,
+                    json,
+                    timeout_secs: timeout,
+                },
+                &dir,
+            )
+            .await
+        }
         Commands::Service { action } => match action {
             ServiceAction::Status => cli::service::status().await,
             ServiceAction::Logs => cli::service::logs(),

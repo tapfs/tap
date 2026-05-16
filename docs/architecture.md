@@ -69,12 +69,13 @@ Writes: NFS WRITE → VirtualFs::write (in-memory buffer) → on close/flush
 | `src/connector/factory.rs` | 151 | Decides which connector impl to construct from a name |
 | `src/connector/registry.rs` | 71 | Runtime map of name → `Arc<dyn Connector>` |
 | `src/connector/retry.rs` | — | Shared `execute(&RetryPolicy, Fn() -> RequestBuilder)` (PR10) |
+| `src/search/...` | — | Pluggable search-provider seam: scopes, provider registry, RRF fusion, audited upstream provider, and config factory |
 | `src/credentials.rs` | 528 | OS keychain (primary) + `~/.tapfs/credentials.yaml` index for non-secret metadata |
 | `src/draft/store.rs` | — | Per-resource on-disk drafts. The persistence backbone of writes. |
 | `src/cache/{store,disk}.rs` | — | L1 in-memory (60s TTL) + L2 on-disk. Read-only memo. |
 | `src/version/store.rs` | — | Optional per-resource version history for connectors that support it |
-| `src/governance/audit.rs` | — | Append-only audit log of every write/create/delete |
-| `src/cli/{mount,auth,...}.rs` | — | `tap` CLI — daemon mode, interactive auth, mount management |
+| `src/governance/audit.rs` | — | Append-only audit log of reads, writes, deletes, searches, and connector operations |
+| `src/cli/{mount,auth,search,...}.rs` | — | `tap` CLI — daemon mode, interactive auth, mount management, search |
 | `src/ipc.rs` | — | Unix socket so `tap mount X` can hot-add a connector to a running daemon |
 | `src/main.rs` | — | Binary entry point |
 
@@ -95,6 +96,7 @@ async fn create_resource(collection, content) -> Result<ResourceMeta>;
 async fn delete_resource(collection, id) -> Result<()>;
 async fn resource_versions(collection, id) -> Result<Vec<VersionInfo>>;
 async fn read_version(collection, id, version) -> Result<Resource>;
+async fn search_resources(collection, query) -> Result<Vec<ResourceMeta>>; // default: NotSupported
 ```
 
 `list_resources_with_shards` is the hook for the frontmatter shard cache
@@ -103,9 +105,37 @@ just pairs each `ResourceMeta` with `None`, so connectors that don't
 care behave exactly as before. `RestConnector` overrides it to project
 the spec's `populates` fields out of each list-response item.
 
+`search_resources` is the narrow upstream-search hook used by the built-in
+search provider. Connectors that have a native search API can override it;
+the default returns `ConnectorError::NotSupported`, which the search registry
+surfaces as a warning instead of failing the whole query.
+
 Errors are returned as `anyhow::Error`. The VFS layer downcasts to
 `ConnectorError` for typed mapping (NotFound, PermissionDenied,
 RateLimited{retry_after}, NetworkError, NotSupported).
+
+### Search providers (`src/search`)
+
+`tap search` is implemented outside the VFS as a pluggable fan-out layer.
+The CLI builds a `SearchRegistry` from `~/.tapfs/search.yaml`, or a default
+registry containing only the audited `upstream` provider when no config exists.
+
+Core types:
+
+| Type | Role |
+|---|---|
+| `SearchScope` | Query target: `Global`, `Connector`, `Collection`, or `Path` |
+| `SearchProvider` | Backend seam for local indexes, HTTP/vector services, process adapters, or upstream API search |
+| `ScopeSet` | Provider-declared scope kinds; the registry will not call a provider outside this set |
+| `SearchRegistry` | Filters eligible providers, applies per-connector `include_only`/`exclude`, runs queries in parallel under a deadline, and fuses results |
+| `rrf_fuse` | Reciprocal Rank Fusion over provider-ranked result lists, deduped by canonical `tap_path` |
+
+Provider failures and timeouts are non-fatal: they become warnings on
+`ProviderResult`. The configured `process` and `http` provider kinds are
+recognized but not wired yet; they register as warning-producing
+`NotSupported` providers so mixed configs keep working while those transports
+are developed. The built-in `upstream` provider only supports connector and
+collection scopes and delegates to `Connector::search_resources`.
 
 ### `NodeKind` (`src/vfs/types.rs`)
 
