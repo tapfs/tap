@@ -135,6 +135,16 @@ pub struct CollectionSpec {
     /// rather than a directory of individual resource files.
     /// Appending to the file creates a new resource (POST).
     pub aggregate: Option<bool>,
+    /// Fields the list endpoint populates per item. When set, the connector
+    /// projects these fields from each list-response item into a per-resource
+    /// "frontmatter shard" in the cache, so subsequent reads can answer
+    /// shallow queries (grep over frontmatter, `ls`) without firing the
+    /// detail endpoint. Field names use the same dot-path / `as` syntax as
+    /// `render.frontmatter`. Entries should terminate at scalar leaves —
+    /// pointing at an object (`"user"` rather than `"user.login"`) clones
+    /// the whole sub-tree into the shard. Omit to keep the conservative
+    /// "everything comes from detail" default.
+    pub populates: Option<Vec<String>>,
 }
 
 /// Controls how a JSON API response is rendered into a readable markdown file.
@@ -398,6 +408,52 @@ collections:
         let err =
             ConnectorSpec::from_yaml(yaml).expect_err("expected error from nested invalid body");
         assert!(format!("{:#}", err).contains("delete_body is not valid JSON"));
+    }
+
+    #[test]
+    fn populates_field_parses_from_yaml() {
+        let yaml = r#"
+name: test
+base_url: https://example.com
+collections:
+  - name: issues
+    list_endpoint: /issues
+    get_endpoint: /issues/{id}
+    populates:
+      - title
+      - state
+      - labels
+"#;
+        let spec = ConnectorSpec::from_yaml(yaml).expect("spec with populates should parse");
+        let coll = &spec.collections[0];
+        assert_eq!(
+            coll.populates.as_deref(),
+            Some(
+                &[
+                    "title".to_string(),
+                    "state".to_string(),
+                    "labels".to_string()
+                ][..]
+            ),
+            "populates should round-trip from YAML into Option<Vec<String>>",
+        );
+    }
+
+    #[test]
+    fn populates_field_defaults_to_none() {
+        let yaml = r#"
+name: test
+base_url: https://example.com
+collections:
+  - name: issues
+    list_endpoint: /issues
+    get_endpoint: /issues/{id}
+"#;
+        let spec = ConnectorSpec::from_yaml(yaml).expect("spec without populates should parse");
+        assert!(
+            spec.collections[0].populates.is_none(),
+            "populates should default to None when omitted",
+        );
     }
 
     #[test]

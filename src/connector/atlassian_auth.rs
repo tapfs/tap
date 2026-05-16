@@ -42,8 +42,25 @@ impl AtlassianAuth {
     /// "confluence"). Returns an error when no source has all three of
     /// (base_url, email, token).
     pub fn load(connector_name: &str, store: &CredentialStore) -> Result<Self> {
-        if let Ok(auth) = Self::from_env() {
-            return Ok(auth);
+        Self::load_with_overrides(connector_name, store, None, None)
+    }
+
+    /// Like `load`, but lets a caller substitute `base_url` and/or `token`
+    /// after the credentials store has resolved its defaults. Used by the
+    /// factory when `service.yaml` declares per-connector overrides for
+    /// native Atlassian connectors. Precedence: service.yaml overrides >
+    /// ATLASSIAN_* env vars > credentials store. The env-var fast path is
+    /// only consulted when neither override is supplied.
+    pub fn load_with_overrides(
+        connector_name: &str,
+        store: &CredentialStore,
+        base_url_override: Option<&str>,
+        token_override: Option<&str>,
+    ) -> Result<Self> {
+        if env_shortcircuit_allowed(base_url_override, token_override) {
+            if let Ok(auth) = Self::from_env() {
+                return Ok(auth);
+            }
         }
 
         let creds = store.get(connector_name).ok_or_else(|| {
@@ -55,18 +72,36 @@ impl AtlassianAuth {
             )
         })?;
 
-        Self::from_credentials(connector_name, creds)
+        Self::from_credentials_with_overrides(
+            connector_name,
+            creds,
+            base_url_override,
+            token_override,
+        )
     }
 
+    #[cfg(test)]
     fn from_credentials(connector_name: &str, creds: &ConnectorCredentials) -> Result<Self> {
-        let base_url = creds.base_url.as_deref().ok_or_else(|| {
-            anyhow!(
-                "no base_url stored for '{}' — re-run `tap mount {}` from a terminal to enter \
-                 your Atlassian domain",
-                connector_name,
-                connector_name
-            )
-        })?;
+        Self::from_credentials_with_overrides(connector_name, creds, None, None)
+    }
+
+    fn from_credentials_with_overrides(
+        connector_name: &str,
+        creds: &ConnectorCredentials,
+        base_url_override: Option<&str>,
+        token_override: Option<&str>,
+    ) -> Result<Self> {
+        let base_url = base_url_override
+            .map(str::to_string)
+            .or_else(|| creds.base_url.clone())
+            .ok_or_else(|| {
+                anyhow!(
+                    "no base_url stored for '{}' — re-run `tap mount {}` from a terminal to enter \
+                     your Atlassian domain",
+                    connector_name,
+                    connector_name
+                )
+            })?;
         let email = creds.email.as_deref().ok_or_else(|| {
             anyhow!(
                 "no email stored for '{}' — re-run `tap mount {}` from a terminal to set it",
@@ -74,20 +109,20 @@ impl AtlassianAuth {
                 connector_name
             )
         })?;
-        // The token lives in the keychain; if `creds.token` is None despite
-        // the connector having an entry in credentials.yaml, the keychain
-        // is the most likely culprit (locked, unavailable, denied permission).
-        let token = creds.token.as_deref().ok_or_else(|| {
-            anyhow!(
-                "no token available for '{}' — the OS keychain may be locked or unavailable. \
-                 Re-run `tap mount {}` from a terminal to re-authenticate, or set \
-                 TAPFS_NO_KEYCHAIN=1 to read the token from credentials.yaml",
-                connector_name,
-                connector_name
-            )
-        })?;
+        let token = token_override
+            .map(str::to_string)
+            .or_else(|| creds.token.clone())
+            .ok_or_else(|| {
+                anyhow!(
+                    "no token available for '{}' — the OS keychain may be locked or unavailable. \
+                     Re-run `tap mount {}` from a terminal to re-authenticate, or set \
+                     TAPFS_NO_KEYCHAIN=1 to read the token from credentials.yaml",
+                    connector_name,
+                    connector_name
+                )
+            })?;
 
-        Self::build(base_url, email, token)
+        Self::build(&base_url, email, &token)
     }
 
     fn build(base_url: &str, email: &str, token: &str) -> Result<Self> {
@@ -113,16 +148,33 @@ impl AtlassianAuth {
     /// set of Atlassian credentials for `connector_name`. Used by the connector
     /// factory to decide between proceeding and surfacing AuthRequired.
     pub fn credentials_present(connector_name: &str, store: &CredentialStore) -> bool {
-        let env_ok = std::env::var("ATLASSIAN_DOMAIN").is_ok()
-            && std::env::var("ATLASSIAN_EMAIL").is_ok()
-            && std::env::var("ATLASSIAN_API_TOKEN").is_ok();
-        if env_ok {
-            return true;
+        Self::credentials_present_with_overrides(connector_name, store, None, None)
+    }
+
+    /// Like `credentials_present`, but considers `base_url` and `token`
+    /// overrides supplied by a `service.yaml` entry. Without this an
+    /// `auth_token_env: JIRA_TOKEN` override is useless on a CI runner whose
+    /// keychain has no token — the precheck would reject the mount before
+    /// the override ever got a chance to apply.
+    pub fn credentials_present_with_overrides(
+        connector_name: &str,
+        store: &CredentialStore,
+        base_url_override: Option<&str>,
+        token_override: Option<&str>,
+    ) -> bool {
+        // Mirrors load_with_overrides precedence so the precheck can't
+        // approve a path load would reject. Env wins only when no override
+        // is in play; otherwise we must verify the creds-plus-overrides
+        // route is viable.
+        if env_shortcircuit_allowed(base_url_override, token_override) {
+            let env_ok = std::env::var("ATLASSIAN_DOMAIN").is_ok()
+                && std::env::var("ATLASSIAN_EMAIL").is_ok()
+                && std::env::var("ATLASSIAN_API_TOKEN").is_ok();
+            if env_ok {
+                return true;
+            }
         }
-        store
-            .get(connector_name)
-            .map(|c| c.base_url.is_some() && c.email.is_some() && c.token.is_some())
-            .unwrap_or(false)
+        creds_complete_with_overrides(store.get(connector_name), base_url_override, token_override)
     }
 
     /// Persist Atlassian credentials. Domain may be passed as just the
@@ -368,6 +420,31 @@ impl AtlassianAuth {
     }
 }
 
+/// Single source of truth for "is the ATLASSIAN_* env shortcut allowed
+/// right now?" — used by both `load_with_overrides` (to choose between
+/// from_env and creds) and `credentials_present_with_overrides` (so the
+/// precheck mirrors the load decision). Any service.yaml override means
+/// the env path is skipped.
+fn env_shortcircuit_allowed(base_url_override: Option<&str>, token_override: Option<&str>) -> bool {
+    base_url_override.is_none() && token_override.is_none()
+}
+
+/// Predicate behind `AtlassianAuth::credentials_present_with_overrides`,
+/// extracted so the override interaction can be unit-tested without spinning
+/// up a `CredentialStore`. Email is the one field overrides never supply —
+/// it always has to come from `creds`.
+fn creds_complete_with_overrides(
+    creds: Option<&ConnectorCredentials>,
+    base_url_override: Option<&str>,
+    token_override: Option<&str>,
+) -> bool {
+    let email_ok = creds.map(|c| c.email.is_some()).unwrap_or(false);
+    let base_url_ok =
+        base_url_override.is_some() || creds.map(|c| c.base_url.is_some()).unwrap_or(false);
+    let token_ok = token_override.is_some() || creds.map(|c| c.token.is_some()).unwrap_or(false);
+    email_ok && base_url_ok && token_ok
+}
+
 /// Normalize an Atlassian domain input (e.g. "mycompany",
 /// "https://mycompany.atlassian.net", "mycompany.atlassian.net") to a
 /// canonical "https://mycompany.atlassian.net" base URL.
@@ -591,6 +668,182 @@ mod tests {
             "unexpected error: {}",
             err_msg
         );
+    }
+
+    /// Save → set → run → restore for ATLASSIAN_* env vars. Process-global
+    /// state racing with parallel tests is the price; the window is small
+    /// because nothing else touches these vars during the test run.
+    fn with_atlassian_env<F: FnOnce()>(
+        domain: Option<&str>,
+        email: Option<&str>,
+        token: Option<&str>,
+        body: F,
+    ) {
+        let saved_d = std::env::var("ATLASSIAN_DOMAIN").ok();
+        let saved_e = std::env::var("ATLASSIAN_EMAIL").ok();
+        let saved_t = std::env::var("ATLASSIAN_API_TOKEN").ok();
+        let set = |name: &str, val: Option<&str>| match val {
+            Some(v) => std::env::set_var(name, v),
+            None => std::env::remove_var(name),
+        };
+        set("ATLASSIAN_DOMAIN", domain);
+        set("ATLASSIAN_EMAIL", email);
+        set("ATLASSIAN_API_TOKEN", token);
+        body();
+        // Restore even if body panics is overkill for this codebase's test
+        // style; tests don't panic in steady state.
+        set("ATLASSIAN_DOMAIN", saved_d.as_deref());
+        set("ATLASSIAN_EMAIL", saved_e.as_deref());
+        set("ATLASSIAN_API_TOKEN", saved_t.as_deref());
+    }
+
+    #[test]
+    fn precheck_does_not_short_circuit_env_when_override_present() {
+        // With complete ATLASSIAN_* env AND a service.yaml base_url override,
+        // load_with_overrides skips the env path and goes to creds. The
+        // precheck must do the same — otherwise it admits a mount path that
+        // load will later reject for missing creds.
+        let store = CredentialStore::default();
+        with_atlassian_env(Some("acme"), Some("dev@acme.com"), Some("env-tok"), || {
+            // Without overrides: env satisfies the precheck.
+            assert!(AtlassianAuth::credentials_present_with_overrides(
+                "jira", &store, None, None,
+            ));
+            // With a base_url override: env must NOT short-circuit; the
+            // store has no jira entry so the precheck must fail.
+            assert!(
+                !AtlassianAuth::credentials_present_with_overrides(
+                    "jira",
+                    &store,
+                    Some("https://other.example.com"),
+                    None,
+                ),
+                "precheck must skip the env shortcut when overrides are present",
+            );
+        });
+    }
+
+    #[test]
+    fn creds_complete_token_override_unblocks_missing_token() {
+        // Real-world CI scenario: a Jira entry in credentials.yaml has the
+        // email and base_url from a prior interactive `tap mount jira`, but
+        // the token isn't in this CI runner's keychain. A service.yaml
+        // `auth_token_env: JIRA_TOKEN` is supposed to make the mount succeed
+        // — so the override must short-circuit the precheck, not the other
+        // way around.
+        let creds = ConnectorCredentials {
+            base_url: Some("https://acme.atlassian.net".to_string()),
+            email: Some("dev@acme.com".to_string()),
+            token: None,
+            ..Default::default()
+        };
+        assert!(
+            !creds_complete_with_overrides(Some(&creds), None, None),
+            "baseline: missing token must fail when no override is supplied",
+        );
+        assert!(
+            creds_complete_with_overrides(Some(&creds), None, Some("ci-token")),
+            "token override must satisfy the precheck even when creds.token is None",
+        );
+    }
+
+    #[test]
+    fn creds_complete_base_url_override_unblocks_missing_base_url() {
+        let creds = ConnectorCredentials {
+            base_url: None,
+            email: Some("dev@acme.com".to_string()),
+            token: Some("api-tok".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            !creds_complete_with_overrides(Some(&creds), None, None),
+            "baseline: missing base_url must fail when no override is supplied",
+        );
+        assert!(
+            creds_complete_with_overrides(Some(&creds), Some("https://acme.example.com"), None),
+            "base_url override must satisfy the precheck even when creds.base_url is None",
+        );
+    }
+
+    #[test]
+    fn creds_complete_email_still_required_from_creds() {
+        // Email is the one field overrides don't supply — the precheck must
+        // still fail when it's missing, regardless of overrides.
+        let creds = ConnectorCredentials {
+            base_url: Some("https://acme.atlassian.net".to_string()),
+            email: None,
+            token: Some("api-tok".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            !creds_complete_with_overrides(
+                Some(&creds),
+                Some("https://override.example.com"),
+                Some("override-tok")
+            ),
+            "missing email must fail even with both overrides present",
+        );
+    }
+
+    #[test]
+    fn from_credentials_with_overrides_replaces_base_url() {
+        let creds = ConnectorCredentials {
+            base_url: Some("https://default.atlassian.net".to_string()),
+            email: Some("dev@acme.com".to_string()),
+            token: Some("api-tok".to_string()),
+            ..Default::default()
+        };
+        let auth = AtlassianAuth::from_credentials_with_overrides(
+            "jira",
+            &creds,
+            Some("https://acme-override.example.com"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            auth.base_url, "https://acme-override.example.com",
+            "overrides.base_url must win over creds.base_url",
+        );
+        // Token came from creds — auth header unchanged.
+        assert_eq!(
+            auth.auth_header,
+            format!("Basic {}", base64_encode(b"dev@acme.com:api-tok"))
+        );
+    }
+
+    #[test]
+    fn from_credentials_with_overrides_replaces_token() {
+        let creds = ConnectorCredentials {
+            base_url: Some("https://acme.atlassian.net".to_string()),
+            email: Some("dev@acme.com".to_string()),
+            token: Some("old-tok".to_string()),
+            ..Default::default()
+        };
+        let auth =
+            AtlassianAuth::from_credentials_with_overrides("jira", &creds, None, Some("new-tok"))
+                .unwrap();
+        assert_eq!(auth.base_url, "https://acme.atlassian.net");
+        assert_eq!(
+            auth.auth_header,
+            format!("Basic {}", base64_encode(b"dev@acme.com:new-tok")),
+            "token override must win over creds.token",
+        );
+    }
+
+    #[test]
+    fn from_credentials_with_overrides_falls_through_when_none() {
+        let creds = ConnectorCredentials {
+            base_url: Some("https://acme.atlassian.net".to_string()),
+            email: Some("dev@acme.com".to_string()),
+            token: Some("api-tok".to_string()),
+            ..Default::default()
+        };
+        let auth =
+            AtlassianAuth::from_credentials_with_overrides("jira", &creds, None, None).unwrap();
+        // Identical to from_credentials when no overrides given.
+        let baseline = AtlassianAuth::from_credentials("jira", &creds).unwrap();
+        assert_eq!(auth.base_url, baseline.base_url);
+        assert_eq!(auth.auth_header, baseline.auth_header);
     }
 
     #[test]

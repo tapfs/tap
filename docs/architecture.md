@@ -87,6 +87,8 @@ The minimum shape every backend implements:
 ```rust
 async fn list_collections() -> Result<Vec<CollectionInfo>>;
 async fn list_resources(collection: &str) -> Result<Vec<ResourceMeta>>;
+async fn list_resources_with_shards(collection)
+    -> Result<Vec<(ResourceMeta, Option<serde_json::Value>)>>;  // default: None shards
 async fn read_resource(collection: &str, id: &str) -> Result<Resource>;
 async fn write_resource(collection, id, content) -> Result<()>;
 async fn create_resource(collection, content) -> Result<ResourceMeta>;
@@ -94,6 +96,12 @@ async fn delete_resource(collection, id) -> Result<()>;
 async fn resource_versions(collection, id) -> Result<Vec<VersionInfo>>;
 async fn read_version(collection, id, version) -> Result<Resource>;
 ```
+
+`list_resources_with_shards` is the hook for the frontmatter shard cache
+(see [Frontmatter shards](#frontmatter-shards) below). The default impl
+just pairs each `ResourceMeta` with `None`, so connectors that don't
+care behave exactly as before. `RestConnector` overrides it to project
+the spec's `populates` fields out of each list-response item.
 
 Errors are returned as `anyhow::Error`. The VFS layer downcasts to
 `ConnectorError` for typed mapping (NotFound, PermissionDenied,
@@ -185,6 +193,53 @@ and sent as an HTTP header on POST so retried creates don't duplicate.
 - `RestConnector` has its own per-instance `Semaphore` (10 permits) for
   outbound HTTP. Held per-request (not per-attempt).
 
+### Frontmatter shards
+
+REST APIs typically return shallow objects on `/collection` (list) and
+the full object on `/collection/:id` (detail). An agent doing
+`grep priority: P0 issues/*/index.md` over 500 issues would, naively,
+fire 500 detail GETs — the N+1 problem. The shard cache exists to make
+those shallow scans free.
+
+**Spec field** (`CollectionSpec.populates`):
+
+```yaml
+collections:
+  - name: issues
+    list_endpoint: /repos/{owner}/{repo}/issues
+    get_endpoint:  /repos/{owner}/{repo}/issues/{id}
+    populates:                       # what the list endpoint already returns
+      - title
+      - state
+      - "user.login as author"       # same dot-path / alias syntax as render.frontmatter
+```
+
+**Flow:**
+
+1. `readdir` on a collection calls `get_resources_cached`
+   (`src/vfs/core.rs:1230`), which delegates to
+   `Connector::list_resources_with_shards`.
+2. `RestConnector` (`src/connector/rest.rs`) does one GET against
+   `list_endpoint`, then for each item projects the `populates` fields
+   into a `serde_json::Value` shard.
+3. `get_resources_cached` writes each shard into `Cache::shards`
+   (`src/cache/store.rs`) keyed by `format!("{connector}/{collection}/{id}")`.
+
+**Status:** the plumbing above lands the shards in cache. The read-path
+consumption — serving `index.md` from the shard when L1/L2 are cold and
+the shard is hot — is intentionally deferred to a follow-up. Doing so
+correctly requires deciding *how an agent reaches the body once the
+shard is hot* (separate `body.md` vs lazy-promotion vs explicit
+`tap fetch`); the design intent is to settle that in its own PR rather
+than fold it into this one.
+
+**Tradeoff to be aware of:** shards are sized by what the list endpoint
+returns, not by what fits in memory. A 1k-issue collection with rich
+list responses (GitHub returns ~3 KB per item) costs ~3 MB of in-memory
+cache. If this becomes a problem, gate shard storage by spec
+declaration (already implicit: no `populates` → no shard) or add a size
+cap analogous to `MAX_CACHEABLE_SIZE`.
+
 ### Credentials
 
 - Secrets (`token`, `refresh_token`, `client_secret`) → OS keychain
@@ -215,6 +270,7 @@ collections:
       frontmatter: [title, state, "html_url as url"]
       body: body
       sections: [{ name: comments, ... }]
+    populates: [title, state, "user.login as author"]  # cached from list response
     subcollections: [...]                          # nested collection tree
     parent_param: repo                             # URL placeholder name
     aggregate: true                                # single-file append-only view

@@ -8,7 +8,9 @@ use crate::cache::disk::DiskCache;
 use crate::cache::store::Cache;
 use crate::cli::service::ServiceConfig;
 use crate::config::TapConfig;
-use crate::connector::factory::{create_connector, AuthRequired};
+use crate::connector::factory::{
+    create_connector, create_connector_with_overrides, AuthRequired, ConnectorOverrides,
+};
 use crate::connector::registry::ConnectorRegistry;
 use crate::connector::rest::RestConnector;
 use crate::connector::spec::ConnectorSpec;
@@ -31,6 +33,17 @@ pub async fn run(config: TapConfig) -> Result<()> {
         let socket_path = config.socket_path();
         let data_dir = config.data_dir();
 
+        // "Declarative" invocation: `tap mount` with no positional connector
+        // and no --spec/--specs. The user expects the daemon to load whatever
+        // they declared in service.yaml. We must not auto-mount the literal
+        // "rest" stub in that case.
+        let declarative = config.connector_spec.is_none()
+            && config.connector_specs.is_none()
+            && config.connector_name == "rest";
+        let svc_has_entries = ServiceConfig::load(&data_dir)
+            .map(|s| !s.connectors.is_empty())
+            .unwrap_or(false);
+
         // Check if daemon is already running
         let daemon_running =
             crate::ipc::send_request(&socket_path, &serde_json::json!({"cmd": "status"}))
@@ -48,6 +61,20 @@ pub async fn run(config: TapConfig) -> Result<()> {
                 let _ = crate::cli::service::stop();
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 // Fall through to the install/start path below.
+            } else if declarative {
+                // Daemon is up and serving service.yaml; nothing to do.
+                let resp = crate::ipc::send_request(
+                    &socket_path,
+                    &serde_json::json!({"cmd": "list_connectors"}),
+                )
+                .await?;
+                if let Some(connectors) = resp.get("connectors").and_then(|v| v.as_array()) {
+                    let names: Vec<&str> = connectors.iter().filter_map(|v| v.as_str()).collect();
+                    println!("tapfs already running");
+                    println!("Mounted: {}", names.join(", "));
+                    println!("Mount point: {}", config.mount_point.display());
+                }
+                return Ok(());
             } else {
                 // Hot-add via IPC
                 let resp = crate::ipc::send_request(
@@ -64,24 +91,39 @@ pub async fn run(config: TapConfig) -> Result<()> {
             }
         }
 
-        // No daemon running — handle auth, update service.yaml, start service
-        // First check if auth is needed (try creating the connector to see)
-        let creds = crate::credentials::CredentialStore::load(&data_dir)?;
-        let audit_tmp = std::sync::Arc::new(
-            AuditLogger::new(config.audit_log_path()).context("creating audit logger")?,
-        );
-        if let Err(e) = create_connector(&config.connector_name, &audit_tmp, &creds) {
-            if let Some(auth_err) = e.downcast_ref::<crate::connector::factory::AuthRequired>() {
-                crate::cli::auth::handle_auth_required(auth_err, &data_dir).await?;
-            }
-            // Other errors (not auth) — will be caught again when daemon starts
+        // Bare `tap mount` with no positional connector AND no service.yaml
+        // entries — there's nothing to do. Print an actionable hint.
+        if declarative && !svc_has_entries {
+            anyhow::bail!(
+                "no connector specified and {} has no entries.\n\
+                 Try: `tap mount github` (or any built-in connector name),\n\
+                 or edit {} directly to declare connectors with per-connector overrides.",
+                ServiceConfig::path(&data_dir).display(),
+                ServiceConfig::path(&data_dir).display(),
+            );
         }
 
-        // Add connector to service.yaml
-        let mut svc_config = ServiceConfig::load(&data_dir)?;
-        svc_config.add_connector(&config.connector_name);
-        svc_config.mount_point = config.mount_point.clone();
-        svc_config.save(&data_dir)?;
+        // No daemon running — handle auth (single-connector path), update
+        // service.yaml, start service.
+        if !declarative {
+            let creds = crate::credentials::CredentialStore::load(&data_dir)?;
+            let audit_tmp = std::sync::Arc::new(
+                AuditLogger::new(config.audit_log_path()).context("creating audit logger")?,
+            );
+            if let Err(e) = create_connector(&config.connector_name, &audit_tmp, &creds) {
+                if let Some(auth_err) = e.downcast_ref::<crate::connector::factory::AuthRequired>()
+                {
+                    crate::cli::auth::handle_auth_required(auth_err, &data_dir).await?;
+                }
+                // Other errors (not auth) — will be caught again when daemon starts
+            }
+
+            // Add connector to service.yaml (declarative path leaves it alone)
+            let mut svc_config = ServiceConfig::load(&data_dir)?;
+            svc_config.add_connector(&config.connector_name);
+            svc_config.mount_point = config.mount_point.clone();
+            svc_config.save(&data_dir)?;
+        }
 
         // Install and start the service
         use crate::cli::service::{detect_service_manager, ServiceManager};
@@ -143,8 +185,13 @@ pub async fn run(config: TapConfig) -> Result<()> {
     if config.daemon {
         // Daemon mode: load connectors from service.yaml
         let svc_config = ServiceConfig::load(&config.data_dir())?;
-        for name in &svc_config.connectors {
-            match create_connector(name, &audit, &creds) {
+        for entry in &svc_config.connectors {
+            let name = entry.name();
+            let overrides = ConnectorOverrides {
+                base_url: entry.base_url(),
+                auth_token_env: entry.auth_token_env(),
+            };
+            match create_connector_with_overrides(name, &audit, &creds, &overrides) {
                 Ok((connector, spec)) => {
                     if let Some(s) = spec {
                         registry.register_with_spec(connector, s);

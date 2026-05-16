@@ -1233,11 +1233,24 @@ impl VirtualFs {
             return Ok(cached);
         }
         let conn = self.registry.get(connector).ok_or(VfsError::NotFound)?;
-        let resources = rt
-            .block_on(conn.list_resources(collection))
+        let metas_and_shards = rt
+            .block_on(conn.list_resources_with_shards(collection))
             .map_err(|e| VfsError::IoError(e.to_string()))?;
-        self.cache.put_metadata(&cache_key, resources.clone());
-        Ok(resources)
+
+        let mut metas = Vec::with_capacity(metas_and_shards.len());
+        for (meta, shard) in metas_and_shards {
+            if let Some(json) = shard {
+                let shard_key = Cache::shard_key(connector, collection, &meta.id);
+                // Skip the write when the projected JSON hasn't changed —
+                // re-listings on TTL expiry shouldn't bump shard mtimes.
+                if self.cache.get_shard(&shard_key).as_ref() != Some(&json) {
+                    self.cache.put_shard(&shard_key, json);
+                }
+            }
+            metas.push(meta);
+        }
+        self.cache.put_metadata(&cache_key, metas.clone());
+        Ok(metas)
     }
 
     pub(crate) fn get_collections_cached(
@@ -3431,6 +3444,7 @@ mod nested_collections {
             subcollections: None,
             group_by: None,
             aggregate: Some(true),
+            populates: None,
         };
         let issues = CollectionSpec {
             name: "issues".into(),
@@ -3461,6 +3475,7 @@ mod nested_collections {
             subcollections: Some(vec![comments]),
             group_by: None,
             aggregate: None,
+            populates: None,
         };
         let repos = CollectionSpec {
             name: "repos".into(),
@@ -3491,6 +3506,7 @@ mod nested_collections {
             subcollections: Some(vec![issues]),
             group_by: group_by.map(|s| s.into()),
             aggregate: None,
+            populates: None,
         };
         ConnectorSpec {
             spec_version: None,
@@ -3904,6 +3920,182 @@ mod nested_collections {
         assert!(
             !coll_md_bytes.contains(&0u8),
             "collection AGENTS.md must not contain NUL bytes"
+        );
+    }
+}
+
+#[cfg(test)]
+mod shard_hydration {
+    use super::*;
+    use crate::cache::disk::DiskCache;
+    use crate::connector::spec::{CollectionSpec, ConnectorSpec};
+    use crate::connector::traits::{
+        CollectionInfo, Connector, Resource as ConnResource, ResourceMeta, VersionInfo,
+    };
+    use crate::draft::store::DraftStore;
+    use crate::governance::audit::AuditLogger;
+    use crate::version::store::VersionStore;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    /// Mock connector that returns one resource and, via the shard override,
+    /// a pre-computed frontmatter shard for it. Detail reads bump a counter
+    /// so tests can assert no detail GET fired.
+    struct ShardConnector {
+        detail_reads: AtomicUsize,
+    }
+
+    impl ShardConnector {
+        fn new() -> Self {
+            Self {
+                detail_reads: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Connector for ShardConnector {
+        fn name(&self) -> &str {
+            "mock"
+        }
+        async fn list_collections(&self) -> anyhow::Result<Vec<CollectionInfo>> {
+            Ok(vec![CollectionInfo {
+                name: "issues".into(),
+                description: None,
+            }])
+        }
+        async fn list_resources(&self, _: &str) -> anyhow::Result<Vec<ResourceMeta>> {
+            Ok(vec![ResourceMeta {
+                id: "alpha".into(),
+                slug: "alpha".into(),
+                title: Some("Alpha issue".into()),
+                updated_at: Some("2026-05-01T00:00:00Z".into()),
+                content_type: None,
+                group: None,
+            }])
+        }
+        async fn list_resources_with_shards(
+            &self,
+            _: &str,
+        ) -> anyhow::Result<Vec<(ResourceMeta, Option<serde_json::Value>)>> {
+            Ok(vec![(
+                ResourceMeta {
+                    id: "alpha".into(),
+                    slug: "alpha".into(),
+                    title: Some("Alpha issue".into()),
+                    updated_at: Some("2026-05-01T00:00:00Z".into()),
+                    content_type: None,
+                    group: None,
+                },
+                Some(serde_json::json!({
+                    "title": "Alpha issue",
+                    "state": "open",
+                })),
+            )])
+        }
+        async fn read_resource(&self, _: &str, _: &str) -> anyhow::Result<ConnResource> {
+            self.detail_reads.fetch_add(1, Ordering::SeqCst);
+            Err(anyhow::anyhow!("test must not trigger detail GET"))
+        }
+        async fn write_resource(&self, _: &str, _: &str, _: &[u8]) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn resource_versions(&self, _: &str, _: &str) -> anyhow::Result<Vec<VersionInfo>> {
+            Ok(vec![])
+        }
+        async fn read_version(&self, _: &str, _: &str, _: u32) -> anyhow::Result<ConnResource> {
+            unimplemented!()
+        }
+    }
+
+    fn spec_with_populates() -> ConnectorSpec {
+        let issues = CollectionSpec {
+            name: "issues".into(),
+            description: None,
+            slug_hint: None,
+            operations: None,
+            list_endpoint: "/issues".into(),
+            get_endpoint: "/issues/{id}".into(),
+            update_endpoint: None,
+            create_endpoint: None,
+            delete_endpoint: None,
+            delete_body: None,
+            idempotency_key_header: None,
+            id_field: None,
+            slug_field: None,
+            title_field: Some("title".into()),
+            list_root: None,
+            render: None,
+            compose: None,
+            operations_spec: None,
+            relationships: None,
+            parent_param: None,
+            subcollections: None,
+            group_by: None,
+            aggregate: None,
+            populates: Some(vec!["title".into(), "state".into()]),
+        };
+        ConnectorSpec {
+            spec_version: None,
+            version: None,
+            description: None,
+            name: "mock".into(),
+            base_url: "http://test".into(),
+            auth: None,
+            transport: None,
+            capabilities: None,
+            agent: None,
+            collections: vec![issues],
+        }
+    }
+
+    fn build_vfs(dir: &std::path::Path, conn: Arc<dyn Connector>) -> Arc<VirtualFs> {
+        let registry = ConnectorRegistry::new();
+        registry.register_with_spec(conn, spec_with_populates());
+        let registry = Arc::new(registry);
+        let cache = Arc::new(Cache::new(Duration::from_secs(60)));
+        let drafts = Arc::new(DraftStore::new(dir.join("drafts")).unwrap());
+        let versions = Arc::new(VersionStore::new(dir.join("versions")).unwrap());
+        let audit = Arc::new(AuditLogger::new(dir.join("audit.log")).unwrap());
+        let disk = Arc::new(DiskCache::new(dir.join("cache")).unwrap());
+        Arc::new(VirtualFs::new(registry, cache, drafts, versions, audit).with_disk_cache(disk))
+    }
+
+    fn make_rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// After a `readdir` on a collection whose spec declares `populates`,
+    /// the cache must hold a frontmatter shard for each resource. This is
+    /// the foundation that lets future read paths answer shallow queries
+    /// without firing the detail GET.
+    #[test]
+    fn readdir_populates_shard_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rt = make_rt();
+        let conn = Arc::new(ShardConnector::new());
+        let vfs = build_vfs(tmp.path(), conn.clone() as Arc<dyn Connector>);
+        let handle = rt.handle().clone();
+
+        let conn_id = vfs.lookup(&handle, 1, "mock").unwrap().id;
+        let issues_id = vfs.lookup(&handle, conn_id, "issues").unwrap().id;
+        let _entries = vfs.readdir(&handle, issues_id).unwrap();
+
+        let shard_key = Cache::shard_key("mock", "issues", "alpha");
+        let shard = vfs
+            .cache
+            .get_shard(&shard_key)
+            .expect("shard must be populated after readdir");
+        assert_eq!(shard["title"], "Alpha issue");
+        assert_eq!(shard["state"], "open");
+
+        assert_eq!(
+            conn.detail_reads.load(Ordering::SeqCst),
+            0,
+            "readdir must not trigger any detail GETs",
         );
     }
 }

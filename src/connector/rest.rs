@@ -879,6 +879,58 @@ impl Connector for RestConnector {
         Ok(metas)
     }
 
+    async fn list_resources_with_shards(
+        &self,
+        collection: &str,
+    ) -> Result<Vec<(ResourceMeta, Option<serde_json::Value>)>> {
+        let coll = self.find_collection(collection)?;
+
+        let Some(populates) = coll.populates.as_deref() else {
+            let metas = self.list_resources(collection).await?;
+            return Ok(metas.into_iter().map(|m| (m, None)).collect());
+        };
+
+        // Parse the field exprs once; reused for every item.
+        let parsed: Vec<(&str, &str)> = populates.iter().map(|e| parse_field_alias(e)).collect();
+
+        let url = self.url(&coll.list_endpoint);
+        let response = self.send_with_retry(|| self.client.get(&url)).await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "list_resources_with_shards failed: HTTP {} — {}",
+                status,
+                truncate_error_body(&body)
+            ));
+        }
+
+        let json: Value = response
+            .json()
+            .await
+            .context("failed to parse list response as JSON")?;
+        let items = Self::extract_list(&json, coll.list_root.as_deref())?;
+        let mut out = Vec::with_capacity(items.len());
+
+        for item in items {
+            let meta = Self::extract_meta(item, &coll);
+            if meta.slug != meta.id {
+                let key = format!("{}/{}", collection, meta.slug);
+                self.slug_to_id.insert(key, meta.id.clone());
+            }
+
+            let mut shard = serde_json::Map::new();
+            for &(path, alias) in &parsed {
+                if let Some(val) = extract_dotpath(item, path) {
+                    shard.insert(alias.to_string(), val.clone());
+                }
+            }
+            out.push((meta, Some(Value::Object(shard))));
+        }
+
+        Ok(out)
+    }
+
     async fn list_resources_with_content(
         &self,
         collection: &str,
@@ -1180,6 +1232,7 @@ mod tests {
             subcollections: None,
             group_by: None,
             aggregate: None,
+            populates: None,
         }
     }
 
@@ -1787,5 +1840,89 @@ mod tests {
         let output = String::from_utf8(bytes).unwrap();
         assert!(output.contains("## Labels"));
         assert!(output.contains("None."));
+    }
+
+    // ---------------------------------------------------------------
+    // list_resources_with_shards: spec-driven field projection
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn list_with_shards_projects_populates_fields() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let body = r#"[
+            {"id":"1","title":"first","state":"open","extra":"ignore-me","user":{"login":"alice"}},
+            {"id":"2","title":"second","state":"closed","extra":"ignore-me","user":{"login":"bob"}}
+        ]"#;
+        Mock::given(method("GET"))
+            .and(path("/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut coll = minimal_collection("items");
+        coll.populates = Some(vec![
+            "title".to_string(),
+            "state".to_string(),
+            "user.login as author".to_string(),
+        ]);
+        let conn = build_connector(&server.uri(), vec![coll]);
+
+        let out = conn
+            .list_resources_with_shards("items")
+            .await
+            .expect("list_resources_with_shards should succeed");
+
+        assert_eq!(out.len(), 2);
+
+        // First item: shard contains only populates fields, with the alias applied.
+        let (meta1, shard1) = &out[0];
+        assert_eq!(meta1.id, "1");
+        let shard1 = shard1
+            .as_ref()
+            .expect("shard must be present when populates is set");
+        assert_eq!(shard1["title"], "first");
+        assert_eq!(shard1["state"], "open");
+        assert_eq!(shard1["author"], "alice");
+        assert!(
+            shard1.get("extra").is_none(),
+            "non-populates fields must be excluded from the shard"
+        );
+
+        // Second item: same projection.
+        let (_meta2, shard2) = &out[1];
+        let shard2 = shard2.as_ref().unwrap();
+        assert_eq!(shard2["state"], "closed");
+        assert_eq!(shard2["author"], "bob");
+
+        drop(server);
+    }
+
+    #[tokio::test]
+    async fn list_with_shards_returns_none_when_populates_unset() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"[{"id":"1","title":"x"}]"#))
+            .mount(&server)
+            .await;
+
+        let coll = minimal_collection("items");
+        let conn = build_connector(&server.uri(), vec![coll]);
+
+        let out = conn.list_resources_with_shards("items").await.unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(
+            out[0].1.is_none(),
+            "shard must be None when spec does not declare populates"
+        );
+
+        drop(server);
     }
 }
