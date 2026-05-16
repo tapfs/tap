@@ -101,7 +101,7 @@ cmd_start() {
 
     # Wait for mount to be ready
     for i in $(seq 1 20); do
-        if [[ -f "${MOUNT_POINT}/agent.md" ]]; then
+        if [[ -f "${MOUNT_POINT}/AGENTS.md" ]]; then
             echo "tapfs mount ready"
             return 0
         fi
