@@ -37,7 +37,18 @@ pub struct ConnectorCredentials {
     pub base_url: Option<String>,
     pub refresh_token: Option<String>,
     pub client_id: Option<String>,
+    /// Omitted from yaml output when None so PKCE entries don't carry a stray
+    /// `client_secret: null` that would confuse anyone reading the file
+    /// (PKCE is the no-secret flow by design).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_secret: Option<String>,
+    /// Unix epoch seconds when the access token expires. Persisted so that a
+    /// daemon restart after the token's lifetime hits ensure_token's refresh
+    /// path instead of a 401 on the first API call. Optional — providers that
+    /// issue long-lived or non-expiring tokens (some legacy bearer flows)
+    /// simply omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
 }
 
 /// Wrapper that lets `Debug` print presence-or-absence of a secret without
@@ -62,6 +73,7 @@ impl fmt::Debug for ConnectorCredentials {
             .field("refresh_token", &Redacted(&self.refresh_token))
             .field("client_id", &self.client_id)
             .field("client_secret", &Redacted(&self.client_secret))
+            .field("expires_at", &self.expires_at)
             .finish()
     }
 }
@@ -456,6 +468,83 @@ impl CredentialStore {
         write_yaml_index(data_dir, &entries)?;
         Ok(())
     }
+
+    /// Save OAuth 2.0 PKCE credentials (public client — no client_secret) with
+    /// an explicit `expires_at` so `RestConnector::ensure_token` can detect a
+    /// stale token after a daemon restart and refresh proactively.
+    ///
+    /// Mirrors `save_oauth2` but omits client_secret and records the access
+    /// token's absolute expiry. Storage layout is identical (secrets to
+    /// keychain, metadata to yaml); `expires_at` is not a secret so it lives
+    /// in yaml alongside `client_id`.
+    pub fn save_oauth2_pkce(
+        data_dir: &Path,
+        connector_name: &str,
+        token: &str,
+        refresh_token: &str,
+        client_id: &str,
+        expires_at: Option<i64>,
+    ) -> Result<()> {
+        Self::save_oauth2_pkce_with_keychain(
+            data_dir,
+            connector_name,
+            token,
+            refresh_token,
+            client_id,
+            expires_at,
+            !keychain_disabled(),
+        )
+    }
+
+    pub fn save_oauth2_pkce_with_keychain(
+        data_dir: &Path,
+        connector_name: &str,
+        token: &str,
+        refresh_token: &str,
+        client_id: &str,
+        expires_at: Option<i64>,
+        use_keychain: bool,
+    ) -> Result<()> {
+        let mut entries = read_yaml_index(data_dir)?;
+        let entry = entries.entry(connector_name.to_string()).or_default();
+        entry.client_id = Some(client_id.to_string());
+        entry.expires_at = expires_at;
+        // Explicit None — guard against a stale client_secret from a previous
+        // (confidential-flow) auth on the same connector name leaking into a
+        // PKCE refresh.
+        entry.client_secret = None;
+
+        let mut wrote_to_keychain = false;
+        if use_keychain {
+            let secret = KeychainSecret {
+                token: Some(token.to_string()),
+                refresh_token: Some(refresh_token.to_string()),
+                client_secret: None,
+            };
+            match keychain_set(connector_name, &secret) {
+                Ok(()) => {
+                    wrote_to_keychain = true;
+                    entry.token = None;
+                    entry.refresh_token = None;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        connector = %connector_name,
+                        error = %e,
+                        "keychain save failed; falling back to credentials.yaml"
+                    );
+                }
+            }
+        }
+
+        if !wrote_to_keychain {
+            entry.token = Some(token.to_string());
+            entry.refresh_token = Some(refresh_token.to_string());
+        }
+
+        write_yaml_index(data_dir, &entries)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -524,6 +613,62 @@ mod tests {
 
         let store = CredentialStore::load_with_keychain(dir.path(), true).unwrap();
         assert_eq!(store.token(&name).as_deref(), Some("ghp_secret"));
+    }
+
+    #[test]
+    fn save_oauth2_pkce_records_expires_at_and_no_client_secret() {
+        // Critical PKCE invariants:
+        //   - expires_at lands in the YAML index (so daemon restart sees it)
+        //   - client_secret is None everywhere (yaml entry AND keychain blob)
+        //   - access_token and refresh_token go to keychain when enabled
+        install_mock_keychain();
+        let dir = tempfile::tempdir().unwrap();
+        let name = unique_name("oauth-pkce");
+        let expires_at = chrono::Utc::now().timestamp() + 7200;
+
+        CredentialStore::save_oauth2_pkce_with_keychain(
+            dir.path(),
+            &name,
+            "access-tok-pkce",
+            "refresh-tok-pkce",
+            "pkce-client-id",
+            Some(expires_at),
+            true,
+        )
+        .unwrap();
+
+        let yaml = std::fs::read_to_string(dir.path().join("credentials.yaml")).unwrap();
+        assert!(
+            yaml.contains("pkce-client-id"),
+            "client_id should land in yaml: {}",
+            yaml
+        );
+        assert!(
+            yaml.contains(&expires_at.to_string()),
+            "expires_at should land in yaml: {}",
+            yaml
+        );
+        assert!(
+            !yaml.contains("access-tok-pkce"),
+            "access token must NOT be in yaml when keychain succeeded: {}",
+            yaml
+        );
+        assert!(
+            !yaml.contains("client_secret"),
+            "PKCE must never write a client_secret key: {}",
+            yaml
+        );
+
+        let store = CredentialStore::load_with_keychain(dir.path(), true).unwrap();
+        let creds = store.get(&name).expect("entry");
+        assert_eq!(creds.token.as_deref(), Some("access-tok-pkce"));
+        assert_eq!(creds.refresh_token.as_deref(), Some("refresh-tok-pkce"));
+        assert_eq!(creds.client_id.as_deref(), Some("pkce-client-id"));
+        assert_eq!(creds.expires_at, Some(expires_at));
+        assert!(
+            creds.client_secret.is_none(),
+            "PKCE creds must round-trip with client_secret == None"
+        );
     }
 
     #[test]
@@ -614,6 +759,7 @@ mod tests {
             email: Some("user@example.com".to_string()),
             base_url: Some("https://api.example.com".to_string()),
             client_id: Some("public-client-id".to_string()),
+            expires_at: None,
         };
         let dbg = format!("{:?}", creds);
         assert!(
