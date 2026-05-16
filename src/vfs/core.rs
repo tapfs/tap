@@ -3445,6 +3445,7 @@ mod nested_collections {
             group_by: None,
             aggregate: Some(true),
             populates: None,
+            default_query: None,
         };
         let issues = CollectionSpec {
             name: "issues".into(),
@@ -3467,6 +3468,7 @@ mod nested_collections {
                 body: Some("body".into()),
                 sections: None,
                 exclude: None,
+            resolve_includes: None,
             }),
             compose: None,
             operations_spec: None,
@@ -3476,6 +3478,7 @@ mod nested_collections {
             group_by: None,
             aggregate: None,
             populates: None,
+            default_query: None,
         };
         let repos = CollectionSpec {
             name: "repos".into(),
@@ -3498,6 +3501,7 @@ mod nested_collections {
                 body: None,
                 sections: None,
                 exclude: None,
+            resolve_includes: None,
             }),
             compose: None,
             operations_spec: None,
@@ -3507,6 +3511,7 @@ mod nested_collections {
             group_by: group_by.map(|s| s.into()),
             aggregate: None,
             populates: None,
+            default_query: None,
         };
         ConnectorSpec {
             spec_version: None,
@@ -4034,6 +4039,7 @@ mod shard_hydration {
             group_by: None,
             aggregate: None,
             populates: Some(vec!["title".into(), "state".into()]),
+            default_query: None,
         };
         ConnectorSpec {
             spec_version: None,

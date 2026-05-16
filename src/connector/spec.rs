@@ -145,13 +145,21 @@ pub struct CollectionSpec {
     /// the whole sub-tree into the shard. Omit to keep the conservative
     /// "everything comes from detail" default.
     pub populates: Option<Vec<String>>,
+    /// Query parameters appended to every list/get/update request for this
+    /// collection. Necessary for APIs that require per-request opt-in to a
+    /// richer payload (e.g. X v2's `expansions=...&tweet.fields=...`).
+    /// Values are URL-encoded; keys are passed through verbatim so dotted
+    /// names like `tweet.fields` work without escaping.
+    pub default_query: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// Controls how a JSON API response is rendered into a readable markdown file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenderSpec {
     /// Fields to include in YAML frontmatter. Supports dot-paths ("user.login")
-    /// and renaming ("user.login as author").
+    /// and renaming ("user.login as author"). When `resolve_includes` is true,
+    /// also supports the join syntax `"<id_field> via <includes.array>.<output_field> as <alias>"`
+    /// — e.g. `"author_id via includes.users.username as author"`.
     pub frontmatter: Option<Vec<String>>,
     /// JSON field whose value becomes the markdown body.
     pub body: Option<String>,
@@ -159,6 +167,12 @@ pub struct RenderSpec {
     pub sections: Option<Vec<SectionSpec>>,
     /// Field patterns to exclude from output (exact names or ".*_url" regex).
     pub exclude: Option<Vec<String>>,
+    /// When true, the renderer treats the API response as a v2-style envelope:
+    /// the primary resource lives at `data` (unwrapped before extraction), and
+    /// related objects live at `includes.<collection>` (an array). Frontmatter
+    /// entries can join into `includes` via `"<id_field> via includes.<array>.<output_field> as <alias>"`.
+    /// Designed for X v2; usable by any API with the same envelope shape.
+    pub resolve_includes: Option<bool>,
 }
 
 /// A named section rendered from a JSON field.
