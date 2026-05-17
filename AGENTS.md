@@ -44,6 +44,38 @@ If the behavior is genuinely untestable from Rust (NFS kernel protocol
 edge cases, FUSE mount-time errors), say so explicitly in the commit
 message and explain how it was verified manually — never silently skip.
 
+### Pre-push checklist (mandatory)
+
+Before every `git push`, run **all three** gates locally:
+
+```bash
+cargo fmt --check
+cargo clippy --no-default-features --features nfs --all-targets -- -D warnings
+cargo test    --no-default-features --features nfs
+```
+
+CI runs the same three. **A green test suite alone is not sufficient** —
+the Format step and the clippy gate (with `-D warnings`) each fail PRs
+independently. If any of the three fail, fix and re-run before pushing.
+
+The commands are fast: after the first build, `fmt --check` is sub-second
+and `clippy` is a few seconds. There is no scope of change small enough
+to justify skipping them.
+
+Common clippy lints worth recognizing on sight:
+
+- `clippy::new_without_default` — any `pub fn new() -> Self` needs an
+  `impl Default` alongside it.
+- `clippy::bind_instead_of_map` — `.and_then(|x| Some(y))` must be
+  `.map(|x| y)`, and the closure body should drop the `Some(...)`
+  wrapping.
+- `clippy::unnecessary_cast` / `clippy::useless_conversion` — see the
+  cross-platform libc mode bits section below for the `as u32` pattern.
+
+If clippy flags something that is a genuine false positive, an
+`#[allow(clippy::<name>)]` annotation with a one-line comment explaining
+why is acceptable — but assume the lint is right until proven otherwise.
+
 ### Guardrails (require explicit human approval before proceeding)
 
 Stop and ask before doing any of these. A previous approval for the same
