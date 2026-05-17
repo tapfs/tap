@@ -169,6 +169,162 @@ pub async fn oauth2_browser_flow(
     Ok(())
 }
 
+/// Run OAuth 2.0 Authorization Code + PKCE for public clients (e.g. X v2).
+///
+/// Mirrors `oauth2_browser_flow` but sends `code_challenge` to the
+/// authorize endpoint and `code_verifier` (not `client_secret`) to the
+/// token endpoint. Stores `{access_token, refresh_token, client_id}` in
+/// the existing credential store — the daemon's `OAuth2Config` builds with
+/// `client_secret: None` and `RestConnector::ensure_token` handles the
+/// refresh without a secret.
+pub async fn oauth2_pkce_browser_flow(
+    connector_name: &str,
+    auth: &crate::connector::spec::AuthSpec,
+    data_dir: &std::path::Path,
+) -> Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    use crate::cli::pkce::{
+        build_authorize_url, build_token_exchange_form, parse_callback, AuthorizeParams,
+        CallbackPayload, PkcePair, TokenResponse,
+    };
+
+    let auth_url = auth
+        .auth_url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("OAuth2 PKCE: auth_url not specified in connector spec"))?;
+    let token_url = auth
+        .token_url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("OAuth2 PKCE: token_url not specified in connector spec"))?;
+    let client_id = auth
+        .client_id
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("OAuth2 PKCE: client_id not specified in connector spec"))?;
+    let scopes = auth.scopes.as_deref().unwrap_or("");
+
+    // Bind localhost listener, pick a free port. X requires the exact
+    // redirect_uri to be registered in the developer portal — using
+    // 127.0.0.1 with an ephemeral port works when the developer registered
+    // `http://127.0.0.1/callback` (X's docs explicitly accept loopback +
+    // any port for desktop clients).
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    let redirect_uri = format!("http://127.0.0.1:{}/callback", port);
+
+    let pkce = PkcePair::new();
+    // State is a CSRF nonce, not a secret — but it must be unguessable so an
+    // attacker can't trick the listener into accepting their callback. We
+    // reuse the verifier-generation entropy by simply minting another pair
+    // and using its (discarded) challenge as the state value.
+    let state = PkcePair::new().challenge;
+
+    let authorization_url = build_authorize_url(&AuthorizeParams {
+        authorize_url: auth_url,
+        client_id,
+        redirect_uri: &redirect_uri,
+        scopes,
+        challenge: &pkce.challenge,
+        state: &state,
+    });
+
+    println!();
+    println!("{} requires OAuth 2.0 PKCE authentication.", connector_name);
+    println!("Opening browser for sign-in...");
+    println!();
+    let _ = open_browser(&authorization_url);
+    println!("Waiting for authorization on {} ...", redirect_uri);
+    println!("If the browser didn't open, visit:");
+    println!("  {}", authorization_url);
+    println!();
+
+    let (mut stream, _) = listener.accept().await?;
+    let mut buf = vec![0u8; 8192];
+    let n = stream.read(&mut buf).await?;
+    let request = String::from_utf8_lossy(&buf[..n]);
+
+    let payload = parse_callback(&request)?;
+    // Acknowledge the browser regardless of outcome so it shows something
+    // useful to the user. Then evaluate.
+    let body = match &payload {
+        CallbackPayload::Success { .. } => {
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n\
+             <html><body><h2>Authentication successful!</h2>\
+             <p>You can close this window and return to the terminal.</p></body></html>"
+        }
+        CallbackPayload::Error { .. } => {
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n\
+             <html><body><h2>Authentication failed</h2>\
+             <p>See the terminal for details. You can close this window.</p></body></html>"
+        }
+    };
+    stream.write_all(body.as_bytes()).await?;
+    drop(stream);
+    drop(listener);
+
+    let code = match payload {
+        CallbackPayload::Success {
+            code,
+            state: returned_state,
+        } => {
+            if returned_state.as_deref() != Some(state.as_str()) {
+                anyhow::bail!(
+                    "OAuth callback state mismatch — refusing to exchange code (possible CSRF)"
+                );
+            }
+            code
+        }
+        CallbackPayload::Error {
+            error,
+            error_description,
+            ..
+        } => {
+            let desc = error_description.unwrap_or_default();
+            anyhow::bail!("OAuth authorization denied: {} {}", error, desc);
+        }
+    };
+
+    println!("Authorization code received. Exchanging for tokens...");
+
+    let client = reqwest::Client::new();
+    let form = build_token_exchange_form(&code, &pkce.verifier, client_id, &redirect_uri);
+    let resp = client
+        .post(token_url)
+        .form(&form)
+        .send()
+        .await?
+        .error_for_status()
+        .context("token exchange failed")?;
+    let token_json: serde_json::Value = resp.json().await?;
+    let token_resp = TokenResponse::from_json(&token_json)?;
+    let refresh_token = token_resp.refresh_token.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "token response has no refresh_token — request the `offline.access` scope so the daemon can refresh after the access token expires"
+        )
+    })?;
+
+    // Compute absolute expiry. Apply the same 80% safety margin
+    // `RestConnector::ensure_token` uses so the in-memory and on-disk
+    // expiry stay consistent across daemon restarts.
+    let expires_at = token_resp.expires_in.map(|secs| {
+        let margined = (secs * 4 / 5).max(60);
+        chrono::Utc::now().timestamp() + margined as i64
+    });
+
+    CredentialStore::save_oauth2_pkce(
+        data_dir,
+        connector_name,
+        &token_resp.access_token,
+        refresh_token,
+        client_id,
+        expires_at,
+    )?;
+
+    println!("{}", saved_message());
+    Ok(())
+}
+
 /// Run OAuth2 Device Flow for connectors that support it (e.g. GitHub).
 /// User visits a URL and enters a code — no local server needed.
 pub async fn oauth2_device_flow(
@@ -289,6 +445,10 @@ pub async fn handle_auth_required(
         .unwrap_or(default_auth);
 
     let has_device_flow = auth.device_code_url.is_some() && auth.client_id.is_some();
+    let pkce_ready = auth.auth_type == "oauth2_pkce"
+        && auth.auth_url.is_some()
+        && auth.token_url.is_some()
+        && auth.client_id.is_some();
     let oauth2_ready = auth.auth_type == "oauth2"
         && auth.auth_url.is_some()
         && auth.token_url.is_some()
@@ -296,6 +456,8 @@ pub async fn handle_auth_required(
 
     if has_device_flow {
         oauth2_device_flow(&auth_err.connector_name, &auth, data_dir).await
+    } else if pkce_ready {
+        oauth2_pkce_browser_flow(&auth_err.connector_name, &auth, data_dir).await
     } else if oauth2_ready {
         oauth2_browser_flow(&auth_err.connector_name, &auth, data_dir).await
     } else {

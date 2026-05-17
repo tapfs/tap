@@ -274,12 +274,43 @@ cap analogous to `MAX_CACHEABLE_SIZE`.
 
 - Secrets (`token`, `refresh_token`, `client_secret`) → OS keychain
   (`KEYCHAIN_SERVICE = "tapfs"`, user = connector name).
-- Non-secrets (`email`, `base_url`, `client_id`) → `~/.tapfs/credentials.yaml`
-  (mode 0600, atomic write via tempfile + rename).
+- Non-secrets (`email`, `base_url`, `client_id`, `expires_at`) →
+  `~/.tapfs/credentials.yaml` (mode 0600, atomic write via tempfile + rename).
 - `TAPFS_NO_KEYCHAIN=1` puts secrets back in YAML for headless / CI.
 - `TAPFS_STRICT_PERMS=1` makes loose-perms credentials.yaml a hard error.
 - `Debug` impl on `ConnectorCredentials` redacts secret fields — safe
   to `tracing::debug!(?creds)`.
+
+### Auth flows (which one runs)
+
+The spec's `auth.type` selects the flow `handle_auth_required` dispatches
+to when a mount needs credentials and none are stored:
+
+| `auth.type` | Flow | When to use |
+|---|---|---|
+| `bearer` | `prompt_api_key` — stdin prompt | Static tokens (Stripe, Linear) |
+| `basic` | `prompt_api_key` (paste user:pass) | Legacy basic-auth APIs |
+| `oauth2` + `device_code_url` | `oauth2_device_flow` — print code, poll | GitHub-style device flow |
+| `oauth2` + `auth_url` + `client_secret` | `oauth2_browser_flow` — confidential client | Google Workspace, server-to-server flows |
+| `oauth2_pkce` + `auth_url` | `oauth2_pkce_browser_flow` — public client, no secret | X v2, any provider requiring PKCE |
+
+PKCE (RFC 7636) is the right flow for user-context auth on public clients
+— CLI / desktop apps that can't safely embed a `client_secret`. The math
+(verifier generation, S256 challenge, callback parsing, token-exchange and
+refresh form bodies) lives in `src/cli/pkce.rs` as pure functions so each
+piece tests in isolation. The browser-and-listener half lives next to the
+existing `oauth2_browser_flow` in `src/cli/auth.rs`. Storage goes through
+`CredentialStore::save_oauth2_pkce` — which records `expires_at` and
+explicitly stores `client_secret: None`, so a daemon restart after the
+access token's lifetime correctly triggers a refresh via `ensure_token`
+instead of hitting 401 on first call.
+
+The refresh path in `RestConnector::ensure_token` is shared between
+confidential and PKCE flows: it dispatches on `OAuth2Config.client_secret`
+being `Some` vs `None` and omits the form param accordingly. **Critical
+invariant: never send `client_secret` on a PKCE refresh** — empty-string
+will fail invalid_client on some providers, and a stale secret leaks
+unrelated credentials.
 
 ## Spec-driven REST connector
 
