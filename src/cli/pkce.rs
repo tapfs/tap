@@ -41,6 +41,12 @@ impl PkcePair {
     }
 }
 
+impl Default for PkcePair {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Parameters for building an OAuth 2.0 authorize URL with PKCE.
 pub struct AuthorizeParams<'a> {
     pub authorize_url: &'a str,
@@ -62,7 +68,11 @@ pub struct AuthorizeParams<'a> {
 pub fn build_authorize_url(p: &AuthorizeParams<'_>) -> String {
     let mut out = String::with_capacity(p.authorize_url.len() + 256);
     out.push_str(p.authorize_url);
-    out.push(if p.authorize_url.contains('?') { '&' } else { '?' });
+    out.push(if p.authorize_url.contains('?') {
+        '&'
+    } else {
+        '?'
+    });
     out.push_str("response_type=code");
     out.push_str("&client_id=");
     out.push_str(&encode(p.client_id));
@@ -311,9 +321,7 @@ mod tests {
         let p = PkcePair::new();
         assert_eq!(p.challenge.len(), 43, "challenge: {:?}", p.challenge);
         assert!(
-            !p.challenge.contains('+')
-                && !p.challenge.contains('/')
-                && !p.challenge.contains('='),
+            !p.challenge.contains('+') && !p.challenge.contains('/') && !p.challenge.contains('='),
             "challenge contains non-URL-safe chars: {:?}",
             p.challenge
         );
@@ -452,13 +460,23 @@ mod tests {
 
     #[test]
     fn token_exchange_form_contains_required_params_and_omits_client_secret() {
-        let form = build_token_exchange_form("auth-code", "the-verifier", "cli-id", "http://localhost/cb");
+        let form =
+            build_token_exchange_form("auth-code", "the-verifier", "cli-id", "http://localhost/cb");
         let map: std::collections::HashMap<_, _> = form.iter().cloned().collect();
-        assert_eq!(map.get("grant_type").map(|s| s.as_str()), Some("authorization_code"));
+        assert_eq!(
+            map.get("grant_type").map(|s| s.as_str()),
+            Some("authorization_code")
+        );
         assert_eq!(map.get("code").map(|s| s.as_str()), Some("auth-code"));
-        assert_eq!(map.get("code_verifier").map(|s| s.as_str()), Some("the-verifier"));
+        assert_eq!(
+            map.get("code_verifier").map(|s| s.as_str()),
+            Some("the-verifier")
+        );
         assert_eq!(map.get("client_id").map(|s| s.as_str()), Some("cli-id"));
-        assert_eq!(map.get("redirect_uri").map(|s| s.as_str()), Some("http://localhost/cb"));
+        assert_eq!(
+            map.get("redirect_uri").map(|s| s.as_str()),
+            Some("http://localhost/cb")
+        );
         assert!(
             !map.contains_key("client_secret"),
             "PKCE flow must NEVER send client_secret — that's the whole point"
@@ -469,8 +487,14 @@ mod tests {
     fn refresh_form_contains_required_params_and_omits_client_secret() {
         let form = build_refresh_form("ref-tok", "cli-id");
         let map: std::collections::HashMap<_, _> = form.iter().cloned().collect();
-        assert_eq!(map.get("grant_type").map(|s| s.as_str()), Some("refresh_token"));
-        assert_eq!(map.get("refresh_token").map(|s| s.as_str()), Some("ref-tok"));
+        assert_eq!(
+            map.get("grant_type").map(|s| s.as_str()),
+            Some("refresh_token")
+        );
+        assert_eq!(
+            map.get("refresh_token").map(|s| s.as_str()),
+            Some("ref-tok")
+        );
         assert_eq!(map.get("client_id").map(|s| s.as_str()), Some("cli-id"));
         assert!(!map.contains_key("client_secret"));
         assert!(
@@ -498,7 +522,10 @@ mod tests {
         assert_eq!(parsed.expires_in, Some(7200));
         assert_eq!(parsed.refresh_token.as_deref(), Some("Rxx..."));
         assert_eq!(parsed.token_type.as_deref(), Some("bearer"));
-        assert_eq!(parsed.scope.as_deref(), Some("tweet.read users.read offline.access"));
+        assert_eq!(
+            parsed.scope.as_deref(),
+            Some("tweet.read users.read offline.access")
+        );
     }
 
     #[test]

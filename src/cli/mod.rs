@@ -1,9 +1,9 @@
 pub mod approve;
 pub mod auth;
 pub mod inspect;
-pub mod pkce;
 pub mod log;
 pub mod mount;
+pub mod pkce;
 pub mod registry;
 pub mod service;
 pub mod setup;

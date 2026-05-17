@@ -1963,11 +1963,9 @@ mod tests {
             .and(body_string_contains("grant_type=refresh_token"))
             .and(body_string_contains("client_id=pkce-client"))
             .and(body_string_contains("refresh_token=rt-abc"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(
-                    r#"{"access_token":"new-access","expires_in":7200,"token_type":"bearer"}"#,
-                ),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"access_token":"new-access","expires_in":7200,"token_type":"bearer"}"#,
+            ))
             .expect(1)
             .mount(&server)
             .await;
@@ -2020,7 +2018,10 @@ mod tests {
         // and the refresh path runs to completion.
         Mock::given(method("GET"))
             .and(path("/items"))
-            .and(wiremock::matchers::header("Authorization", "Bearer new-access"))
+            .and(wiremock::matchers::header(
+                "Authorization",
+                "Bearer new-access",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
             .mount(&server)
             .await;
@@ -2059,11 +2060,9 @@ mod tests {
             .and(path("/oauth/token"))
             .and(body_string_contains("grant_type=refresh_token"))
             .and(body_string_contains("client_secret=top-secret"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(
-                    r#"{"access_token":"new-access","expires_in":3600,"token_type":"bearer"}"#,
-                ),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"access_token":"new-access","expires_in":3600,"token_type":"bearer"}"#,
+            ))
             .expect(1)
             .mount(&server)
             .await;
@@ -2112,7 +2111,10 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path("/items"))
-            .and(wiremock::matchers::header("Authorization", "Bearer new-access"))
+            .and(wiremock::matchers::header(
+                "Authorization",
+                "Bearer new-access",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
             .mount(&server)
             .await;

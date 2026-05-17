@@ -196,18 +196,17 @@ pub fn create_connector_with_overrides(
             // Computing `Instant::now() + (expires_at - now())` keeps the
             // monotonic-clock contract — Instants must be in the future, but
             // ensure_token's check works fine when expiry is already past.
-            let expiry_instant =
-                cred.and_then(|c| c.expires_at).and_then(|epoch| {
-                    let now_epoch = chrono::Utc::now().timestamp();
-                    let delta = epoch - now_epoch;
-                    if delta >= 0 {
-                        Some(Instant::now() + Duration::from_secs(delta as u64))
-                    } else {
-                        // Already expired. Use a past Instant by subtracting;
-                        // saturating_sub keeps this safe on weird clocks.
-                        Some(Instant::now() - Duration::from_secs(1))
-                    }
-                });
+            let expiry_instant = cred.and_then(|c| c.expires_at).map(|epoch| {
+                let now_epoch = chrono::Utc::now().timestamp();
+                let delta = epoch - now_epoch;
+                if delta >= 0 {
+                    Instant::now() + Duration::from_secs(delta as u64)
+                } else {
+                    // Already expired. Use a past Instant by subtracting;
+                    // saturating_sub keeps this safe on weird clocks.
+                    Instant::now() - Duration::from_secs(1)
+                }
+            });
             let oauth2_config = OAuth2Config {
                 token_url: auth_spec.token_url.clone().unwrap_or_default(),
                 client_id: auth_spec.client_id.clone().unwrap_or_default(),
