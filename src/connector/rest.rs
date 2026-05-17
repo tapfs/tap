@@ -152,6 +152,86 @@ pub struct OAuth2Config {
     pub expiry: RwLock<Option<Instant>>,
 }
 
+/// Merge a collection's `default_query` into a request path, preserving any
+/// query string already present on the path. Returns the path unchanged when
+/// the map is `None` or empty.
+///
+/// The path may or may not already contain `?…` — the merge picks `?` vs `&`
+/// accordingly. Iteration is over BTreeMap (sorted key order) so the produced
+/// URL is deterministic; tests rely on that.
+///
+/// Encoding rule for *values*: anything outside `[A-Za-z0-9-._~,]` is
+/// percent-encoded. Comma is preserved because X v2 uses unencoded commas as
+/// the list separator inside `expansions=` / `tweet.fields=` / etc., and the
+/// API will reject `%2C`. Keys are passed through verbatim — `tweet.fields`
+/// must not become `tweet%2Efields`.
+/// When `RenderSpec::resolve_includes` is enabled, single-resource API
+/// responses arrive wrapped as `{"data": {...}, "includes": {...}}`.
+/// `extract_meta` needs the unwrapped resource — meta.id / slug / title
+/// come from inside `data`, never from the envelope. This helper returns
+/// the right root for meta extraction without changing the renderer's
+/// access to `includes` (the full envelope still flows to the renderer).
+fn data_root_for_meta<'a>(
+    json: &'a Value,
+    render: Option<&crate::connector::spec::RenderSpec>,
+) -> &'a Value {
+    let resolve_includes = render.and_then(|r| r.resolve_includes).unwrap_or(false);
+    if resolve_includes {
+        json.get("data").unwrap_or(json)
+    } else {
+        json
+    }
+}
+
+pub(crate) fn apply_default_query(
+    path: &str,
+    default_query: Option<&std::collections::BTreeMap<String, String>>,
+) -> String {
+    let Some(map) = default_query else {
+        return path.to_string();
+    };
+    if map.is_empty() {
+        return path.to_string();
+    }
+
+    let mut out = String::with_capacity(path.len() + map.len() * 32);
+    out.push_str(path);
+    let mut sep = if path.contains('?') { '&' } else { '?' };
+    for (k, v) in map {
+        out.push(sep);
+        out.push_str(k);
+        out.push('=');
+        encode_query_value_into(v, &mut out);
+        sep = '&';
+    }
+    out
+}
+
+fn encode_query_value_into(input: &str, out: &mut String) {
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b',' => {
+                out.push(byte as char);
+            }
+            _ => {
+                out.push('%');
+                let hi = byte >> 4;
+                let lo = byte & 0xF;
+                out.push(hex_nibble(hi));
+                out.push(hex_nibble(lo));
+            }
+        }
+    }
+}
+
+fn hex_nibble(n: u8) -> char {
+    match n {
+        0..=9 => (b'0' + n) as char,
+        10..=15 => (b'A' + n - 10) as char,
+        _ => unreachable!(),
+    }
+}
+
 impl RestConnector {
     /// Create a new RestConnector from a spec.
     ///
@@ -211,6 +291,14 @@ impl RestConnector {
             format!("/{}", path)
         };
         format!("{}{}", base, path)
+    }
+
+    /// Build a full URL with the collection's `default_query` merged in.
+    /// Used by GET paths (list, read) where API-specific opt-in params like
+    /// `expansions=` / `tweet.fields=` are mandatory for a useful payload.
+    fn url_with_default_query(&self, path: &str, coll: &CollectionSpec) -> String {
+        let with_query = apply_default_query(path, coll.default_query.as_ref());
+        self.url(&with_query)
     }
 
     /// Substitute `{id}` in an endpoint template.
@@ -559,12 +647,36 @@ impl RestConnector {
     ) -> Vec<u8> {
         let mut out = String::new();
 
+        // When resolve_includes is enabled and the response looks like a v2
+        // envelope (`{"data": {...}, "includes": {...}}`), use `data` as the
+        // resource root for plain field extraction. `includes` lookups still
+        // resolve against the full envelope.
+        let resolve_includes = spec.resolve_includes.unwrap_or(false);
+        let data_root: &Value = if resolve_includes {
+            json.get("data").unwrap_or(json)
+        } else {
+            json
+        };
+
         // --- Frontmatter ---
         out.push_str("---\n");
         if let Some(ref fields) = spec.frontmatter {
             for field_expr in fields {
+                // Join syntax (`path via includes.array.output as alias`) is
+                // honored only when resolve_includes is on; otherwise it's
+                // treated as a plain dotted name (which will miss, as
+                // expected — fail loud rather than silently magic-resolve).
+                if resolve_includes {
+                    if let Some(join) = parse_frontmatter_join(field_expr) {
+                        if let Some(val) = resolve_include_join(json, &join, data_root) {
+                            let display = format_frontmatter_value(val);
+                            out.push_str(&format!("{}: {}\n", join.alias, display));
+                        }
+                        continue;
+                    }
+                }
                 let (path, alias) = parse_field_alias(field_expr);
-                if let Some(val) = extract_dotpath(json, path) {
+                if let Some(val) = extract_dotpath(data_root, path) {
                     let display = format_frontmatter_value(val);
                     out.push_str(&format!("{}: {}\n", alias, display));
                 }
@@ -585,7 +697,7 @@ impl RestConnector {
 
         // --- Body ---
         if let Some(ref body_field) = spec.body {
-            if let Some(val) = extract_dotpath(json, body_field) {
+            if let Some(val) = extract_dotpath(data_root, body_field) {
                 let text = json_value_to_string(val);
                 if !text.is_empty() {
                     out.push_str(&text);
@@ -597,7 +709,7 @@ impl RestConnector {
         // --- Sections ---
         if let Some(ref sections) = spec.sections {
             for section in sections {
-                if let Some(val) = extract_dotpath(json, &section.field) {
+                if let Some(val) = extract_dotpath(data_root, &section.field) {
                     out.push_str(&format!("## {}\n\n", section.name));
                     let fmt = section.format.as_deref().unwrap_or("text");
                     match (fmt, val) {
@@ -746,6 +858,82 @@ fn parse_field_alias(expr: &str) -> (&str, &str) {
     }
 }
 
+/// Parsed shape of a frontmatter join entry:
+/// `"<id_path> via <includes_path>.<output> as <alias>"` →
+/// (id_path, includes_path, output_field, alias).
+///
+/// Only valid when `resolve_includes: true`. The renderer reads the id at
+/// `id_path` (relative to the unwrapped data root), looks up the matching
+/// object in `includes_path` (an array), and substitutes its `output` field.
+struct FrontmatterJoin<'a> {
+    id_path: &'a str,
+    includes_path: &'a str,
+    output_field: &'a str,
+    alias: &'a str,
+}
+
+/// Parse `"author_id via includes.users.username as author"`.
+/// Returns None when the entry doesn't contain ` via ` (i.e. it's a plain
+/// `parse_field_alias` entry).
+fn parse_frontmatter_join(expr: &str) -> Option<FrontmatterJoin<'_>> {
+    let via_pos = expr.find(" via ")?;
+    let id_path = &expr[..via_pos];
+    let rest = &expr[via_pos + 5..];
+
+    let (lookup, alias) = if let Some(as_pos) = rest.find(" as ") {
+        (&rest[..as_pos], &rest[as_pos + 4..])
+    } else {
+        // No alias: alias defaults to the output field name (last segment).
+        let alias_default = rest.rsplit('.').next().unwrap_or(rest);
+        (rest, alias_default)
+    };
+
+    // Split `includes.users.username` into ("includes.users", "username").
+    let dot_pos = lookup.rfind('.')?;
+    let includes_path = &lookup[..dot_pos];
+    let output_field = &lookup[dot_pos + 1..];
+
+    Some(FrontmatterJoin {
+        id_path,
+        includes_path,
+        output_field,
+        alias,
+    })
+}
+
+/// Resolve the join: given an id (or array of ids), find the matching object
+/// in the includes array and return its `output_field`.
+///
+/// Match key heuristic: prefer `id`, then `media_key`. X v2's expansion
+/// arrays use one of those two as the natural key for every object type.
+fn resolve_include_join<'a>(
+    envelope: &'a Value,
+    join: &FrontmatterJoin<'_>,
+    data_root: &'a Value,
+) -> Option<&'a Value> {
+    // The id value at id_path within the data root. May be a scalar or an
+    // array (e.g. `attachments.media_keys` is an array of media keys).
+    let id_val = extract_dotpath(data_root, join.id_path)?;
+    let id_scalar = match id_val {
+        Value::Array(arr) => arr.first()?, // first entry; multi-id rendering is v2 of the feature
+        scalar => scalar,
+    };
+
+    let array = extract_dotpath(envelope, join.includes_path)?.as_array()?;
+    for item in array {
+        let obj = item.as_object()?;
+        let key_match = obj
+            .get("id")
+            .or_else(|| obj.get("media_key"))
+            .map(|k| k == id_scalar)
+            .unwrap_or(false);
+        if key_match {
+            return obj.get(join.output_field);
+        }
+    }
+    None
+}
+
 /// Extract a value from JSON using a dot-path like "user.login" or
 /// "labels[].name" (array map).
 fn extract_dotpath<'a>(json: &'a Value, path: &str) -> Option<&'a Value> {
@@ -862,7 +1050,7 @@ impl Connector for RestConnector {
 
     async fn list_resources(&self, collection: &str) -> Result<Vec<ResourceMeta>> {
         let coll = self.find_collection(collection)?;
-        let url = self.url(&coll.list_endpoint);
+        let url = self.url_with_default_query(&coll.list_endpoint, &coll);
 
         let response = self.send_with_retry(|| self.client.get(&url)).await?;
 
@@ -913,7 +1101,7 @@ impl Connector for RestConnector {
         // Parse the field exprs once; reused for every item.
         let parsed: Vec<(&str, &str)> = populates.iter().map(|e| parse_field_alias(e)).collect();
 
-        let url = self.url(&coll.list_endpoint);
+        let url = self.url_with_default_query(&coll.list_endpoint, &coll);
         let response = self.send_with_retry(|| self.client.get(&url)).await?;
         let status = response.status();
         if !status.is_success() {
@@ -956,7 +1144,7 @@ impl Connector for RestConnector {
         collection: &str,
     ) -> Result<Vec<(ResourceMeta, Vec<u8>)>> {
         let coll = self.find_collection(collection)?;
-        let url = self.url(&coll.list_endpoint);
+        let url = self.url_with_default_query(&coll.list_endpoint, &coll);
 
         let response = self.send_with_retry(|| self.client.get(&url)).await?;
         let status = response.status();
@@ -998,7 +1186,7 @@ impl Connector for RestConnector {
             .map(|v| v.clone())
             .unwrap_or_else(|| id.to_string());
         let path = Self::substitute_id(&coll.get_endpoint, &resolved_id);
-        let url = self.url(&path);
+        let url = self.url_with_default_query(&path, &coll);
 
         let response = self.send_with_retry(|| self.client.get(&url)).await?;
 
@@ -1017,7 +1205,13 @@ impl Connector for RestConnector {
             .await
             .context("failed to parse resource response as JSON")?;
 
-        let meta = Self::extract_meta(&json, &coll);
+        // When the spec declares `resolve_includes`, the API wraps the
+        // resource in a `{"data": {...}, "includes": {...}}` envelope.
+        // extract_meta needs to see the unwrapped resource so id / slug /
+        // title come out non-empty; the renderer separately handles the
+        // envelope for `includes` joins.
+        let meta_source = data_root_for_meta(&json, coll.render.as_ref());
+        let meta = Self::extract_meta(meta_source, &coll);
         let mut content = Self::render_markdown(&meta, &json, coll.render.as_ref());
 
         // Compose: fetch sub-resources and append as sections.
@@ -1141,7 +1335,11 @@ impl Connector for RestConnector {
             .await
             .context("failed to parse create response as JSON")?;
 
-        let meta = Self::extract_meta(&json, &coll);
+        // Same envelope concern as `read_resource`: an X-shaped POST
+        // response is `{"data": {...}}` and meta needs the unwrapped
+        // resource to get a non-empty id/slug/title.
+        let meta_source = data_root_for_meta(&json, coll.render.as_ref());
+        let meta = Self::extract_meta(meta_source, &coll);
 
         // Cache the new slug → ID mapping.
         if meta.slug != meta.id {
@@ -1253,6 +1451,7 @@ mod tests {
             group_by: None,
             aggregate: None,
             populates: None,
+            default_query: None,
         }
     }
 
@@ -1525,6 +1724,7 @@ mod tests {
             body: None,
             sections: None,
             exclude: None,
+            resolve_includes: None,
         };
         let bytes = RestConnector::render_with_spec(&meta, &v, &spec);
         let output = String::from_utf8(bytes).unwrap();
@@ -1541,6 +1741,7 @@ mod tests {
             body: Some("body".to_string()),
             sections: None,
             exclude: None,
+            resolve_includes: None,
         };
         let bytes = RestConnector::render_with_spec(&meta, &v, &spec);
         let output = String::from_utf8(bytes).unwrap();
@@ -1561,6 +1762,7 @@ mod tests {
                 item_template: Some("{name}".to_string()),
             }]),
             exclude: None,
+            resolve_includes: None,
         };
         let bytes = RestConnector::render_with_spec(&meta, &v, &spec);
         let output = String::from_utf8(bytes).unwrap();
@@ -1855,6 +2057,7 @@ mod tests {
                 item_template: None,
             }]),
             exclude: None,
+            resolve_includes: None,
         };
         let bytes = RestConnector::render_with_spec(&meta, &v, &spec);
         let output = String::from_utf8(bytes).unwrap();
@@ -1943,6 +2146,432 @@ mod tests {
             "shard must be None when spec does not declare populates"
         );
 
+        drop(server);
+    }
+
+    // ---------------------------------------------------------------
+    // apply_default_query — collection-level static query params
+    //
+    // Motivation: X v2 endpoints return a near-empty payload unless the
+    // request opts in via `expansions=...&tweet.fields=...`. Inlining
+    // those into every spec endpoint is brittle (they're repeated, easy
+    // to drift) and we'd like other connectors (Linear, Notion) to share
+    // the same mechanism.
+    // ---------------------------------------------------------------
+    #[test]
+    fn apply_default_query_none_returns_path_unchanged() {
+        assert_eq!(apply_default_query("/2/tweets/42", None), "/2/tweets/42");
+    }
+
+    #[test]
+    fn apply_default_query_appends_to_path_without_existing_query() {
+        let mut q = std::collections::BTreeMap::new();
+        q.insert("expansions".to_string(), "author_id".to_string());
+        let out = apply_default_query("/2/tweets/42", Some(&q));
+        assert_eq!(out, "/2/tweets/42?expansions=author_id");
+    }
+
+    #[test]
+    fn apply_default_query_appends_with_ampersand_when_path_has_query() {
+        let mut q = std::collections::BTreeMap::new();
+        q.insert("expansions".to_string(), "author_id".to_string());
+        let out = apply_default_query("/2/users/me/tweets?max_results=100", Some(&q));
+        assert_eq!(
+            out,
+            "/2/users/me/tweets?max_results=100&expansions=author_id"
+        );
+    }
+
+    #[test]
+    fn apply_default_query_preserves_dotted_keys_required_by_x() {
+        // `tweet.fields` and `user.fields` are X v2's query-param names.
+        // They must NOT be URL-encoded — X rejects `tweet%2Efields` — so the
+        // key passes through verbatim. The *value* may contain commas (also
+        // legal unencoded in X's parser) and is left as-is for round-trip
+        // fidelity with the spec author's input.
+        let mut q = std::collections::BTreeMap::new();
+        q.insert(
+            "tweet.fields".to_string(),
+            "created_at,public_metrics".to_string(),
+        );
+        q.insert("user.fields".to_string(), "username,verified".to_string());
+        let out = apply_default_query("/2/tweets/42", Some(&q));
+        // BTreeMap iterates in sorted key order: tweet.fields < user.fields.
+        assert_eq!(
+            out,
+            "/2/tweets/42?tweet.fields=created_at,public_metrics&user.fields=username,verified"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Wiring: default_query must reach the HTTP layer
+    //
+    // Spec says these tests cover the integration: the helper above is
+    // pure-string, but the value is in actually merging it into every
+    // outbound REST call. Mock servers assert that the real HTTP request
+    // carries `expansions=author_id` (etc.) — without the wiring, the
+    // mocks return 404 (no match) and the connector calls fail.
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn list_resources_appends_default_query_to_request_url() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/2/users/me/tweets"))
+            .and(query_param("expansions", "author_id"))
+            .and(query_param("tweet.fields", "created_at,public_metrics"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"[]"#))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut coll = minimal_collection("posts");
+        coll.list_endpoint = "/2/users/me/tweets".to_string();
+        let mut q = std::collections::BTreeMap::new();
+        q.insert("expansions".to_string(), "author_id".to_string());
+        q.insert(
+            "tweet.fields".to_string(),
+            "created_at,public_metrics".to_string(),
+        );
+        coll.default_query = Some(q);
+
+        let conn = build_connector(&server.uri(), vec![coll]);
+        conn.list_resources("posts")
+            .await
+            .expect("list should hit the mock with default_query merged in");
+        drop(server);
+    }
+
+    #[tokio::test]
+    async fn read_resource_appends_default_query_to_request_url() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/2/tweets/42"))
+            .and(query_param("expansions", "author_id"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"data":{"id":"42"}}"#))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut coll = minimal_collection("posts");
+        coll.get_endpoint = "/2/tweets/{id}".to_string();
+        let mut q = std::collections::BTreeMap::new();
+        q.insert("expansions".to_string(), "author_id".to_string());
+        coll.default_query = Some(q);
+
+        let conn = build_connector(&server.uri(), vec![coll]);
+        conn.read_resource("posts", "42")
+            .await
+            .expect("read should hit the mock with default_query merged in");
+        drop(server);
+    }
+
+    #[tokio::test]
+    async fn list_resources_merges_default_query_with_existing_query_in_endpoint() {
+        // Endpoint already has `?max_results=100` baked in; default_query
+        // appends with `&` rather than clobbering.
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/2/users/me/tweets"))
+            .and(query_param("max_results", "100"))
+            .and(query_param("expansions", "author_id"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"[]"#))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut coll = minimal_collection("posts");
+        coll.list_endpoint = "/2/users/me/tweets?max_results=100".to_string();
+        let mut q = std::collections::BTreeMap::new();
+        q.insert("expansions".to_string(), "author_id".to_string());
+        coll.default_query = Some(q);
+
+        let conn = build_connector(&server.uri(), vec![coll]);
+        conn.list_resources("posts")
+            .await
+            .expect("list should preserve baked-in query and append default_query");
+        drop(server);
+    }
+
+    #[test]
+    fn apply_default_query_url_encodes_values_with_reserved_chars() {
+        // Values containing `&` or `=` would corrupt the query string if
+        // passed through verbatim — they must be percent-encoded. Commas
+        // are deliberately NOT encoded (X uses bare commas as list sep).
+        let mut q = std::collections::BTreeMap::new();
+        q.insert(
+            "query".to_string(),
+            "from:elonmusk AND has:links".to_string(),
+        );
+        let out = apply_default_query("/2/tweets/search/recent", Some(&q));
+        assert_eq!(
+            out,
+            "/2/tweets/search/recent?query=from%3Aelonmusk%20AND%20has%3Alinks"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // resolve_includes — v2 envelope unwrap + includes-array join
+    //
+    // X v2 wraps a single resource as `{"data": {...}, "includes": {...}}`.
+    // Without resolve_includes, the renderer would need `data.text`,
+    // `data.author_id` everywhere — brittle and ugly. With it, the renderer
+    // treats `data` as the resource root and lets frontmatter entries join
+    // into `includes` to surface human-readable fields (author username,
+    // media URL) instead of opaque ids.
+    // ---------------------------------------------------------------
+    #[test]
+    fn resolve_includes_unwraps_data_envelope() {
+        let json = json!({
+            "data": {"text": "hi from elon", "author_id": "44196397"},
+            "includes": {}
+        });
+        let spec = RenderSpec {
+            frontmatter: Some(vec!["author_id".to_string()]),
+            body: Some("text".to_string()),
+            sections: None,
+            exclude: None,
+            resolve_includes: Some(true),
+        };
+        let meta = minimal_meta();
+        let bytes = RestConnector::render_with_spec(&meta, &json, &spec);
+        let output = String::from_utf8(bytes).unwrap();
+        assert!(
+            output.contains("author_id: \"44196397\""),
+            "frontmatter author_id must read from data root, got:\n{}",
+            output
+        );
+        assert!(
+            output.contains("hi from elon"),
+            "body must read from data root, got:\n{}",
+            output
+        );
+    }
+
+    #[test]
+    fn resolve_includes_joins_author_id_to_users_username() {
+        let json = json!({
+            "data": {"id": "42", "text": "hi", "author_id": "44196397"},
+            "includes": {
+                "users": [
+                    {"id": "44196397", "username": "elonmusk", "name": "Elon Musk"}
+                ]
+            }
+        });
+        let spec = RenderSpec {
+            frontmatter: Some(vec![
+                "id".to_string(),
+                "author_id via includes.users.username as author".to_string(),
+            ]),
+            body: Some("text".to_string()),
+            sections: None,
+            exclude: None,
+            resolve_includes: Some(true),
+        };
+        let meta = minimal_meta();
+        let bytes = RestConnector::render_with_spec(&meta, &json, &spec);
+        let output = String::from_utf8(bytes).unwrap();
+        assert!(
+            output.contains("id: \"42\""),
+            "plain id from data root, got:\n{}",
+            output
+        );
+        assert!(
+            output.contains("author: \"elonmusk\""),
+            "author_id should join into includes.users.username, got:\n{}",
+            output
+        );
+    }
+
+    #[test]
+    fn resolve_includes_joins_media_key_to_media_url() {
+        // The join key for includes.media is `media_key`, not `id` — X's
+        // expansion arrays use the natural primary key for the object type.
+        // The renderer should pick `media_key` when the array's items have
+        // one (users → id, media → media_key, places → id, polls → id).
+        let json = json!({
+            "data": {
+                "text": "look at this",
+                "attachments": {"media_keys": ["mk-1"]}
+            },
+            "includes": {
+                "media": [
+                    {"media_key": "mk-1", "type": "photo", "url": "https://example.com/cat.jpg"}
+                ]
+            }
+        });
+        let spec = RenderSpec {
+            frontmatter: Some(vec![
+                "attachments.media_keys via includes.media.url as media_url".to_string(),
+            ]),
+            body: Some("text".to_string()),
+            sections: None,
+            exclude: None,
+            resolve_includes: Some(true),
+        };
+        let meta = minimal_meta();
+        let bytes = RestConnector::render_with_spec(&meta, &json, &spec);
+        let output = String::from_utf8(bytes).unwrap();
+        assert!(
+            output.contains("media_url: \"https://example.com/cat.jpg\""),
+            "media_keys[0] should join into includes.media.url, got:\n{}",
+            output
+        );
+    }
+
+    #[test]
+    fn resolve_includes_off_by_default_keeps_existing_behavior() {
+        // Sanity: when resolve_includes is None, GitHub-style specs continue
+        // to read fields off the top-level JSON, not `data`. Regression
+        // guard so we don't break every other existing connector.
+        let json = json!({"state": "open", "title": "regression check"});
+        let spec = RenderSpec {
+            frontmatter: Some(vec!["state".to_string(), "title".to_string()]),
+            body: None,
+            sections: None,
+            exclude: None,
+            resolve_includes: None,
+        };
+        let meta = minimal_meta();
+        let bytes = RestConnector::render_with_spec(&meta, &json, &spec);
+        let output = String::from_utf8(bytes).unwrap();
+        assert!(output.contains("state: \"open\""));
+        assert!(output.contains("title: \"regression check\""));
+    }
+
+    // ---------------------------------------------------------------
+    // read_resource must extract meta from `data` when resolve_includes
+    // is on (PR #50 review finding P3)
+    //
+    // The renderer already unwraps the envelope for body/sections, but
+    // `extract_meta` was called against the raw `{"data": {...}}` shape.
+    // That left meta.id / slug / title empty for X tweet and user reads,
+    // dropping the "# title" heading in rendered markdown and feeding
+    // bad metadata to direct connector callers.
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn read_resource_extracts_meta_from_data_envelope_when_resolve_includes_set() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // X-shaped single-tweet response: data + includes envelope.
+        let body = r#"{
+            "data": {"id": "42", "text": "hello", "author_id": "44196397"},
+            "includes": {
+                "users": [{"id": "44196397", "username": "elonmusk", "name": "Elon Musk"}]
+            }
+        }"#;
+        Mock::given(method("GET"))
+            .and(path("/2/tweets/42"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let mut coll = minimal_collection("posts");
+        coll.list_endpoint = "/2/tweets/search/recent".to_string();
+        coll.get_endpoint = "/2/tweets/{id}".to_string();
+        coll.id_field = Some("id".to_string());
+        coll.slug_field = Some("id".to_string());
+        coll.title_field = Some("text".to_string());
+        coll.render = Some(RenderSpec {
+            frontmatter: Some(vec!["id".to_string()]),
+            body: Some("text".to_string()),
+            sections: None,
+            exclude: None,
+            resolve_includes: Some(true),
+        });
+        let conn = build_connector(&server.uri(), vec![coll]);
+
+        let resource = conn
+            .read_resource("posts", "42")
+            .await
+            .expect("read should succeed");
+        assert_eq!(
+            resource.meta.id, "42",
+            "meta.id must come from data.id, not the envelope (which has no id)"
+        );
+        assert_eq!(
+            resource.meta.title.as_deref(),
+            Some("hello"),
+            "meta.title must come from data.text, not the envelope"
+        );
+        // The rendered markdown should still include the "# hello" heading
+        // that was previously dropped because meta.title was empty.
+        let content = String::from_utf8(resource.content).unwrap();
+        assert!(
+            content.contains("# hello"),
+            "rendered output must include the title heading, got:\n{}",
+            content
+        );
+        drop(server);
+    }
+
+    // ---------------------------------------------------------------
+    // list_resources_with_shards must also apply default_query
+    // (PR #50 review finding P2)
+    //
+    // Without this, an X-shaped collection that declares BOTH populates
+    // (so the VFS hydrates frontmatter shards at list time) AND
+    // default_query (so the API returns useful payloads) silently sends
+    // the request without `expansions=` / `tweet.fields=` — the API
+    // returns the bare-minimum payload, populates pulls empty values,
+    // and the shard layer caches uselessness.
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn list_with_shards_appends_default_query_to_request_url() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/2/users/me/tweets"))
+            .and(query_param("expansions", "author_id"))
+            .and(query_param("tweet.fields", "created_at,public_metrics"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(
+                    r#"[{"id":"1","text":"hi","public_metrics":{"like_count":3}}]"#,
+                ),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut coll = minimal_collection("posts");
+        coll.list_endpoint = "/2/users/me/tweets".to_string();
+        coll.populates = Some(vec![
+            "text".to_string(),
+            "public_metrics.like_count as likes".to_string(),
+        ]);
+        let mut q = std::collections::BTreeMap::new();
+        q.insert("expansions".to_string(), "author_id".to_string());
+        q.insert(
+            "tweet.fields".to_string(),
+            "created_at,public_metrics".to_string(),
+        );
+        coll.default_query = Some(q);
+
+        let conn = build_connector(&server.uri(), vec![coll]);
+        let out = conn
+            .list_resources_with_shards("posts")
+            .await
+            .expect("shard listing must merge default_query");
+        // populates was set → each item carries a shard, not None.
+        assert_eq!(out.len(), 1);
+        let (_meta, shard) = &out[0];
+        let shard = shard
+            .as_ref()
+            .expect("populates → shard must be present, regardless of default_query path");
+        assert_eq!(shard["text"], "hi");
+        assert_eq!(shard["likes"], 3);
         drop(server);
     }
 

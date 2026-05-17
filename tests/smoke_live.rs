@@ -161,3 +161,4 @@ conditional_smoke_test!(clickup_smoke, "clickup", "CLICKUP_TOKEN");
 conditional_smoke_test!(discord_smoke, "discord", "DISCORD_BOT_TOKEN");
 conditional_smoke_test!(sendgrid_smoke, "sendgrid", "SENDGRID_API_KEY");
 conditional_smoke_test!(cloudflare_smoke, "cloudflare", "CLOUDFLARE_TOKEN");
+conditional_smoke_test!(x_smoke, "x", "X_BEARER_TOKEN");

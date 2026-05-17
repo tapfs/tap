@@ -24,6 +24,7 @@ pub fn builtin_spec(name: &str) -> Option<&'static str> {
         "sendgrid" => Some(include_str!("../../connectors/sendgrid.yaml")),
         "shopify" => Some(include_str!("../../connectors/shopify.yaml")),
         "cloudflare" => Some(include_str!("../../connectors/cloudflare.yaml")),
+        "x" => Some(include_str!("../../connectors/x.yaml")),
         _ => None,
     }
 }
@@ -53,5 +54,6 @@ pub fn builtin_names() -> &'static [&'static str] {
         "sendgrid",
         "shopify",
         "cloudflare",
+        "x",
     ]
 }

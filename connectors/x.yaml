@@ -1,0 +1,110 @@
+spec_version: "1"
+version: "0.5.0"
+description: "X (Twitter) — recent search and tweet lookups. v0.5: read-only, manual Bearer token. Writes/DMs land in v1 once OAuth 2.0 PKCE (issue #48) is implemented."
+
+name: x
+base_url: "https://api.x.com/2"
+auth:
+  type: bearer
+  token_env: X_BEARER_TOKEN
+  setup_url: "https://developer.x.com/en/portal/dashboard"
+  setup_instructions: |
+    1. Sign in at https://developer.x.com/en/portal/dashboard
+    2. Create or open a Project + App
+    3. Go to Keys and Tokens, generate the App-only Bearer Token
+    4. Export as X_BEARER_TOKEN (or paste when `tap mount x` prompts)
+
+    PRICING NOTE (May 2026): X eliminated the Free tier on Feb 6, 2026.
+    Every read costs real money — typically $0.005 per tweet, $0.010 per
+    user profile. The Bearer Token used here can only do public reads
+    (App-only auth); DMs, posting, and likes require user-context OAuth
+    which lands when tapfs ships the OAuth 2.0 PKCE flow (issue #48).
+
+capabilities:
+  read: true
+  write: false
+  create: false
+  delete: false
+  pagination: cursor
+  rate_limit:
+    requests_per_minute: 30
+
+agent:
+  tips:
+    - "Pay-per-use pricing — every cat is a few cents. There is no free tier."
+    - "App-only Bearer can read public content only. No DMs, no posting, no likes/bookmarks, no `me/` endpoints (those require OAuth 2.0 user-context — see issue #48)."
+    - "The `search/` collection lists recent tweets (7 days) matching the query baked into list_endpoint. Edit `~/.tapfs/service.yaml` to override the query."
+    - "Tweet IDs are long numeric snowflakes — `cat search/1234567890123456789.md` reads an individual tweet with full author info."
+    - "Author and media references are resolved into frontmatter on single-tweet reads (e.g. `author: elonmusk`). On directory listings, frontmatter is partial because X returns `includes` only on the envelope — the per-item render doesn't see it. Cat the individual file for the full picture."
+    - "Search results use list_root: data and resolve_includes to join author_id → includes.users.username. Same pattern works for media."
+    - "Rate limits are per 15-minute window per endpoint. The connector throttles to roughly 30 req/min as a coarse safety net; X's response headers (`x-rate-limit-remaining`, `x-rate-limit-reset`) are the authoritative signal."
+  relationships:
+    - "Tweets reference users via author_id (numeric); the connector resolves to @username/name/verified via includes.users."
+    - "Tweets reference media via attachments.media_keys; resolved to URL via includes.media on single-tweet reads."
+    - "Tweets reference other tweets via referenced_tweets[].id (replies, quotes, retweets); not yet auto-resolved."
+
+collections:
+  - name: search
+    description: "Recent tweets (last 7 days) matching a search query."
+    slug_hint: "tweet ID (long numeric snowflake)"
+    operations: [read]
+    # Default query targets tapfs-related conversation. Override by editing
+    # the per-connector entry in ~/.tapfs/service.yaml or by re-mounting
+    # with --spec ./my-x.yaml.
+    list_endpoint: "/tweets/search/recent?query=tapfs%20OR%20%22virtual%20filesystem%22&max_results=50"
+    get_endpoint: "/tweets/{id}"
+    list_root: "data"
+    id_field: "id"
+    slug_field: "id"
+    title_field: "text"
+    default_query:
+      expansions: "author_id,attachments.media_keys,referenced_tweets.id"
+      tweet.fields: "created_at,public_metrics,text,author_id,referenced_tweets,entities,lang,conversation_id"
+      user.fields: "username,name,verified,public_metrics"
+      media.fields: "type,url,preview_image_url,alt_text"
+    render:
+      resolve_includes: true
+      frontmatter:
+        - id
+        - "author_id via includes.users.username as author"
+        - "author_id via includes.users.name as author_name"
+        - "author_id via includes.users.verified as verified"
+        - created_at
+        - lang
+        - conversation_id
+        - "public_metrics.like_count as likes"
+        - "public_metrics.reply_count as replies"
+        - "public_metrics.retweet_count as retweets"
+        - "public_metrics.bookmark_count as bookmarks"
+      body: text
+
+  - name: users
+    description: "Look up X users by their @username."
+    slug_hint: "username without the @ prefix (e.g. tapfs, elonmusk)"
+    operations: [read]
+    # Pre-seeded list of usernames to make `ls users/` show something useful.
+    # Override in service.yaml to add your own accounts of interest.
+    list_endpoint: "/users/by?usernames=tapfs,anthropicai,claudeai"
+    get_endpoint: "/users/by/username/{id}"
+    list_root: "data"
+    id_field: "username"
+    slug_field: "username"
+    title_field: "name"
+    default_query:
+      user.fields: "username,name,description,verified,public_metrics,created_at,location,url,profile_image_url,protected"
+    render:
+      resolve_includes: true
+      frontmatter:
+        - "id as user_id"
+        - username
+        - name
+        - verified
+        - protected
+        - "public_metrics.followers_count as followers"
+        - "public_metrics.following_count as following"
+        - "public_metrics.tweet_count as tweets"
+        - "public_metrics.listed_count as listed"
+        - location
+        - url
+        - created_at
+      body: description
