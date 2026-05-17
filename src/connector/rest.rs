@@ -136,10 +136,18 @@ pub struct RestConnector {
 }
 
 /// OAuth2 configuration for automatic token refresh.
+///
+/// `client_secret` is optional: confidential clients (web apps, server-to-server
+/// OAuth like Google) include it in refresh requests; **public clients using
+/// PKCE (e.g. X v2 user-context) do not** — the verifier was the
+/// proof-of-possession at exchange time, and the refresh request authenticates
+/// via the refresh_token + client_id alone. Sending an empty client_secret
+/// would silently break PKCE refreshes on providers that bind tokens to the
+/// client's PKCE registration.
 pub struct OAuth2Config {
     pub token_url: String,
     pub client_id: String,
-    pub client_secret: String,
+    pub client_secret: Option<String>,
     pub refresh_token: String,
     pub expiry: RwLock<Option<Instant>>,
 }
@@ -455,10 +463,17 @@ impl RestConnector {
 
         let needs_refresh = {
             let expiry = config.expiry.read().unwrap();
-            match expiry.as_ref() {
+            let token_missing = self.token.read().unwrap().is_none();
+            let past_expiry = match expiry.as_ref() {
                 Some(exp) => Instant::now() >= *exp,
-                None => self.token.read().unwrap().is_none(),
-            }
+                None => false,
+            };
+            // Refresh if we have no usable access token OR the one we have
+            // is past its known expiry. The token-missing branch covers a
+            // pathological state where credentials.yaml's `expires_at` is
+            // recorded but the keychain blob is unreadable — without this
+            // check the request would go unauthenticated until expiry.
+            token_missing || past_expiry
         };
         if !needs_refresh {
             return;
@@ -466,12 +481,17 @@ impl RestConnector {
 
         let policy = crate::connector::retry::RetryPolicy::default();
         let refresh_result = crate::connector::retry::execute(&policy, || {
-            self.client.post(&config.token_url).form(&[
+            // PKCE refreshes (no client_secret) and confidential refreshes
+            // (with client_secret) share everything except this form param.
+            let mut form: Vec<(&str, &str)> = vec![
                 ("grant_type", "refresh_token"),
                 ("refresh_token", config.refresh_token.as_str()),
                 ("client_id", config.client_id.as_str()),
-                ("client_secret", config.client_secret.as_str()),
-            ])
+            ];
+            if let Some(ref secret) = config.client_secret {
+                form.push(("client_secret", secret.as_str()));
+            }
+            self.client.post(&config.token_url).form(&form)
         })
         .await;
 
@@ -533,7 +553,7 @@ impl RestConnector {
         let token = self.token.read().unwrap().clone();
         match (&self.spec.auth, &token) {
             (Some(auth), Some(token)) => match auth.auth_type.as_str() {
-                "bearer" | "oauth2" => builder.bearer_auth(token),
+                "bearer" | "oauth2" | "oauth2_pkce" => builder.bearer_auth(token),
                 "basic" => builder.header("Authorization", format!("Basic {}", token)),
                 _ => builder.bearer_auth(token),
             },
@@ -2552,6 +2572,282 @@ mod tests {
             .expect("populates → shard must be present, regardless of default_query path");
         assert_eq!(shard["text"], "hi");
         assert_eq!(shard["likes"], 3);
+        drop(server);
+    }
+
+    // ---------------------------------------------------------------
+    // PKCE refresh: ensure_token must NOT send client_secret when None
+    //
+    // Critical invariant: public clients (PKCE) authenticate refresh via
+    // refresh_token + client_id only. Sending an empty client_secret
+    // confuses some providers (silent invalid_client). Sending a stale
+    // secret leaks an unrelated credential. The wiremock matcher
+    // body_string_contains is used in the negative direction to confirm
+    // the form body simply doesn't carry that key.
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn ensure_token_pkce_refresh_omits_client_secret() {
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // Match only requests carrying the PKCE-shaped form. The negative
+        // check is below (assert the request didn't carry client_secret).
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .and(body_string_contains("grant_type=refresh_token"))
+            .and(body_string_contains("client_id=pkce-client"))
+            .and(body_string_contains("refresh_token=rt-abc"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"access_token":"new-access","expires_in":7200,"token_type":"bearer"}"#,
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut spec = crate::connector::spec::ConnectorSpec {
+            spec_version: None,
+            version: None,
+            description: None,
+            name: "test".to_string(),
+            base_url: server.uri(),
+            auth: Some(crate::connector::spec::AuthSpec {
+                auth_type: "oauth2_pkce".to_string(),
+                token_env: None,
+                setup_url: None,
+                setup_instructions: None,
+                auth_url: None,
+                token_url: None,
+                client_id: None,
+                client_secret: None,
+                scopes: None,
+                device_code_url: None,
+            }),
+            transport: None,
+            capabilities: None,
+            agent: None,
+            collections: vec![minimal_collection("items")],
+        };
+        spec.collections[0].list_endpoint = "/items".to_string();
+
+        let token_url = format!("{}/oauth/token", server.uri());
+        let oauth_cfg = OAuth2Config {
+            token_url,
+            client_id: "pkce-client".to_string(),
+            client_secret: None, // <-- PKCE: no secret
+            refresh_token: "rt-abc".to_string(),
+            // Force a refresh on first request: expiry already in the past.
+            expiry: std::sync::RwLock::new(Some(
+                Instant::now() - std::time::Duration::from_secs(1),
+            )),
+        };
+        let conn = RestConnector::new_with_oauth2(
+            spec,
+            reqwest::Client::new(),
+            Some("stale-token".to_string()),
+            oauth_cfg,
+        );
+
+        // Set up a second mock for the actual data fetch (with Bearer of
+        // the refreshed token), so the surrounding `list_resources` succeeds
+        // and the refresh path runs to completion.
+        Mock::given(method("GET"))
+            .and(path("/items"))
+            .and(wiremock::matchers::header(
+                "Authorization",
+                "Bearer new-access",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
+            .mount(&server)
+            .await;
+
+        conn.list_resources("items")
+            .await
+            .expect("refresh path should succeed and feed list_resources");
+
+        // The .expect(1) on the refresh mock asserts the refresh happened
+        // and carried the expected form fields. Confirm the form body did
+        // NOT also carry a client_secret.
+        let requests = server.received_requests().await.unwrap();
+        let refresh_req = requests
+            .iter()
+            .find(|r| r.url.path().ends_with("/oauth/token"))
+            .expect("refresh request missing");
+        let body = String::from_utf8_lossy(&refresh_req.body);
+        assert!(
+            !body.contains("client_secret"),
+            "PKCE refresh leaked client_secret: {}",
+            body
+        );
+
+        drop(server);
+    }
+
+    #[tokio::test]
+    async fn ensure_token_confidential_refresh_still_sends_client_secret() {
+        // Regression guard for the existing Google/confidential-client path.
+        // Same shape as the PKCE test above but with `client_secret: Some(..)`.
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .and(body_string_contains("grant_type=refresh_token"))
+            .and(body_string_contains("client_secret=top-secret"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"access_token":"new-access","expires_in":3600,"token_type":"bearer"}"#,
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut spec = crate::connector::spec::ConnectorSpec {
+            spec_version: None,
+            version: None,
+            description: None,
+            name: "test".to_string(),
+            base_url: server.uri(),
+            auth: Some(crate::connector::spec::AuthSpec {
+                auth_type: "oauth2".to_string(),
+                token_env: None,
+                setup_url: None,
+                setup_instructions: None,
+                auth_url: None,
+                token_url: None,
+                client_id: None,
+                client_secret: None,
+                scopes: None,
+                device_code_url: None,
+            }),
+            transport: None,
+            capabilities: None,
+            agent: None,
+            collections: vec![minimal_collection("items")],
+        };
+        spec.collections[0].list_endpoint = "/items".to_string();
+
+        let token_url = format!("{}/oauth/token", server.uri());
+        let oauth_cfg = OAuth2Config {
+            token_url,
+            client_id: "conf-client".to_string(),
+            client_secret: Some("top-secret".to_string()),
+            refresh_token: "rt-conf".to_string(),
+            expiry: std::sync::RwLock::new(Some(
+                Instant::now() - std::time::Duration::from_secs(1),
+            )),
+        };
+        let conn = RestConnector::new_with_oauth2(
+            spec,
+            reqwest::Client::new(),
+            Some("stale-token".to_string()),
+            oauth_cfg,
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/items"))
+            .and(wiremock::matchers::header(
+                "Authorization",
+                "Bearer new-access",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
+            .mount(&server)
+            .await;
+
+        conn.list_resources("items")
+            .await
+            .expect("confidential refresh path should still work");
+
+        drop(server);
+    }
+
+    // ---------------------------------------------------------------
+    // Refresh when access token is missing (PR #49 review finding P2)
+    //
+    // ensure_token previously only refreshed when expiry was in the past
+    // OR (when no expiry info existed) when the access token was None.
+    // The pathological middle case — `token = None` with a future expiry
+    // — would skip the refresh and send the request unauthenticated.
+    // This can happen if the keychain blob is unreadable / partially
+    // populated while credentials.yaml still has expires_at recorded.
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn ensure_token_refreshes_when_token_none_even_with_future_expiry() {
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .and(body_string_contains("grant_type=refresh_token"))
+            .and(body_string_contains("refresh_token=rt-missing-tok"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"access_token":"recovered-access","expires_in":7200,"token_type":"bearer"}"#,
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut spec = crate::connector::spec::ConnectorSpec {
+            spec_version: None,
+            version: None,
+            description: None,
+            name: "test".to_string(),
+            base_url: server.uri(),
+            auth: Some(crate::connector::spec::AuthSpec {
+                auth_type: "oauth2_pkce".to_string(),
+                token_env: None,
+                setup_url: None,
+                setup_instructions: None,
+                auth_url: None,
+                token_url: None,
+                client_id: None,
+                client_secret: None,
+                scopes: None,
+                device_code_url: None,
+            }),
+            transport: None,
+            capabilities: None,
+            agent: None,
+            collections: vec![minimal_collection("items")],
+        };
+        spec.collections[0].list_endpoint = "/items".to_string();
+
+        let token_url = format!("{}/oauth/token", server.uri());
+        let oauth_cfg = OAuth2Config {
+            token_url,
+            client_id: "pkce-client".to_string(),
+            client_secret: None,
+            refresh_token: "rt-missing-tok".to_string(),
+            // Future expiry — a naive "is now past expiry?" check would say
+            // no and skip the refresh. The fix must also consider whether
+            // the access token itself is available.
+            expiry: std::sync::RwLock::new(Some(
+                Instant::now() + std::time::Duration::from_secs(3600),
+            )),
+        };
+        let conn = RestConnector::new_with_oauth2(
+            spec,
+            reqwest::Client::new(),
+            None, // <-- access token missing
+            oauth_cfg,
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/items"))
+            .and(wiremock::matchers::header(
+                "Authorization",
+                "Bearer recovered-access",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
+            .mount(&server)
+            .await;
+
+        conn.list_resources("items")
+            .await
+            .expect("token-None + future-expiry should still trigger refresh");
+
         drop(server);
     }
 }
