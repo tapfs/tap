@@ -375,10 +375,17 @@ impl RestConnector {
 
         let needs_refresh = {
             let expiry = config.expiry.read().unwrap();
-            match expiry.as_ref() {
+            let token_missing = self.token.read().unwrap().is_none();
+            let past_expiry = match expiry.as_ref() {
                 Some(exp) => Instant::now() >= *exp,
-                None => self.token.read().unwrap().is_none(),
-            }
+                None => false,
+            };
+            // Refresh if we have no usable access token OR the one we have
+            // is past its known expiry. The token-missing branch covers a
+            // pathological state where credentials.yaml's `expires_at` is
+            // recorded but the keychain blob is unreadable — without this
+            // check the request would go unauthenticated until expiry.
+            token_missing || past_expiry
         };
         if !needs_refresh {
             return;
@@ -2122,6 +2129,95 @@ mod tests {
         conn.list_resources("items")
             .await
             .expect("confidential refresh path should still work");
+
+        drop(server);
+    }
+
+    // ---------------------------------------------------------------
+    // Refresh when access token is missing (PR #49 review finding P2)
+    //
+    // ensure_token previously only refreshed when expiry was in the past
+    // OR (when no expiry info existed) when the access token was None.
+    // The pathological middle case — `token = None` with a future expiry
+    // — would skip the refresh and send the request unauthenticated.
+    // This can happen if the keychain blob is unreadable / partially
+    // populated while credentials.yaml still has expires_at recorded.
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn ensure_token_refreshes_when_token_none_even_with_future_expiry() {
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .and(body_string_contains("grant_type=refresh_token"))
+            .and(body_string_contains("refresh_token=rt-missing-tok"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"access_token":"recovered-access","expires_in":7200,"token_type":"bearer"}"#,
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut spec = crate::connector::spec::ConnectorSpec {
+            spec_version: None,
+            version: None,
+            description: None,
+            name: "test".to_string(),
+            base_url: server.uri(),
+            auth: Some(crate::connector::spec::AuthSpec {
+                auth_type: "oauth2_pkce".to_string(),
+                token_env: None,
+                setup_url: None,
+                setup_instructions: None,
+                auth_url: None,
+                token_url: None,
+                client_id: None,
+                client_secret: None,
+                scopes: None,
+                device_code_url: None,
+            }),
+            transport: None,
+            capabilities: None,
+            agent: None,
+            collections: vec![minimal_collection("items")],
+        };
+        spec.collections[0].list_endpoint = "/items".to_string();
+
+        let token_url = format!("{}/oauth/token", server.uri());
+        let oauth_cfg = OAuth2Config {
+            token_url,
+            client_id: "pkce-client".to_string(),
+            client_secret: None,
+            refresh_token: "rt-missing-tok".to_string(),
+            // Future expiry — a naive "is now past expiry?" check would say
+            // no and skip the refresh. The fix must also consider whether
+            // the access token itself is available.
+            expiry: std::sync::RwLock::new(Some(
+                Instant::now() + std::time::Duration::from_secs(3600),
+            )),
+        };
+        let conn = RestConnector::new_with_oauth2(
+            spec,
+            reqwest::Client::new(),
+            None, // <-- access token missing
+            oauth_cfg,
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/items"))
+            .and(wiremock::matchers::header(
+                "Authorization",
+                "Bearer recovered-access",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
+            .mount(&server)
+            .await;
+
+        conn.list_resources("items")
+            .await
+            .expect("token-None + future-expiry should still trigger refresh");
 
         drop(server);
     }
