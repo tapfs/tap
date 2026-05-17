@@ -157,6 +157,24 @@ pub struct OAuth2Config {
 /// the list separator inside `expansions=` / `tweet.fields=` / etc., and the
 /// API will reject `%2C`. Keys are passed through verbatim — `tweet.fields`
 /// must not become `tweet%2Efields`.
+/// When `RenderSpec::resolve_includes` is enabled, single-resource API
+/// responses arrive wrapped as `{"data": {...}, "includes": {...}}`.
+/// `extract_meta` needs the unwrapped resource — meta.id / slug / title
+/// come from inside `data`, never from the envelope. This helper returns
+/// the right root for meta extraction without changing the renderer's
+/// access to `includes` (the full envelope still flows to the renderer).
+fn data_root_for_meta<'a>(
+    json: &'a Value,
+    render: Option<&crate::connector::spec::RenderSpec>,
+) -> &'a Value {
+    let resolve_includes = render.and_then(|r| r.resolve_includes).unwrap_or(false);
+    if resolve_includes {
+        json.get("data").unwrap_or(json)
+    } else {
+        json
+    }
+}
+
 pub(crate) fn apply_default_query(
     path: &str,
     default_query: Option<&std::collections::BTreeMap<String, String>>,
@@ -1063,7 +1081,7 @@ impl Connector for RestConnector {
         // Parse the field exprs once; reused for every item.
         let parsed: Vec<(&str, &str)> = populates.iter().map(|e| parse_field_alias(e)).collect();
 
-        let url = self.url(&coll.list_endpoint);
+        let url = self.url_with_default_query(&coll.list_endpoint, &coll);
         let response = self.send_with_retry(|| self.client.get(&url)).await?;
         let status = response.status();
         if !status.is_success() {
@@ -1167,7 +1185,13 @@ impl Connector for RestConnector {
             .await
             .context("failed to parse resource response as JSON")?;
 
-        let meta = Self::extract_meta(&json, &coll);
+        // When the spec declares `resolve_includes`, the API wraps the
+        // resource in a `{"data": {...}, "includes": {...}}` envelope.
+        // extract_meta needs to see the unwrapped resource so id / slug /
+        // title come out non-empty; the renderer separately handles the
+        // envelope for `includes` joins.
+        let meta_source = data_root_for_meta(&json, coll.render.as_ref());
+        let meta = Self::extract_meta(meta_source, &coll);
         let mut content = Self::render_markdown(&meta, &json, coll.render.as_ref());
 
         // Compose: fetch sub-resources and append as sections.
@@ -1291,7 +1315,11 @@ impl Connector for RestConnector {
             .await
             .context("failed to parse create response as JSON")?;
 
-        let meta = Self::extract_meta(&json, &coll);
+        // Same envelope concern as `read_resource`: an X-shaped POST
+        // response is `{"data": {...}}` and meta needs the unwrapped
+        // resource to get a non-empty id/slug/title.
+        let meta_source = data_root_for_meta(&json, coll.render.as_ref());
+        let meta = Self::extract_meta(meta_source, &coll);
 
         // Cache the new slug → ID mapping.
         if meta.slug != meta.id {
@@ -2397,5 +2425,133 @@ mod tests {
         let output = String::from_utf8(bytes).unwrap();
         assert!(output.contains("state: \"open\""));
         assert!(output.contains("title: \"regression check\""));
+    }
+
+    // ---------------------------------------------------------------
+    // read_resource must extract meta from `data` when resolve_includes
+    // is on (PR #50 review finding P3)
+    //
+    // The renderer already unwraps the envelope for body/sections, but
+    // `extract_meta` was called against the raw `{"data": {...}}` shape.
+    // That left meta.id / slug / title empty for X tweet and user reads,
+    // dropping the "# title" heading in rendered markdown and feeding
+    // bad metadata to direct connector callers.
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn read_resource_extracts_meta_from_data_envelope_when_resolve_includes_set() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // X-shaped single-tweet response: data + includes envelope.
+        let body = r#"{
+            "data": {"id": "42", "text": "hello", "author_id": "44196397"},
+            "includes": {
+                "users": [{"id": "44196397", "username": "elonmusk", "name": "Elon Musk"}]
+            }
+        }"#;
+        Mock::given(method("GET"))
+            .and(path("/2/tweets/42"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let mut coll = minimal_collection("posts");
+        coll.list_endpoint = "/2/tweets/search/recent".to_string();
+        coll.get_endpoint = "/2/tweets/{id}".to_string();
+        coll.id_field = Some("id".to_string());
+        coll.slug_field = Some("id".to_string());
+        coll.title_field = Some("text".to_string());
+        coll.render = Some(RenderSpec {
+            frontmatter: Some(vec!["id".to_string()]),
+            body: Some("text".to_string()),
+            sections: None,
+            exclude: None,
+            resolve_includes: Some(true),
+        });
+        let conn = build_connector(&server.uri(), vec![coll]);
+
+        let resource = conn
+            .read_resource("posts", "42")
+            .await
+            .expect("read should succeed");
+        assert_eq!(
+            resource.meta.id, "42",
+            "meta.id must come from data.id, not the envelope (which has no id)"
+        );
+        assert_eq!(
+            resource.meta.title.as_deref(),
+            Some("hello"),
+            "meta.title must come from data.text, not the envelope"
+        );
+        // The rendered markdown should still include the "# hello" heading
+        // that was previously dropped because meta.title was empty.
+        let content = String::from_utf8(resource.content).unwrap();
+        assert!(
+            content.contains("# hello"),
+            "rendered output must include the title heading, got:\n{}",
+            content
+        );
+        drop(server);
+    }
+
+    // ---------------------------------------------------------------
+    // list_resources_with_shards must also apply default_query
+    // (PR #50 review finding P2)
+    //
+    // Without this, an X-shaped collection that declares BOTH populates
+    // (so the VFS hydrates frontmatter shards at list time) AND
+    // default_query (so the API returns useful payloads) silently sends
+    // the request without `expansions=` / `tweet.fields=` — the API
+    // returns the bare-minimum payload, populates pulls empty values,
+    // and the shard layer caches uselessness.
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn list_with_shards_appends_default_query_to_request_url() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/2/users/me/tweets"))
+            .and(query_param("expansions", "author_id"))
+            .and(query_param("tweet.fields", "created_at,public_metrics"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(
+                    r#"[{"id":"1","text":"hi","public_metrics":{"like_count":3}}]"#,
+                ),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut coll = minimal_collection("posts");
+        coll.list_endpoint = "/2/users/me/tweets".to_string();
+        coll.populates = Some(vec![
+            "text".to_string(),
+            "public_metrics.like_count as likes".to_string(),
+        ]);
+        let mut q = std::collections::BTreeMap::new();
+        q.insert("expansions".to_string(), "author_id".to_string());
+        q.insert(
+            "tweet.fields".to_string(),
+            "created_at,public_metrics".to_string(),
+        );
+        coll.default_query = Some(q);
+
+        let conn = build_connector(&server.uri(), vec![coll]);
+        let out = conn
+            .list_resources_with_shards("posts")
+            .await
+            .expect("shard listing must merge default_query");
+        // populates was set → each item carries a shard, not None.
+        assert_eq!(out.len(), 1);
+        let (_meta, shard) = &out[0];
+        let shard = shard
+            .as_ref()
+            .expect("populates → shard must be present, regardless of default_query path");
+        assert_eq!(shard["text"], "hi");
+        assert_eq!(shard["likes"], 3);
+        drop(server);
     }
 }
