@@ -72,8 +72,8 @@ fn sanitize_agents_md_segment(s: &str) -> String {
 /// The platform-agnostic virtual filesystem.
 ///
 /// Contains all filesystem logic (lookup, readdir, read, write, create,
-/// rename, unlink). Transport layers (FUSE, File Provider Extension, CLI)
-/// delegate to this struct and convert between their native types and VFS types.
+/// rename, unlink). Transport layers (NFS/FUSE) delegate to this struct and
+/// convert between their native types and VFS types.
 pub struct VirtualFs {
     pub nodes: Arc<NodeTable>,
     pub registry: Arc<ConnectorRegistry>,

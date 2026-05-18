@@ -44,7 +44,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Version store with immutable snapshots
 - Governance layer with NDJSON audit logging and approval gates
 - TTL-based response cache with `bytes::Bytes`
-- C FFI bridge for Swift/macOS File Provider
 - CLI: mount, unmount, status, log, approve, versions, rollback
 - Connector registry: install, list, remove, update from Git
 - Transaction directories (`.tx/`) for grouped operations

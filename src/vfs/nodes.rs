@@ -2,8 +2,8 @@
 //!
 //! Pulled out of `core.rs` because it's a self-contained data structure with
 //! exactly one purpose. Determinism matters: the same NodeKind must produce
-//! the same ID across daemon restarts so macOS File Provider's persistent
-//! item-identifier cache and outstanding NFS file handles stay valid.
+//! the same ID across daemon restarts so outstanding NFS file handles stay
+//! valid.
 
 use dashmap::DashMap;
 
@@ -35,8 +35,7 @@ impl NodeTable {
     /// Deterministic node ID derived from the NodeKind's content.
     ///
     /// The same NodeKind always produces the same ID, across restarts.
-    /// This is critical for macOS File Provider, which caches item
-    /// identifiers persistently. ID 1 is reserved for root.
+    /// This is critical for stable NFS file handles. ID 1 is reserved for root.
     ///
     /// Uses SipHash-1-3 with fixed keys to guarantee stability across
     /// Rust toolchain upgrades (unlike `DefaultHasher`).
@@ -48,8 +47,8 @@ impl NodeTable {
             return 1;
         }
 
-        // Fixed keys — MUST NEVER CHANGE or all cached File Provider
-        // identifiers and NFS file handles become invalid.
+        // Fixed keys — MUST NEVER CHANGE or cached NFS file handles become
+        // invalid.
         let mut hasher = SipHasher13::new_with_keys(0x_7a31_6f62_6573_7461, 0x_6964_656e_7469_6669);
         kind.hash(&mut hasher);
         let hash = hasher.finish();

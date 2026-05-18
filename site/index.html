@@ -712,12 +712,12 @@ Rate limit: 5000 requests/min
 <section>
   <div class="section-label">Architecture</div>
   <div class="section-title">Transport-agnostic core</div>
-  <div class="section-desc">The filesystem logic is platform-agnostic. Each OS gets its deepest native integration. The connector layer is pluggable.</div>
+  <div class="section-desc">The filesystem logic is platform-agnostic. macOS uses NFSv3 loopback, Linux uses FUSE, and the connector layer stays pluggable.</div>
   <div class="arch-diagram"><span class="layer">              Agent / Application</span>
          (ls, cat, cp, mv, Finder, any app)
 
-    <span class="component">FUSE</span>              <span class="component">File Provider</span>        <span class="component">CLI / API</span>
-    <span class="component">(Linux/Docker)</span>     <span class="component">(macOS Finder)</span>      <span class="component">(Workers/WASM)</span>
+    <span class="component">FUSE</span>              <span class="component">NFSv3</span>               <span class="component">CLI / API</span>
+    <span class="component">(Linux/Docker)</span>     <span class="component">(macOS)</span>             <span class="component">(tools/agents)</span>
          &darr;                   &darr;                   &darr;
     &#9484;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9488;
     &#9474;             <span class="layer">VirtualFs Core</span>               &#9474;
