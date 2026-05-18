@@ -17,6 +17,11 @@ writes flow back to the API. The mount is served over NFSv3 (macOS) or
 FUSE (Linux); both transports are thin adapters over a shared platform-
 agnostic VFS layer.
 
+The supported transport surface is intentionally just NFS/FUSE plus the
+`tap` CLI. The earlier macOS File Provider prototype and its Rust C FFI
+bridge were removed so unsupported Finder-specific code does not drift from
+the production NFS path.
+
 The product bet: **filesystems are the universal API for LLM agents**.
 Any tool that reads and writes files (cat, vim, `Edit`, etc.) becomes a
 GitHub/Jira/Notion client.

@@ -24,6 +24,8 @@ Thumbs.db
 
 # AGENTS.md is the canonical AI-assistant guide; CLAUDE.md is a checked-in
 # symlink to it. Both are committed.
+# Local overrides live in *.local.md (personal preferences, never committed).
+*.local.md
 
 # Dependencies
 node_modules/

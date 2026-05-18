@@ -9,11 +9,10 @@ repository = "https://github.com/tapfs/tap"
 homepage = "https://tapfs.dev"
 keywords = ["fuse", "filesystem", "api", "agent", "enterprise"]
 categories = ["development-tools", "filesystem"]
-exclude = [".github/*", "macos/*", "site/*", "scripts/*", "templates/*", "Dockerfile", "docker-entrypoint.sh", "spec.md"]
+exclude = [".github/*", "site/*", "scripts/*", "templates/*", "Dockerfile", "docker-entrypoint.sh", "spec.md"]
 
 [lib]
 name = "tapfs"
-crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
 [[bin]]

@@ -12,7 +12,6 @@
 //! - [`version`] — immutable resource snapshots
 //! - [`governance`] — audit logging and approval gates
 //! - [`cache`] — TTL-based response cache
-//! - [`ffi`] — C FFI bridge for non-Rust consumers
 
 pub mod cache;
 #[cfg(any(feature = "fuse", feature = "nfs"))]
@@ -21,7 +20,6 @@ pub mod config;
 pub mod connector;
 pub mod credentials;
 pub mod draft;
-pub mod ffi;
 #[cfg(feature = "fuse")]
 pub mod fs;
 pub mod governance;

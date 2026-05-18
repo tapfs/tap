@@ -132,7 +132,7 @@ Out-of-date docs are worse than absent — they actively mislead.
 
 ## Commit conventions
 
-- Use `Assisted-by: Claude:claude-opus-4-7` as the trailer (not `Co-Authored-By`)
+- Use `Assisted-by: Codex:gpt-5` as the trailer (not `Co-Authored-By`)
 
 ## NFS transport (macOS)
 
